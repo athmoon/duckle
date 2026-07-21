@@ -182,7 +182,7 @@ class Pipeline:
         return self._add("transform", "xf.sort", {"orderBy": order}, "Sort")
 
     def limit(self, n):
-        return self._add("transform", "xf.limit", {"count": int(n)}, "Limit")
+        return self._add("transform", "xf.limit", {"limit": int(n)}, "Limit")
 
     def dedupe(self, *columns):
         return self._add("transform", "xf.distinct", {"columns": list(columns)}, "Dedupe")

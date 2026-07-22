@@ -3270,22 +3270,32 @@ pub(crate) fn build_reject_sql(
 }
 
 pub(crate) fn columns_list(props: &JsonValue, key: &str) -> Vec<String> {
-    props
-        .get(key)
-        .and_then(JsonValue::as_array)
-        .map(|arr| {
-            arr.iter()
-                // Drop empty / whitespace-only entries: a blank column name is
-                // never valid and would otherwise pass length-based guards (e.g.
-                // upsert conflictColumns=[""]) and emit a zero-length quoted
-                // identifier. Non-empty names are kept verbatim (a column may
-                // legitimately contain surrounding spaces).
-                .filter_map(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default()
+    match props.get(key) {
+        Some(JsonValue::Array(arr)) => arr
+            .iter()
+            // Drop empty / whitespace-only entries: a blank column name is
+            // never valid and would otherwise pass length-based guards (e.g.
+            // upsert conflictColumns=[""]) and emit a zero-length quoted
+            // identifier. Non-empty names are kept verbatim (a column may
+            // legitimately contain surrounding spaces).
+            .filter_map(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from)
+            .collect(),
+        // A bare string is accepted as a one-column list, or a comma-separated
+        // one. Writing conflictColumns="id" instead of ["id"] is the obvious
+        // mistake to make, and it used to yield an empty list silently: an
+        // upsert with no keys fell back to plain inserts and duplicated the
+        // whole table on every run. Reading it as the caller plainly meant it
+        // is better than a rule they have to learn from the damage.
+        Some(JsonValue::String(s)) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(String::from)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// A numeric property as a SQL literal - only if it's actually numeric,

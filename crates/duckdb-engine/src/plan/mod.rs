@@ -848,11 +848,48 @@ use graph::*;
 /// Key columns for a sink's "upsert" write mode, or empty for plain insert.
 /// Driver sinks (SQL Server / Oracle / Snowflake / Databricks) MERGE on these
 /// when the form sets `mode = "upsert"` and supplies `conflictColumns`.
-fn upsert_keys_from(props: &JsonValue) -> Vec<String> {
-    if string_prop(props, "mode").as_deref() == Some("upsert") {
-        columns_list(props, "conflictColumns")
-    } else {
-        Vec::new()
+///
+/// Asking for upsert without usable keys is refused rather than carried on
+/// with. Every one of these sinks treats an empty key list as "plain insert",
+/// so the run reported success while appending the whole input again on each
+/// execution - a doubling that only shows up as a row count much later. If
+/// the write cannot be keyed the way it was asked for, it must not happen.
+fn upsert_keys_from(props: &JsonValue, component_id: &str) -> Result<Vec<String>, EngineError> {
+    if string_prop(props, "mode").as_deref() != Some("upsert") {
+        return Ok(Vec::new());
+    }
+    let keys = columns_list(props, "conflictColumns");
+    if keys.is_empty() {
+        return Err(EngineError::Config(format!(
+            "{}: mode \"upsert\" needs conflictColumns - the column(s) identifying \
+             an existing row, e.g. conflictColumns: [\"id\"]. Without them the write \
+             would insert every row again on each run.",
+            component_id
+        )));
+    }
+    Ok(keys)
+}
+
+/// Write mode for snk.mongodb, checked against what the sink actually honours.
+///
+/// The sink drops the collection only on "replace" and otherwise inserts, so an
+/// unrecognised mode used to mean "append" no matter what was asked for: a
+/// pipeline set to "overwrite" doubled the collection on every run while
+/// reporting success. The word is also a fair guess, since snk.duckdb,
+/// snk.postgres and snk.csv all spell this "overwrite" - so accept it as an
+/// alias for "replace" and reject anything genuinely unknown.
+fn mongo_write_mode(props: &JsonValue, component_id: &str) -> Result<String, EngineError> {
+    match string_prop(props, "mode").filter(|s| !s.is_empty()) {
+        None => Ok("insert".into()),
+        Some(m) => match m.as_str() {
+            "insert" | "replace" | "upsert" => Ok(m),
+            "overwrite" => Ok("replace".into()),
+            other => Err(EngineError::Config(format!(
+                "{}: unknown mode {:?} - expected \"insert\", \"replace\" (drop the \
+                 collection first) or \"upsert\"",
+                component_id, other
+            ))),
+        },
     }
 }
 
@@ -1445,7 +1482,7 @@ fn build_stage(
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0 && *n <= 50) // Databricks max is 50s
                 .unwrap_or(30),
-            upsert_keys: upsert_keys_from(&props),
+            upsert_keys: upsert_keys_from(&props, component_id)?,
             delete_column: delete_column_from(&props),
             delete_value: delete_value_from(&props),
         });
@@ -1473,7 +1510,7 @@ fn build_stage(
             table,
             batch_size: props.get("batchSize").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(1000) as usize,
             mode: string_prop(&props, "mode").unwrap_or_else(|| "append".into()),
-            upsert_keys: upsert_keys_from(&props),
+            upsert_keys: upsert_keys_from(&props, component_id)?,
             delete_column: delete_column_from(&props),
             delete_value: delete_value_from(&props),
         });
@@ -1571,7 +1608,7 @@ fn build_stage(
             batch_size: props.get("batchSize").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(1000) as usize,
             trust_cert: props.get("trustCert").and_then(|v| v.as_bool()).unwrap_or(false),
             encrypt: props.get("encrypt").and_then(|v| v.as_bool()).unwrap_or(true),
-            upsert_keys: upsert_keys_from(&props),
+            upsert_keys: upsert_keys_from(&props, component_id)?,
             delete_column: delete_column_from(&props),
             delete_value: delete_value_from(&props),
         });
@@ -1616,13 +1653,13 @@ fn build_stage(
             uri,
             database,
             collection,
-            mode: string_prop(&props, "mode").unwrap_or_else(|| "insert".into()),
+            mode: mongo_write_mode(&props, component_id)?,
             batch_size: props
                 .get("batchSize")
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0)
                 .unwrap_or(1000) as usize,
-            upsert_keys: upsert_keys_from(&props),
+            upsert_keys: upsert_keys_from(&props, component_id)?,
             delete_column: delete_column_from(&props),
             delete_value: delete_value_from(&props),
         });
@@ -1707,7 +1744,7 @@ fn build_stage(
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0)
                 .unwrap_or(1000) as usize,
-            upsert_keys: upsert_keys_from(&props),
+            upsert_keys: upsert_keys_from(&props, component_id)?,
             delete_column: delete_column_from(&props),
             delete_value: delete_value_from(&props),
         });

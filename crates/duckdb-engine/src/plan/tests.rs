@@ -3377,6 +3377,75 @@
     }
 
     #[test]
+    fn driver_sink_upsert_rejects_missing_conflict_columns() {
+        // The driver sinks (mongo / oracle / databricks / snowflake / sqlserver)
+        // route through upsert_keys_from rather than build_sink_sql, and every
+        // one of them reads "no keys" as "plain insert". Asking for upsert
+        // without keys therefore appended the whole input again on each run and
+        // still reported ok. It has to be refused instead.
+        for props in [
+            serde_json::json!({"mode": "upsert"}),
+            serde_json::json!({"mode": "upsert", "conflictColumns": []}),
+            serde_json::json!({"mode": "upsert", "conflictColumns": ["", "  "]}),
+        ] {
+            let err = upsert_keys_from(&props, "snk.mongodb").unwrap_err();
+            assert!(
+                err.to_string().contains("conflictColumns"),
+                "upsert without usable keys must be rejected, got: {:?}",
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn conflict_columns_accepts_a_bare_string() {
+        // conflictColumns="id" instead of ["id"] used to parse as an empty
+        // list, which silently downgraded the upsert to an insert.
+        let keys = upsert_keys_from(
+            &serde_json::json!({"mode": "upsert", "conflictColumns": "id"}),
+            "snk.mongodb",
+        )
+        .unwrap();
+        assert_eq!(keys, vec!["id".to_string()]);
+
+        let keys = upsert_keys_from(
+            &serde_json::json!({"mode": "upsert", "conflictColumns": "tenant , id"}),
+            "snk.mongodb",
+        )
+        .unwrap();
+        assert_eq!(keys, vec!["tenant".to_string(), "id".to_string()]);
+    }
+
+    #[test]
+    fn mongo_write_mode_is_checked_against_what_the_sink_honours() {
+        // "overwrite" is what snk.duckdb / snk.postgres / snk.csv call this, so
+        // it is accepted as an alias rather than punished.
+        assert_eq!(
+            mongo_write_mode(&serde_json::json!({"mode": "overwrite"}), "snk.mongodb").unwrap(),
+            "replace"
+        );
+        for m in ["insert", "replace", "upsert"] {
+            assert_eq!(
+                mongo_write_mode(&serde_json::json!({"mode": m}), "snk.mongodb").unwrap(),
+                m
+            );
+        }
+        // Unset stays the documented default.
+        assert_eq!(
+            mongo_write_mode(&serde_json::json!({}), "snk.mongodb").unwrap(),
+            "insert"
+        );
+        // Anything else is a typo, and the sink would have silently appended.
+        let err = mongo_write_mode(&serde_json::json!({"mode": "truncate"}), "snk.mongodb")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown mode"),
+            "an unhonoured mode must be rejected, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
     fn aggregate_missing_function_on_named_column_fails_loud() {
         // audit pass-3: {column: "amount"} with no function used to silently
         // become COUNT(amount); it must require an explicit function now.

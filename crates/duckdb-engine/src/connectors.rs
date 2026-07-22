@@ -8323,10 +8323,36 @@ impl DuckdbEngine {
         db: &Path,
         spec: &MongoSinkSpec,
     ) -> Result<String, EngineError> {
-        let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
-        let rows = self.run_rows(Some(db), &select)?;
+        // Stream the upstream through newline-delimited JSON on disk instead of
+        // materializing it. run_rows held the whole result set in memory and, on
+        // a million rows, spent 7 s building it before a single document was
+        // sent. DuckDB writing NDJSON lets the read, the BSON conversion and the
+        // inserts overlap, at constant memory rather than proportional to the
+        // row count.
+        let staging_dir = std::env::temp_dir().join(format!(
+            "duckle-mongo-{}-{}",
+            std::process::id(),
+            MONGO_STAGE_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        let _cleanup = ScopedDir(staging_dir.clone());
+        create_private_dir(&staging_dir)
+            .map_err(|e| EngineError::Other(format!("mongodb sink: staging dir: {}", e)))?;
+        let ndjson = staging_dir.join("rows.ndjson");
+        let copy = format!(
+            "COPY (SELECT * FROM {}) TO '{}' (FORMAT JSON, ARRAY false)",
+            plan::quote_ident(&spec.from_view),
+            sql_escape(&ndjson.display().to_string().replace('\\', "/"))
+        );
+        self.run(Some(db), &copy, false)?;
+
         let cancel = self.cancel.clone();
-        let rt = tokio::runtime::Builder::new_current_thread()
+        // Multi-threaded on purpose. serde_json -> BSON is CPU work, and on a
+        // current-thread runtime it serialized behind the network waits; giving
+        // it real threads lets conversion for one batch proceed while another
+        // batch is in flight.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
             .enable_all()
             .build()
             .map_err(|e| EngineError::Query(format!("mongo: tokio runtime: {}", e)))?;
@@ -8353,7 +8379,10 @@ impl DuckdbEngine {
             if !spec.upsert_keys.is_empty() {
                 let mut upserted = 0_usize;
                 let mut deleted = 0_usize;
-                for chunk in rows.chunks(spec.batch_size) {
+                for chunk in mongo_ndjson_batches(&ndjson, spec.batch_size)
+                    .map_err(|e| format!("reading staged rows: {}", e))?
+                {
+                    let chunk = &chunk;
                     if cancel.load(Ordering::Relaxed) {
                         return Err("cancelled".into());
                     }
@@ -8402,30 +8431,57 @@ impl DuckdbEngine {
                     upserted, deleted, spec.database, spec.collection
                 ));
             }
+            // Keep several batches in flight. insert_many is a network round
+            // trip, so awaiting each one in turn left the connection idle for
+            // most of the run; MongoDB happily takes concurrent batches.
+            const IN_FLIGHT: usize = 6;
             let mut total = 0_usize;
-            for chunk in rows.chunks(spec.batch_size) {
+            let mut pending: Vec<tokio::task::JoinHandle<Result<usize, String>>> = Vec::new();
+            for chunk in mongo_ndjson_batches(&ndjson, spec.batch_size)
+                .map_err(|e| format!("reading staged rows: {}", e))?
+            {
                 if cancel.load(Ordering::Relaxed) {
                     return Err("cancelled".into());
                 }
-                let docs: Vec<mongodb::bson::Document> = chunk
-                    .iter()
-                    .filter_map(|v| mongodb::bson::to_document(v).ok())
-                    .collect();
-                if docs.is_empty() {
-                    continue;
+                if pending.len() >= IN_FLIGHT {
+                    let done = pending.remove(0);
+                    total += done.await.map_err(|e| format!("insert task: {}", e))??;
                 }
-                let inserted = docs.len();
-                collection
-                    .insert_many(docs)
-                    .await
-                    .map_err(|e| format!("insert_many: {}", e))?;
-                total += inserted;
+                let coll = collection.clone();
+                pending.push(tokio::spawn(async move {
+                    let docs: Vec<mongodb::bson::Document> = chunk
+                        .iter()
+                        .filter_map(|v| mongodb::bson::to_document(v).ok())
+                        .collect();
+                    if docs.is_empty() {
+                        return Ok(0);
+                    }
+                    let n = docs.len();
+                    coll.insert_many(docs)
+                        .await
+                        .map_err(|e| format!("insert_many: {}", e))?;
+                    Ok(n)
+                }));
+            }
+            for h in pending {
+                total += h.await.map_err(|e| format!("insert task: {}", e))??;
             }
             Ok(format!(
                 "mongodb: inserted {} docs into {}.{}",
                 total, spec.database, spec.collection
             ))
         });
+        // Wind the runtime down rather than dropping it outright. The driver
+        // keeps background connection monitors alive, and tearing the runtime
+        // out from under one makes it panic on a worker thread: harmless to the
+        // result, which is already computed, but it prints a stack trace that
+        // reads like a failed load. Observed once on the multi-threaded runtime.
+        //
+        // The grace period is deliberately short. Those monitors are long-lived
+        // by design and never finish on their own, so a generous timeout is
+        // simply paid in full: two seconds here cost two seconds on every run.
+        // A brief window is enough for them to observe the shutdown signal.
+        rt.shutdown_timeout(std::time::Duration::from_millis(150));
         result.map_err(|e| if e == "cancelled" {
             EngineError::Cancelled
         } else {
@@ -11493,6 +11549,63 @@ mod websocket_tests {
     fn request_rejects_non_ws_scheme() {
         assert!(websocket_request("https://example.com", &[]).is_err());
     }
+}
+
+
+/// Sequence for the MongoDB sink's staging directory, so two sinks in one run
+/// cannot collide on a path.
+static MONGO_STAGE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Read a DuckDB NDJSON export in fixed-size batches.
+///
+/// Returns an iterator so the caller never holds more than one batch: the
+/// point of staging through a file is that a million-row migration costs the
+/// same memory as a thousand-row one. A line that will not parse is skipped
+/// rather than failing the whole load, matching how the previous in-memory
+/// path treated an unconvertible row.
+fn mongo_ndjson_batches(
+    path: &Path,
+    batch_size: usize,
+) -> std::io::Result<impl Iterator<Item = Vec<JsonValue>>> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::with_capacity(1 << 20, file);
+    let size = batch_size.max(1);
+    let mut done = false;
+    Ok(std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        let mut batch = Vec::with_capacity(size);
+        let mut line = String::new();
+        while batch.len() < size {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    done = true;
+                    break;
+                }
+                Ok(_) => {
+                    let t = line.trim();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::from_str::<JsonValue>(t) {
+                        batch.push(v);
+                    }
+                }
+                Err(_) => {
+                    done = true;
+                    break;
+                }
+            }
+        }
+        if batch.is_empty() {
+            None
+        } else {
+            Some(batch)
+        }
+    }))
 }
 
 /// Render a JSON value as a DuckDB SQL literal for snk.gizmosql INSERTs. The

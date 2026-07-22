@@ -30,7 +30,7 @@ from .api import (  # noqa: F401
     read_postgres,
 )
 
-__version__ = "0.5.9"
+__version__ = "0.5.10"
 __all__ = [
     "Pipeline", "DuckleError", "from_json",
     "col", "lit", "when", "Expr",

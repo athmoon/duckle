@@ -226,6 +226,63 @@ PIP = [
 ]
 
 
+# --------------------------------------------------------------- demo 5
+# MySQL in Docker -> DuckDB. Everything below is captured from a real run
+# against mysql:8.0 holding 10 orders; 6 are shipped.
+MYSQL_DUCKDB = [
+    ("cmd", "docker ps"),
+    ("dim", "duckle-demo-mysql   mysql:8.0   Up   0.0.0.0:3306->3306/tcp"),
+    ("out", ""),
+    ("cmd", "cat pipeline.py"),
+    ("key", "import duckle"),
+    ("key", "from duckle import col"),
+    ("out", ""),
+    ("out", "(duckle.src.mysql(host=\"127.0.0.1\", database=\"ducktest\","),
+    ("out", "                  username=\"root\", password=\"${ENV:MYSQL_PASSWORD}\","),
+    ("out", "                  tableName=\"orders\")"),
+    ("out", "    .where(col.status == \"shipped\")"),
+    ("out", "    .derive(net=\"round(amount * 0.8, 2)\","),
+    ("out", "            label=\"f'{region}-{customer}'\")"),
+    ("out", "    .snk.duckdb(database=\"warehouse.duckdb\","),
+    ("out", "                tableName=\"shipped_orders\", mode=\"overwrite\")"),
+    ("out", "    .run())"),
+    ("out", ""),
+    ("cmd", "python pipeline.py"),
+    ("out", "status   : ok"),
+    ("dim", "duration : 274 ms"),
+    ("ok",  "  mysql      ok"),
+    ("ok",  "  filter     ok (6 rows)"),
+    ("ok",  "  pyexpr     ok (6 rows)"),
+    ("ok",  "  duckdb     ok (6 rows)"),
+    ("out", ""),
+    ("dim", "# 10 orders in MySQL, 6 shipped, landed in DuckDB."),
+    ("dim", "# The filter and both derived columns ran as SQL inside DuckDB."),
+]
+
+# --------------------------------------------------------------- demo 6
+# Same source, Salesforce sink. Compile-checked for real: validate opens no
+# source and writes no sink, so it needs no MySQL and no Salesforce org.
+MYSQL_SALESFORCE = [
+    ("dim", "# same pipeline, one line changed: where it lands"),
+    ("out", ""),
+    ("out", "(duckle.src.mysql(host=\"127.0.0.1\", database=\"ducktest\","),
+    ("out", "                  tableName=\"orders\")"),
+    ("out", "    .where(col.status == \"shipped\")"),
+    ("out", "    .derive(Name=\"f'{region}-{customer}'\", Amount__c=\"amount\")"),
+    ("key", "    .snk.salesforce(object=\"Order__c\", operation=\"upsert\","),
+    ("key", "                    externalIdField=\"Ext_Id__c\","),
+    ("key", "                    accessToken=\"${ENV:SF_TOKEN}\"))"),
+    ("out", ""),
+    ("cmd", "duckle validate pipelines/to_salesforce.json"),
+    ("ok",  "ok    pipelines/to_salesforce.json  (4 stages)"),
+    ("out", ""),
+    ("out", "1 pipeline(s) checked, 0 failed"),
+    ("out", ""),
+    ("dim", "# Compiled without opening MySQL or contacting Salesforce."),
+    ("dim", "# No credentials needed to prove the pipeline is sound."),
+]
+
+
 if __name__ == "__main__":
     os.makedirs(OUT_DIR, exist_ok=True)
     render(os.path.join(OUT_DIR, "pypi-demo-install.svg"),
@@ -236,3 +293,7 @@ if __name__ == "__main__":
            "your agent, with real tools", AGENT)
     render(os.path.join(OUT_DIR, "pypi-demo-pip.svg"),
            "pip install duckle", PIP)
+    render(os.path.join(OUT_DIR, "demo-mysql-duckdb.svg"),
+           "MySQL in Docker to DuckDB", MYSQL_DUCKDB)
+    render(os.path.join(OUT_DIR, "demo-mysql-salesforce.svg"),
+           "same source, Salesforce sink", MYSQL_SALESFORCE)

@@ -136,10 +136,17 @@ class Pipeline:
         return self._add("source", "src.json", dict(path=path, **opts), "JSON")
 
     def read_postgres(self, table, **opts):
-        return self._add("source", "src.postgres", dict(table=table, **opts), "Postgres")
+        # tableName, not table: the engine reads tableName, and a key it does
+        # not recognise is ignored rather than rejected.
+        return self._add("source", "src.postgres", dict(tableName=table, **opts), "Postgres")
 
     def read_duckdb(self, path, table, **opts):
-        return self._add("source", "src.duckdb", dict(path=path, table=table, **opts), "DuckDB")
+        # database / tableName are what build_duckdb_source reads. Passing
+        # path / table produced a run that reported ok and returned 0 rows,
+        # because neither key was recognised and nothing was attached.
+        return self._add(
+            "source", "src.duckdb", dict(database=path, tableName=table, **opts), "DuckDB"
+        )
 
     def source(self, component, **props):
         """Escape hatch: any of Duckle's source components by id."""
@@ -171,7 +178,9 @@ class Pipeline:
     filter = where
 
     def select(self, *columns):
-        return self._add("transform", "xf.select", {"columns": list(columns)}, "Select")
+        # xf.project is the component ("Project / Select"); there is no
+        # xf.select, so this used to fail the compile outright.
+        return self._add("transform", "xf.project", {"columns": list(columns)}, "Select")
 
     def rename(self, **mapping):
         pairs = [{"from": k, "to": v} for k, v in mapping.items()]

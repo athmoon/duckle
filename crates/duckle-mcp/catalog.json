@@ -3387,8 +3387,9 @@
               {
                 "key": "database",
                 "label": "Database file",
+                "required": false,
+                "description": "Required when reading a table by name. Custom SQL that does not read from an attached database can leave this empty.",
                 "kind": "file-path",
-                "required": true,
                 "filters": [
                   {
                     "name": "DuckDB",

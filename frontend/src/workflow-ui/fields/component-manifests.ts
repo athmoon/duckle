@@ -588,8 +588,17 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
                     {
                         key: 'database',
                         label: 'Database file',
+                        // Not required: custom-SQL mode runs standalone. The
+                        // engine returns an empty ATTACH prelude when database
+                        // is unset (attach_prelude), and build_duckdb_source
+                        // wraps a custom `sql` without referencing an attached
+                        // database at all. Marking it required blocked a
+                        // pipeline in the GUI that the CLI ran fine (#201).
+                        // Only table-name mode actually needs it.
+                        required: false,
+                        description:
+                            'Required when reading a table by name. Custom SQL that does not read from an attached database can leave this empty.',
                         kind: 'file-path',
-                        required: true,
                         filters: [
                             { name: 'DuckDB', extensions: ['duckdb', 'db'] },
                             { name: 'All files', extensions: ['*'] },

@@ -7,6 +7,21 @@ on:
     branches: [main]
 
 jobs:
+  # The Python API writes pipeline JSON the Rust engine has to recognise, and a
+  # property name it does not recognise is ignored rather than rejected. That
+  # made `.limit(2)` return every row and `read_duckdb` return none, both with a
+  # green status. These tests assert the exact component ids and property keys,
+  # so that class of bug fails here instead of in someone's output.
+  python-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Contract tests
+        run: PYTHONPATH=packaging/pypi python -m unittest discover -s packaging/pypi/tests -v
+
   frontend:
     runs-on: ubuntu-latest
     steps:

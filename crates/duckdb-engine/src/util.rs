@@ -10,9 +10,19 @@ use crate::*;
 /// substring match), so its value should never appear in exported SQL.
 pub fn is_secret_prop_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
+    // "pat" (personal access token) is the one needle matched whole rather
+    // than as a substring, because as a substring it also swallowed path,
+    // filePath, rowPath, jsonPath, recordsPath, pattern, keyPattern and
+    // loadSpatial. Every one of those was then exported as ${DUCKLE_PATH},
+    // which left the compiled SQL from .sql() / .explain() unrunnable and
+    // stopped a "no files found" error from naming the file it could not
+    // find. `pat` is the only property key that actually holds a token.
+    if k == "pat" {
+        return true;
+    }
     [
         "password", "passwd", "secret", "token", "apikey", "api_key",
-        "privatekey", "private_key", "accesskey", "access_key", "pat",
+        "privatekey", "private_key", "accesskey", "access_key",
         "clientsecret", "client_secret", "connectionstring", "connection_string",
         "sas", "credential",
     ]
@@ -1114,11 +1124,40 @@ pub(crate) fn chunk_text(text: &str, size: usize, overlap: usize) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_xlsx_whitespace, infer_avro_nullable_field, stream_xml_rows, walk_xml_to_rows};
+    use super::{
+        finalize_xlsx_whitespace, infer_avro_nullable_field, is_secret_prop_key, stream_xml_rows,
+        walk_xml_to_rows,
+    };
     use serde_json::json;
     use std::io::{Read, Write};
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+
+    #[test]
+    fn path_like_keys_are_not_treated_as_secrets() {
+        // "pat" as a substring needle matched every one of these, so their
+        // values exported as ${DUCKLE_PATH}: the SQL from .sql() would not run,
+        // and a missing-file error could not say which file was missing.
+        for key in [
+            "path", "filePath", "rowPath", "jsonPath", "recordsPath", "remotePath",
+            "resultsPath", "responsePath", "pathFilter", "pattern", "keyPattern",
+            "loadSpatial", "geospatial", "patch",
+        ] {
+            assert!(!is_secret_prop_key(key), "{} is not a credential", key);
+        }
+        // The key that actually holds a token still is one, and the real
+        // credential needles are untouched.
+        assert!(is_secret_prop_key("pat"));
+        assert!(is_secret_prop_key("PAT"));
+        for key in [
+            "password", "apiKey", "accessKey", "clientSecret", "token",
+            "privateKey", "connectionString", "credential", "sas",
+            // paths that reach a credential keep matching on their own needles
+            "credentialsPath", "privateKeyPath",
+        ] {
+            assert!(is_secret_prop_key(key), "{} must stay redacted", key);
+        }
+    }
 
     #[test]
     fn xlsx_whitespace_preserve_is_injected() {

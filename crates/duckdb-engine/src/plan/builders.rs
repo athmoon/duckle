@@ -3330,6 +3330,7 @@ pub(crate) fn build_pyexpr(inputs: &NodeInputs, props: &JsonValue) -> Result<Str
         return Err("Python Expression needs at least one output column".into());
     }
     let mut parts: Vec<String> = Vec::with_capacity(columns.len());
+    let mut names: Vec<String> = Vec::with_capacity(columns.len());
     for col in &columns {
         let name = string_prop(col, "name")
             .filter(|s| !s.trim().is_empty())
@@ -3340,14 +3341,45 @@ pub(crate) fn build_pyexpr(inputs: &NodeInputs, props: &JsonValue) -> Result<Str
             .ok_or_else(|| format!("Python Expression: column '{}' has no expression", name))?;
         let sql = crate::pyexpr::compile(&expr)
             .map_err(|e| format!("Python Expression for column '{}': {}", name, e))?;
+        names.push(name.clone());
         parts.push(format!("{} AS {}", sql, quote_ident(&name)));
     }
+    // Deriving a column that already exists REPLACES it, in place. Appending
+    // with a plain `SELECT *, expr AS amount` produced two columns called
+    // amount, and readers disambiguate that by renaming the second one, so
+    // the name the caller asked for kept the OLD value and the computed one
+    // arrived as amount_1. A following .where("amount > 100") then filtered
+    // on the stale column and returned nothing, with the run reporting ok.
+    //
+    // COLUMNS(lambda ...) drops the replaced names only if they are present,
+    // so a derive that adds new columns still just appends. The padding
+    // column keeps that star from resolving to an empty set when the derive
+    // replaces every column of its input, which is a bind error.
+    //
+    // A replaced column moves to the end rather than holding its position,
+    // which `* REPLACE (...)` would preserve but which errors when the name
+    // is absent, and absence is the ordinary case here. Nothing working
+    // regresses: before this, a redefined column produced the wrong value,
+    // so no correct pipeline depended on where it sat. Columns that are only
+    // added, not redefined, keep the order they always had.
+    let excluded = names
+        .iter()
+        .map(|n| format!("'{}'", n.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
     Ok(format!(
-        "SELECT *, {} FROM {}",
+        "SELECT * EXCLUDE ({pad}) FROM (SELECT COLUMNS(lambda c: c NOT IN ({excluded})), {} \
+         FROM (SELECT *, TRUE AS {pad} FROM {}))",
         parts.join(", "),
-        quote_ident(upstream)
+        quote_ident(upstream),
+        pad = PYEXPR_PAD,
+        excluded = excluded,
     ))
 }
+
+/// Padding column for build_pyexpr's inner star. Named so it cannot collide
+/// with a real column, and stripped again by the outer projection.
+const PYEXPR_PAD: &str = "__duckle_pyexpr_pad";
 
 pub(crate) fn build_addcol(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| "missing main input".to_string())?;

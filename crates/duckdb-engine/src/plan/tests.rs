@@ -3377,6 +3377,40 @@
     }
 
     #[test]
+    fn pyexpr_replaces_a_column_it_redefines() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["up".into()]);
+        // Redefining an existing column used to emit `SELECT *, expr AS amount`,
+        // which yields two columns named amount; the caller's name kept the old
+        // value and the computed one landed as amount_1.
+        let sql = build_pyexpr(
+            &ni,
+            &serde_json::json!({"columns": [{"name": "amount", "expr": "amount * 10"}]}),
+        )
+        .unwrap();
+        assert!(
+            sql.contains("c NOT IN ('amount')"),
+            "the redefined name must be excluded from the star, got: {}",
+            sql
+        );
+        assert!(
+            !sql.starts_with("SELECT *,"),
+            "the plain appending form is what duplicated the column, got: {}",
+            sql
+        );
+        // Several columns are all excluded, and a quote in a name cannot break out.
+        let sql = build_pyexpr(
+            &ni,
+            &serde_json::json!({"columns": [
+                {"name": "a", "expr": "1"},
+                {"name": "it's", "expr": "2"},
+            ]}),
+        )
+        .unwrap();
+        assert!(sql.contains("c NOT IN ('a', 'it''s')"), "got: {}", sql);
+    }
+
+    #[test]
     fn driver_sink_upsert_rejects_missing_conflict_columns() {
         // The driver sinks (mongo / oracle / databricks / snowflake / sqlserver)
         // route through upsert_keys_from rather than build_sink_sql, and every

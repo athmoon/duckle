@@ -227,36 +227,41 @@ PIP = [
 
 
 # --------------------------------------------------------------- demo 5
-# MySQL in Docker -> DuckDB. Everything below is captured from a real run
-# against mysql:8.0 holding 10 orders; 6 are shipped.
+# MySQL in Docker -> DuckDB at 1M rows. Every number below is measured:
+# mysql:8.0 holding 1,000,000 orders, 333,333 of them shipped.
 MYSQL_DUCKDB = [
     ("cmd", "docker ps"),
     ("dim", "duckle-demo-mysql   mysql:8.0   Up   0.0.0.0:3306->3306/tcp"),
+    ("out", ""),
+    ("cmd", "mysql -e 'SELECT count(*) FROM orders_1m'"),
+    ("key", "1000000"),
     ("out", ""),
     ("cmd", "cat pipeline.py"),
     ("key", "import duckle"),
     ("key", "from duckle import col"),
     ("out", ""),
     ("out", "(duckle.src.mysql(host=\"127.0.0.1\", database=\"ducktest\","),
-    ("out", "                  username=\"root\", password=\"${ENV:MYSQL_PASSWORD}\","),
-    ("out", "                  tableName=\"orders\")"),
+    ("out", "                  password=\"${ENV:MYSQL_PASSWORD}\","),
+    ("out", "                  tableName=\"orders_1m\")"),
     ("out", "    .where(col.status == \"shipped\")"),
     ("out", "    .derive(net=\"round(amount * 0.8, 2)\","),
     ("out", "            label=\"f'{region}-{customer}'\")"),
     ("out", "    .snk.duckdb(database=\"warehouse.duckdb\","),
-    ("out", "                tableName=\"shipped_orders\", mode=\"overwrite\")"),
+    ("out", "                tableName=\"shipped_orders\")"),
     ("out", "    .run())"),
     ("out", ""),
     ("cmd", "python pipeline.py"),
     ("out", "status   : ok"),
-    ("dim", "duration : 274 ms"),
+    ("key", "duration : 1932 ms"),
     ("ok",  "  mysql      ok"),
-    ("ok",  "  filter     ok (6 rows)"),
-    ("ok",  "  pyexpr     ok (6 rows)"),
-    ("ok",  "  duckdb     ok (6 rows)"),
+    ("ok",  "  filter     ok (333333 rows)"),
+    ("ok",  "  pyexpr     ok (333333 rows)"),
+    ("ok",  "  duckdb     ok (333333 rows)"),
     ("out", ""),
-    ("dim", "# 10 orders in MySQL, 6 shipped, landed in DuckDB."),
-    ("dim", "# The filter and both derived columns ran as SQL inside DuckDB."),
+    ("dim", "# 1,000,000 rows scanned, 333,333 landed, in under two seconds."),
+    ("dim", "# ~518k source rows/sec, MySQL wire to DuckDB table."),
+    ("dim", "# No row touched Python: the filter and both derived columns"),
+    ("dim", "# were compiled to SQL and run inside DuckDB."),
 ]
 
 # --------------------------------------------------------------- demo 6

@@ -288,6 +288,40 @@ MYSQL_SALESFORCE = [
 ]
 
 
+# --------------------------------------------------------------- demo 7
+# MySQL -> MongoDB, a full-table migration. Measured against mysql:8.0 and
+# mongo:7 in Docker, 1,000,000 rows, verified document counts on the far side.
+MYSQL_MONGO = [
+    ("cmd", "docker ps"),
+    ("dim", "duckle-demo-mysql   mysql:8.0   Up   0.0.0.0:3306->3306/tcp"),
+    ("dim", "duckle-demo-mongo   mongo:7     Up   0.0.0.0:27017->27017/tcp"),
+    ("out", ""),
+    ("cmd", "cat migrate.py"),
+    ("key", "import duckle"),
+    ("out", ""),
+    ("out", "(duckle.src.mysql(host=\"127.0.0.1\", database=\"ducktest\","),
+    ("out", "                  password=\"${ENV:MYSQL_PASSWORD}\","),
+    ("out", "                  tableName=\"orders_1m\")"),
+    ("out", "    .snk.mongodb(uri=\"${ENV:MONGO_URI}\", database=\"warehouse\","),
+    ("out", "                 collection=\"orders\", mode=\"overwrite\")"),
+    ("out", "    .run())"),
+    ("out", ""),
+    ("cmd", "python migrate.py"),
+    ("out", "status   : ok"),
+    ("key", "duration : 30201 ms"),
+    ("ok",  "  mysql      ok (1000000 rows)"),
+    ("ok",  "  mongodb    ok (1000000 rows)"),
+    ("out", ""),
+    ("cmd", "mongosh --eval 'db.orders.countDocuments({})'"),
+    ("key", "1000000"),
+    ("cmd", "mongosh --eval 'db.orders.countDocuments({status:\"shipped\"})'"),
+    ("key", "333333"),
+    ("out", ""),
+    ("dim", "# A million rows migrated in 30 seconds, counts matching on both"),
+    ("dim", "# sides. Two lines of Python, no migration tool, no cloud."),
+]
+
+
 if __name__ == "__main__":
     os.makedirs(OUT_DIR, exist_ok=True)
     render(os.path.join(OUT_DIR, "pypi-demo-install.svg"),
@@ -302,3 +336,5 @@ if __name__ == "__main__":
            "MySQL in Docker to DuckDB", MYSQL_DUCKDB)
     render(os.path.join(OUT_DIR, "demo-mysql-salesforce.svg"),
            "same source, Salesforce sink", MYSQL_SALESFORCE)
+    render(os.path.join(OUT_DIR, "demo-mysql-mongodb.svg"),
+           "MySQL to MongoDB migration", MYSQL_MONGO)

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="648" viewBox="0 0 660 648" role="img" aria-label="MySQL to MongoDB migration">
+<style>
+.m{font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:13.5px;white-space:pre}
+.p{fill:#f5d90a;font-weight:700}
+.c{fill:#c9d5e1;font-weight:600}
+.out{fill:#c9d5e1}
+.dim{fill:#7d8ea1}
+.ok{fill:#5bc8f5}
+.err{fill:#f2555a}
+.key{fill:#f5d90a}
+.cur{animation:blink 1.06s steps(1,end) infinite}
+@keyframes blink{0%,50%{opacity:1}50.01%,100%{opacity:0}}
+</style>
+<rect width="660" height="648" rx="9" fill="#0f1720"/>
+<rect width="660" height="30" rx="9" fill="#18222e"/>
+<rect y="21" width="660" height="9" fill="#18222e"/>
+<circle cx="19" cy="15" r="5" fill="#f2555a"/>
+<circle cx="37" cy="15" r="5" fill="#f59f0a"/>
+<circle cx="55" cy="15" r="5" fill="#5bc8f5"/>
+<text x="252" y="19.5" class="m dim" font-size="11.5">MySQL to MongoDB migration</text>
+<text x="18" y="65" class="m"><tspan class="p">$</tspan> <tspan class="c">docker ps</tspan></text>
+<text x="18" y="86" class="m dim">duckle-demo-mysql&#160;&#160;&#160;mysql:8.0&#160;&#160;&#160;Up&#160;&#160;&#160;0.0.0.0:3306-&gt;3306/tcp</text>
+<text x="18" y="107" class="m dim">duckle-demo-mongo&#160;&#160;&#160;mongo:7&#160;&#160;&#160;&#160;&#160;Up&#160;&#160;&#160;0.0.0.0:27017-&gt;27017/tcp</text>
+<text x="18" y="149" class="m"><tspan class="p">$</tspan> <tspan class="c">cat migrate.py</tspan></text>
+<text x="18" y="170" class="m key">import&#160;duckle</text>
+<text x="18" y="212" class="m out">(duckle.src.mysql(host="127.0.0.1",&#160;database="ducktest",</text>
+<text x="18" y="233" class="m out">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;password="${ENV:MYSQL_PASSWORD}",</text>
+<text x="18" y="254" class="m out">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;tableName="orders_1m")</text>
+<text x="18" y="275" class="m out">&#160;&#160;&#160;&#160;.snk.mongodb(uri="${ENV:MONGO_URI}",&#160;database="warehouse",</text>
+<text x="18" y="296" class="m out">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;collection="orders",&#160;mode="overwrite")</text>
+<text x="18" y="317" class="m out">&#160;&#160;&#160;&#160;.run())</text>
+<text x="18" y="359" class="m"><tspan class="p">$</tspan> <tspan class="c">python migrate.py</tspan></text>
+<text x="18" y="380" class="m out">status&#160;&#160;&#160;:&#160;ok</text>
+<text x="18" y="401" class="m key">duration&#160;:&#160;30201&#160;ms</text>
+<text x="18" y="422" class="m ok">&#160;&#160;mysql&#160;&#160;&#160;&#160;&#160;&#160;ok&#160;(1000000&#160;rows)</text>
+<text x="18" y="443" class="m ok">&#160;&#160;mongodb&#160;&#160;&#160;&#160;ok&#160;(1000000&#160;rows)</text>
+<text x="18" y="485" class="m"><tspan class="p">$</tspan> <tspan class="c">mongosh --eval 'db.orders.countDocuments({})'</tspan></text>
+<text x="18" y="506" class="m key">1000000</text>
+<text x="18" y="527" class="m"><tspan class="p">$</tspan> <tspan class="c">mongosh --eval 'db.orders.countDocuments({status:"shipped"})'</tspan></text>
+<text x="18" y="548" class="m key">333333</text>
+<text x="18" y="590" class="m dim">#&#160;A&#160;million&#160;rows&#160;migrated&#160;in&#160;30&#160;seconds,&#160;counts&#160;matching&#160;on&#160;both</text>
+<text x="18" y="611" class="m dim">#&#160;sides.&#160;Two&#160;lines&#160;of&#160;Python,&#160;no&#160;migration&#160;tool,&#160;no&#160;cloud.</text>
+<rect class="cur" x="18" y="621" width="8" height="15" fill="#f5d90a"/>
+</svg>

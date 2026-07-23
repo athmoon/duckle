@@ -6756,14 +6756,7 @@ impl DuckdbEngine {
             materialize_empty_like_view(&self.bin, db, &spec.node_id, &spec.from_view)?;
             return Ok(format!("code.python: 0 upstream rows -> {}", spec.node_id));
         }
-        let safe: String = spec
-            .node_id
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
-            .collect();
-        let in_path = db.with_file_name(format!("py-in-{}.json", safe));
-        let out_path = db.with_file_name(format!("py-out-{}.json", safe));
-        let script_path = db.with_file_name(format!("py-{}.py", safe));
+        let (in_path, out_path, script_path) = python_temp_paths(db, &spec.node_id);
         let cleanup = |a: &Path, b: &Path, c: &Path| {
             let _ = std::fs::remove_file(a);
             let _ = std::fs::remove_file(b);
@@ -10310,6 +10303,33 @@ fn resolve_lance_bin() -> String {
     "duckle-lance".to_string()
 }
 
+/// Temp file paths (input JSON, output JSON, harness script) for a code.python
+/// stage, unique to this run. (#203)
+///
+/// db_path is unique per run - `duckle_run_<pid>_<nanos>_<seq>.duckdb` - but
+/// `with_file_name` keeps only the directory and drops that unique name, so
+/// `py-in-<node>.json` collapsed to one shared `<temp_dir>/py-in-<node>.json`
+/// across every run in the process. Two runs of the same node at once (a
+/// parallel foreach, concurrent scheduled runs, parallel tests) then read and
+/// wrote each other's input, script and output. Folding the run's db filename
+/// back in restores that uniqueness, exactly as the sibling ADBC / lance /
+/// vortex temp parquet paths already do with their `<db_name>.` prefix.
+fn python_temp_paths(db: &Path, node_id: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let safe: String = node_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    let stem = db
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    (
+        db.with_file_name(format!("{}.py-in-{}.json", stem, safe)),
+        db.with_file_name(format!("{}.py-out-{}.json", stem, safe)),
+        db.with_file_name(format!("{}.py-{}.py", stem, safe)),
+    )
+}
+
 /// Resolve the Python 3 interpreter for code.python. Order: DUCKLE_PYTHON_BIN env
 /// (e.g. a venv) -> `python` on Windows / `python3` on Unix, found on PATH.
 fn resolve_python_bin() -> String {
@@ -11115,8 +11135,38 @@ mod xml_remote_tests {
 
 #[cfg(test)]
 mod connector_helper_tests {
-    use super::{bson_flag_matches, jsonnative_quote_inner};
+    use super::{bson_flag_matches, jsonnative_quote_inner, python_temp_paths};
     use mongodb::bson::Bson;
+
+    #[test]
+    fn python_temp_paths_are_unique_per_run_db() {
+        // #203: two concurrent foreach iterations (or parallelize branches, or
+        // parallel scheduled runs) each mint a distinct run db filename in the
+        // shared temp dir. The old paths keyed only on node_id, so with_file_name
+        // dropped that unique stem and both runs of the same node collapsed onto
+        // one set of scratch files, racing each other's reads, writes and cleanup.
+        let dir = std::env::temp_dir();
+        let a = dir.join("duckle_run_100_5_0.duckdb");
+        let b = dir.join("duckle_run_100_5_1.duckdb");
+        let (a_in, a_out, a_sc) = python_temp_paths(&a, "normalize");
+        let (b_in, b_out, b_sc) = python_temp_paths(&b, "normalize");
+        // Same node, different run: every scratch file must differ.
+        assert_ne!(a_in, b_in, "py-in collided across runs");
+        assert_ne!(a_out, b_out, "py-out collided across runs");
+        assert_ne!(a_sc, b_sc, "py script collided across runs");
+        // The three files of one run sit beside its db and carry its unique stem.
+        assert_eq!(a_in.parent(), a.parent());
+        let a_name = a_in.file_name().unwrap().to_string_lossy();
+        assert!(a_name.contains("duckle_run_100_5_0.duckdb"), "got: {}", a_name);
+        // The input/output/script of one run are distinct from each other.
+        assert_ne!(a_in, a_out);
+        assert_ne!(a_in, a_sc);
+        // A node_id with path-like characters cannot escape the filename.
+        let (weird, _, _) = python_temp_paths(&a, "a/b.c\\d");
+        let w = weird.file_name().unwrap().to_string_lossy();
+        assert!(!w.contains("a/b.c"), "node_id not sanitised: {}", w);
+        assert!(w.contains("a_b_c_d"), "expected sanitised node_id, got: {}", w);
+    }
 
     #[test]
     fn jsonnative_quoting_doubles_backslash_and_quote() {

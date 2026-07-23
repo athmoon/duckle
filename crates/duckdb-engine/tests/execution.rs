@@ -5658,6 +5658,71 @@ fn ctl_foreach_runs_subpipeline_per_upstream_row_with_iter_item() {
 }
 
 #[test]
+fn concurrent_foreach_with_python_does_not_cross_contaminate() {
+    // #203: a parallel foreach (concurrency > 1) whose sub-pipeline runs a
+    // code.python node. Every iteration used the same scratch files
+    // <temp_dir>/py-in-<node>.json etc., because with_file_name dropped the
+    // run's unique db filename, so concurrent iterations read and wrote each
+    // other's input/script/output. Here four rows run at once, each computing
+    // a value only correct for its own row; if the scratch files collide the
+    // outputs cross-contaminate or the run errors. All four must be right.
+    let engine = engine_or_skip!();
+    // code.python shells out to a real interpreter; skip if none is present.
+    let py = if std::process::Command::new("python").arg("--version").output().is_ok() {
+        "python"
+    } else if std::process::Command::new("python3").arg("--version").output().is_ok() {
+        "python3"
+    } else {
+        eprintln!("skipping: no python interpreter on PATH");
+        return;
+    };
+    std::env::set_var("DUCKLE_PYTHON_BIN", py);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let parent_in = write_file(tmp.path(), "rows.csv", "id,n\na,1\nb,2\nc,3\nd,4\n");
+    // One seed row so the code.python node has exactly one row to process. The
+    // per-iteration value is spliced into the script via ${ITER_ITEM_N}.
+    let seed = write_file(tmp.path(), "seed.csv", "k\n0\n");
+    let out_prefix = out_path(tmp.path(), "pyout_");
+    let sub_doc_value = json!({
+        "nodes": [
+            node("s", "src.csv", json!({ "path": seed, "hasHeader": true })),
+            node("py", "code.python", json!({
+                // process(row) sets result to this iteration's n * 10.
+                "code": "def process(row):\n    row['result'] = ${ITER_ITEM_N} * 10\n    return row"
+            })),
+            node("k", "snk.csv", json!({
+                "path": format!("{}${{ITER_ITEM_ID}}.csv", out_prefix),
+                "hasHeader": true
+            })),
+        ],
+        "edges": [main_edge("e1", "s", "py"), main_edge("e2", "py", "k")],
+    });
+    let sub_doc_path = out_path(tmp.path(), "sub.json");
+    std::fs::write(&sub_doc_path, serde_json::to_string(&sub_doc_value).unwrap()).unwrap();
+
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": parent_in, "hasHeader": true })),
+            node("fe", "ctl.foreach", json!({ "pipelineRef": sub_doc_path, "concurrency": 4 })),
+        ]),
+        json!([main_edge("e1", "s", "fe")]),
+    ));
+    assert_eq!(r.status, "ok", "concurrent foreach failed: {:?}", r.error);
+
+    // Each id must hold exactly its own n*10, proving no scratch-file crossover.
+    for (id, want) in [("a", "10"), ("b", "20"), ("c", "30"), ("d", "40")] {
+        let p = format!("{}{}.csv", out_prefix, id);
+        assert!(std::path::Path::new(&p).exists(), "missing output {}", p);
+        let got = scalar_string(&format!(
+            "SELECT CAST(result AS VARCHAR) FROM read_csv_auto('{}')",
+            p
+        ));
+        assert_eq!(got, want, "id {} got result {} (cross-contaminated?)", id, got);
+    }
+}
+
+#[test]
 fn ctl_try_fires_fallback_when_downstream_stage_fails() {
     // Parent pipeline: src.csv -> ctl.try(installs fallback) ->
     // failing stage. Failing stage triggers the fallback (which writes

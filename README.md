@@ -511,15 +511,13 @@ from duckle import col
 
 Python expressions compile to vectorized SQL at plan time, so no rows pass through the interpreter. See [the PyPI page](https://pypi.org/project/duckle/) for the full API.
 
-Prefer a plain binary with no Python at all:
+The same package provides the `duckle` command-line runner for CI, cron, and containers - it bundles the headless runner and the MCP server per platform:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/slothflowlabs/duckle/main/scripts/install.sh | sh
+pip install duckle          # or run ad hoc, no install: uvx duckle --help
 ```
 
-The script picks the right binary for your OS and architecture, verifies it against the release's `SHA256SUMS.txt`, and installs it as `duckle`. Windows users download `duckle-runner-windows-x64.exe` from the release page directly. Per-platform assets are named `duckle-runner-<os>-<arch>`.
-
-Pipelines execute as SQL on the DuckDB CLI, so a runner installed this way needs a `duckdb` on PATH or `DUCKLE_DUCKDB_BIN` set (`pip install duckdb-cli` is the quickest route). Validation does not:
+Pipelines execute as SQL on the DuckDB CLI, so the runner needs a `duckdb` on PATH or `DUCKLE_DUCKDB_BIN` set (`pip install duckdb-cli` is the quickest route). Validation does not:
 
 ```sh
 duckle validate                 # compile-check every pipeline under ./pipelines

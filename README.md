@@ -47,7 +47,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
-- [What's new in v0.5.6](#whats-new-in-v056)
+- [What's new in v0.5.7](#whats-new-in-v057)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
 - [Build from source](#build-from-source)
@@ -129,22 +129,17 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 ---
 
-## What's new in v0.5.6
+## What's new in v0.5.7
 
-Real-time WebSocket connectors, a geospatial projection toolkit, streaming XML at multi-GB scale, and a scheduler that finally speaks your local time.
+A pip-installable Python API, faster streaming writes to MongoDB, and a batch of correctness fixes across sinks, derived columns, and concurrent runs.
 
-- **WebSocket source and sink (#192).** `src.websocket` connects to a `ws://` or `wss://` endpoint, optionally sends a subscribe frame, and collects up to `maxMessages` frames into rows; `snk.websocket` pushes each row back out as a text frame. For live market data, sensor streams, and real-time dashboards.
-- **Geospatial projection toolkit (#188, #189, #190).** Define Projection stamps a CRS onto geometry that has none, Reproject Geometry transforms between CRS with the target CRS preserved on the output, and Create Geometry builds a GEOMETRY column from X/Y, WKT, or WKB.
-- **Dynamic time offsets in templates (#191).** `${date+1d}`, `${now-2h}`, `${timestamp+30m}`, and chained forms like `${date+1d-2h}`, all resolved against a single run instant so every reference in a run stays consistent.
-- **Streaming, multi-GB XML (#186).** `src.xml` streams local, `sftp://`, and `https://` inputs with automatic gzip / zip handling, and honours a declared schema instead of buffering the document.
-- **Salesforce Bulk sink `snk.salesforce.bulk` (#164).** Migration-scale write-back over Bulk API 2.0: DuckDB streams the upstream to CSV on disk and each ≤90 MB part runs the async job lifecycle (create → upload → poll → fetch result sets), so a multi-million-row load never lands in memory.
-- **Local-time cron and a minute-accurate countdown (#194).** Cron expressions now evaluate in the machine's local time zone, so "Every day at 03:00" means 03:00 where you are. The Next countdown shows hours *and* minutes ("in 1 h 7 min"), and a 5-field cron is accepted instead of silently never firing.
-- **OAuth client credentials for any REST source (#195).** Token minting is no longer Salesforce-only: give any REST connector a token URL and it mints a fresh access token per run. Suits a Xero Custom Connection, which needs HTTP Basic client auth.
-- **JSON transform `xf.jq` (#173)** for per-row jq over a JSON column, and **CRS-aware measurements (#177)** that pick planar or spheroid math from the column's own CRS.
+- **`pip install duckle` (Python API + MCP).** A fluent Python builder that compiles to the same engine and pipeline format as the canvas: write a pipeline in code, and the Python expressions compile to DuckDB SQL at plan time. The wheel bundles the headless runner and the MCP server, so `uvx duckle quickstart` scaffolds and runs a first pipeline, and a coding agent can build pipelines for you to verify on the same canvas.
+- **Faster MongoDB writes.** `snk.mongodb` streams the upstream through newline-delimited JSON on disk instead of buffering the whole result set, cutting a 1,000,000-row load from about 30 s to 8.7 s, and fixing a DECIMAL-as-string bug on the way.
+- **Sinks refuse writes they cannot honour.** A sink no longer silently falls back to plain inserts when handed a write mode or upsert key it does not support. `mode="overwrite"` on MongoDB is accepted as an alias for replace; an unknown mode, or an upsert with no key columns, is now rejected at validate time before any data moves, and `conflictColumns: "id"` is read the same as `["id"]`.
 
-Fixes: saved S3 and other non-Salesforce connection references resolve at run time (#185), Duckie honours a configured custom AI endpoint (#183), the Linux window stays resizable after un-maximize (#182), an externally set `DUCKLE_DUCKDB_BIN` wins over the bundled binary (#179), and a zero-row result no longer collapses to a lone `json` column (#170). macOS engine signing was also hardened so `llama-server` launches from a downloaded build (#89) - reports from macOS users welcome, as it could not be exercised on the Windows dev box.
+Fixes: a parallel `ctl.foreach` running a `code.python` node no longer shares scratch files, so concurrent iterations cannot corrupt each other's input or output (#203); deriving a column that already exists now replaces it in place instead of leaving the old value under the original name; path, pattern, and spatial property keys are no longer mistaken for secrets, so the SQL from validate and explain runs as written; and the Python API uses the connector property names the engine actually reads (#201, #199).
 
-Full notes: see the [v0.5.6 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.6).
+Full notes: see the [v0.5.7 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.7).
 
 ---
 
@@ -463,7 +458,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.6):
+Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.7):
 
 | OS | Asset | How to run |
 |---|---|---|

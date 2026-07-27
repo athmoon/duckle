@@ -1197,6 +1197,27 @@ pub struct MongoSinkSpec {
     pub delete_value: String,
 }
 
+/// snk.huggingface: push the upstream (materialized to a local Parquet)
+/// to a Hugging Face Hub dataset repo over plain HTTP. DuckDB's hf:// is
+/// read-only, so the write cannot go through SQL; the executor runs the
+/// Hub API flow (create repo, preupload, git-LFS batch + PUT, NDJSON
+/// commit). A write-scoped token is required.
+#[derive(Debug, Clone)]
+pub struct HuggingFaceSinkSpec {
+    pub from_view: String,
+    /// Bare dataset id "user/dataset" (no hf:// or datasets/ prefix).
+    pub repo: String,
+    /// Path of the file inside the repo, e.g. "data/train.parquet".
+    pub path: String,
+    /// Branch to commit to (default "main").
+    pub revision: String,
+    /// Write-scoped Hugging Face token. Redacted in exported SQL.
+    pub token: String,
+    /// Create the repo private if it does not exist yet.
+    pub private: bool,
+    pub commit_message: String,
+}
+
 /// src.mongodb: find() against a MongoDB collection with an optional
 /// filter (JSON-encoded). Cursor is drained eagerly and materialized
 /// as a DuckDB table via read_json_auto.

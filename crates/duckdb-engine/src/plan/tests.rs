@@ -3447,6 +3447,70 @@
     }
 
     #[test]
+    fn huggingface_sink_compiles_with_normalised_repo_and_defaults() {
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}},
+                {"id":"hf","position":{"x":0,"y":0},"data":{
+                  "label":"HF","componentId":"snk.huggingface",
+                  "properties":{"repo":"datasets/acme/widgets","token":"hf_secret"}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s","target":"hf","data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let stage = compile(&p)
+            .unwrap()
+            .stages
+            .into_iter()
+            .find(|s| s.node_id == "hf")
+            .unwrap();
+        match stage.runtime {
+            Some(RuntimeSpec::HuggingFaceSink(spec)) => {
+                // the stray datasets/ prefix is normalised off the repo id
+                assert_eq!(spec.repo, "acme/widgets");
+                assert_eq!(spec.token, "hf_secret");
+                // path + revision fall back to the documented defaults
+                assert_eq!(spec.path, "data/train.parquet");
+                assert_eq!(spec.revision, "main");
+                assert_eq!(spec.commit_message, "Add data/train.parquet");
+            }
+            other => panic!("expected a HuggingFaceSink runtime, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn huggingface_sink_requires_a_write_token() {
+        // Unlike the read side there is no public write path, so a missing token
+        // must fail at compile rather than silently no-op.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}},
+                {"id":"hf","position":{"x":0,"y":0},"data":{
+                  "label":"HF","componentId":"snk.huggingface",
+                  "properties":{"repo":"acme/widgets"}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s","target":"hf","data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let err = compile(&p).unwrap_err();
+        assert!(
+            err.to_string().contains("token"),
+            "snk.huggingface without a token must be rejected, got: {}",
+            err
+        );
+    }
+
+    #[test]
     fn driver_sink_upsert_rejects_missing_conflict_columns() {
         // The driver sinks (mongo / oracle / databricks / snowflake / sqlserver)
         // route through upsert_keys_from rather than build_sink_sql, and every

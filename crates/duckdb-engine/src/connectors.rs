@@ -8307,6 +8307,167 @@ impl DuckdbEngine {
         ))
     }
 
+    /// snk.huggingface: push the upstream to a Hugging Face Hub dataset repo.
+    /// DuckDB's hf:// is read-only, so the write goes over the Hub HTTP API:
+    /// materialize a local Parquet, then create-repo -> preupload -> git-LFS
+    /// batch + PUT -> NDJSON commit. Parquet is always LFS-tracked on the Hub.
+    pub(crate) fn run_huggingface_sink(
+        &self,
+        db: &Path,
+        spec: &HuggingFaceSinkSpec,
+    ) -> Result<String, EngineError> {
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        self.check_cancelled()?;
+
+        // 1. Materialize the upstream to a local Parquet file.
+        let staging = std::env::temp_dir().join(format!(
+            "duckle-hf-{}-{}.parquet",
+            std::process::id(),
+            HF_SINK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let staging_sql = staging.display().to_string().replace('\\', "/");
+        let copy = format!(
+            "COPY (SELECT * FROM {}) TO '{}' (FORMAT parquet)",
+            plan::quote_ident(&spec.from_view),
+            staging_sql.replace('\'', "''")
+        );
+        self.run(Some(db), &copy, false)?;
+        let bytes = std::fs::read(&staging)
+            .map_err(|e| EngineError::Query(format!("huggingface: read staged parquet: {}", e)))?;
+        let _ = std::fs::remove_file(&staging);
+        let size = bytes.len() as u64;
+        let oid = {
+            let mut s = String::with_capacity(64);
+            for b in Sha256::digest(&bytes) {
+                s.push_str(&format!("{:02x}", b));
+            }
+            s
+        };
+
+        let agent = crate::tls::http_agent();
+        let auth = format!("Bearer {}", spec.token);
+        let (org, name) = spec.repo.split_once('/').unwrap_or(("", spec.repo.as_str()));
+
+        // 2. Create the repo if it does not exist yet (409 = already there).
+        match agent
+            .post("https://huggingface.co/api/repos/create")
+            .set("Authorization", &auth)
+            .send_json(serde_json::json!({
+                "type": "dataset",
+                "name": name,
+                "organization": if org.is_empty() { JsonValue::Null } else { JsonValue::String(org.to_string()) },
+                "private": spec.private,
+            })) {
+            Ok(_) => {}
+            Err(ureq::Error::Status(409, _)) => {}
+            Err(ureq::Error::Status(code, r)) => {
+                return Err(EngineError::Query(format!(
+                    "huggingface: create repo failed ({}): {}",
+                    code,
+                    r.into_string().unwrap_or_default()
+                )))
+            }
+            Err(e) => return Err(EngineError::Query(format!("huggingface: create repo: {}", e))),
+        }
+
+        // 3. Preupload classifies the file; a Parquet comes back as LFS.
+        let sample_b64 = B64.encode(&bytes[..bytes.len().min(512)]);
+        let pre: JsonValue = agent
+            .post(&format!(
+                "https://huggingface.co/api/datasets/{}/preupload/{}",
+                spec.repo, spec.revision
+            ))
+            .set("Authorization", &auth)
+            .send_json(serde_json::json!({
+                "files": [{ "path": spec.path, "sample": sample_b64, "size": size }]
+            }))
+            .map_err(|e| EngineError::Query(format!("huggingface: preupload: {}", e)))?
+            .into_json()
+            .map_err(|e| EngineError::Query(format!("huggingface: preupload response: {}", e)))?;
+        let upload_mode = pre
+            .get("files")
+            .and_then(|f| f.get(0))
+            .and_then(|f| f.get("uploadMode"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("lfs");
+
+        // 4. Build the commit's file line; for LFS, upload the bytes first.
+        let file_line = if upload_mode == "regular" {
+            serde_json::json!({
+                "key": "file",
+                "value": { "path": spec.path, "content": B64.encode(&bytes), "encoding": "base64" }
+            })
+            .to_string()
+        } else {
+            let batch: JsonValue = agent
+                .post(&format!(
+                    "https://huggingface.co/datasets/{}.git/info/lfs/objects/batch",
+                    spec.repo
+                ))
+                .set("Authorization", &auth)
+                .set("Accept", "application/vnd.git-lfs+json")
+                .set("Content-Type", "application/vnd.git-lfs+json")
+                .send_json(serde_json::json!({
+                    "operation": "upload",
+                    "transfers": ["basic"],
+                    "objects": [{ "oid": oid, "size": size }],
+                    "hash_algo": "sha256"
+                }))
+                .map_err(|e| EngineError::Query(format!("huggingface: lfs batch: {}", e)))?
+                .into_json()
+                .map_err(|e| EngineError::Query(format!("huggingface: lfs batch response: {}", e)))?;
+            let action = batch
+                .get("objects")
+                .and_then(|o| o.get(0))
+                .and_then(|o| o.get("actions"))
+                .and_then(|a| a.get("upload"));
+            // No upload action means the object already exists on the Hub (dedup).
+            if let Some(action) = action {
+                let href = action.get("href").and_then(|v| v.as_str()).ok_or_else(|| {
+                    EngineError::Query("huggingface: lfs upload href missing".into())
+                })?;
+                let mut put = agent.put(href);
+                if let Some(hdrs) = action.get("header").and_then(|h| h.as_object()) {
+                    for (k, v) in hdrs {
+                        if let Some(vs) = v.as_str() {
+                            put = put.set(k, vs);
+                        }
+                    }
+                }
+                put.send_bytes(&bytes)
+                    .map_err(|e| EngineError::Query(format!("huggingface: lfs upload: {}", e)))?;
+            }
+            serde_json::json!({
+                "key": "lfsFile",
+                "value": { "path": spec.path, "algo": "sha256", "oid": oid, "size": size }
+            })
+            .to_string()
+        };
+
+        // 5. Commit (NDJSON: a header line, then the file line).
+        let header_line = serde_json::json!({
+            "key": "header",
+            "value": { "summary": spec.commit_message, "description": "" }
+        })
+        .to_string();
+        agent
+            .post(&format!(
+                "https://huggingface.co/api/datasets/{}/commit/{}",
+                spec.repo, spec.revision
+            ))
+            .set("Authorization", &auth)
+            .set("Content-Type", "application/x-ndjson")
+            .send_string(&format!("{}\n{}\n", header_line, file_line))
+            .map_err(|e| EngineError::Query(format!("huggingface: commit: {}", e)))?;
+
+        Ok(format!(
+            "huggingface: pushed {} ({} bytes) to {} @ {}",
+            spec.path, size, spec.repo, spec.revision
+        ))
+    }
+
     /// MongoDB sink: insert_many into the collection in batches. The
     /// async mongodb driver is wrapped in a per-stage tokio runtime
     /// (block_on) so it fits the synchronous executor model the rest
@@ -11605,6 +11766,10 @@ mod websocket_tests {
 /// Sequence for the MongoDB sink's staging directory, so two sinks in one run
 /// cannot collide on a path.
 static MONGO_STAGE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Sequence for the Hugging Face sink's staged Parquet, so concurrent sinks in
+/// one run cannot collide on the temp path.
+static HF_SINK_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Read a DuckDB NDJSON export in fixed-size batches.
 ///

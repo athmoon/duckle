@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "componentCount": 377,
+  "componentCount": 378,
   "components": [
     {
       "id": "src.csv",
@@ -27973,6 +27973,94 @@
                     "value": "jsonl"
                   }
                 ]
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            }
+          ],
+          "outputs": []
+        }
+      }
+    },
+    {
+      "id": "snk.huggingface",
+      "label": "Hugging Face dataset",
+      "kind": "sink",
+      "availability": "available",
+      "summary": "Push the pipeline output to a Hugging Face Hub dataset repo. The engine materializes a Parquet and commits it over the Hub API (create-repo -> preupload -> git-LFS -> commit). Needs a write-scoped token; the repo is created if it does not exist.",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          }
+        ],
+        "outputs": []
+      },
+      "manifest": {
+        "id": "snk.huggingface",
+        "kind": "sink",
+        "label": "Hugging Face dataset",
+        "description": "Push the pipeline output to a Hugging Face Hub dataset repo. The engine materializes a Parquet and commits it over the Hub API (create-repo -> preupload -> git-LFS -> commit). Needs a write-scoped token; the repo is created if it does not exist.",
+        "schemaSource": "upstream",
+        "sections": [
+          {
+            "label": "Hugging Face dataset",
+            "fields": [
+              {
+                "key": "repo",
+                "label": "Dataset repo",
+                "kind": "text",
+                "required": true,
+                "placeholder": "your-user/your-dataset",
+                "description": "The target dataset id, e.g. your-user/my-dataset. It is created if it does not exist. The datasets/ prefix is added automatically."
+              },
+              {
+                "key": "path",
+                "label": "File path in repo",
+                "kind": "text",
+                "defaultValue": "data/train.parquet",
+                "placeholder": "data/train.parquet",
+                "description": "Where the Parquet lands inside the repo. Committing the same path again overwrites it."
+              },
+              {
+                "key": "token",
+                "label": "Write token",
+                "kind": "text",
+                "secret": true,
+                "required": true,
+                "placeholder": "${ENV:HF_TOKEN}",
+                "description": "A write-scoped Hugging Face token. Use ${ENV:...} so no secret lands in the pipeline JSON."
+              },
+              {
+                "key": "private",
+                "label": "Private dataset",
+                "kind": "bool",
+                "defaultValue": false,
+                "description": "Only applies when the repo is created on this run."
+              },
+              {
+                "key": "revision",
+                "label": "Branch",
+                "kind": "text",
+                "defaultValue": "main",
+                "placeholder": "main",
+                "description": "The branch to commit to."
+              },
+              {
+                "key": "commitMessage",
+                "label": "Commit message",
+                "kind": "text",
+                "placeholder": "Add data/train.parquet",
+                "description": "Optional. Defaults to \"Add <path>\"."
               }
             ]
           }

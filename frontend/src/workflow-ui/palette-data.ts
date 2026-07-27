@@ -509,6 +509,7 @@ export const PALETTE: Category[] = [
                     snk('toml', 'TOML', 'available', 'Write the upstream rows as TOML. TOML disallows a top-level array so the engine wraps under a `rows` key: `[[rows]]` per row.'),
                     snk('spatial', 'Geospatial (GeoJSON / GeoPackage / ...)', 'available', 'Write geospatial files via the spatial extension'),
                     snk('ftp', 'File Transfer', 'available', 'Upload pipeline output over FTP / FTPS / SFTP'),
+                    snk('huggingface', 'Hugging Face dataset', 'available', 'Push the pipeline output to a Hugging Face Hub dataset repo. The engine materializes a Parquet and commits it over the Hub API (create-repo -> preupload -> git-LFS -> commit). Needs a write-scoped token; the repo is created if it does not exist.'),
                 ],
             },
             {

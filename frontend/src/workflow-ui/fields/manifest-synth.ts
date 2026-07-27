@@ -943,6 +943,69 @@ function partitionBySection(): FormSection {
 }
 
 function synthFileSink(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'snk.huggingface') {
+        // Native Hugging Face dataset push. DuckDB's hf:// is read-only, so the
+        // engine materializes the upstream to a Parquet and commits it over the
+        // Hub API (create-repo -> preupload -> git-LFS -> commit). A write-scoped
+        // token is mandatory - there is no anonymous write path.
+        return base(comp, [
+            {
+                label: 'Hugging Face dataset',
+                fields: [
+                    {
+                        key: 'repo',
+                        label: 'Dataset repo',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'your-user/your-dataset',
+                        description:
+                            'The target dataset id, e.g. your-user/my-dataset. It is created if it does not exist. The datasets/ prefix is added automatically.',
+                    },
+                    {
+                        key: 'path',
+                        label: 'File path in repo',
+                        kind: 'text',
+                        defaultValue: 'data/train.parquet',
+                        placeholder: 'data/train.parquet',
+                        description:
+                            'Where the Parquet lands inside the repo. Committing the same path again overwrites it.',
+                    },
+                    {
+                        key: 'token',
+                        label: 'Write token',
+                        kind: 'text',
+                        secret: true,
+                        required: true,
+                        placeholder: '${ENV:HF_TOKEN}',
+                        description:
+                            'A write-scoped Hugging Face token. Use ${ENV:...} so no secret lands in the pipeline JSON.',
+                    },
+                    {
+                        key: 'private',
+                        label: 'Private dataset',
+                        kind: 'bool',
+                        defaultValue: false,
+                        description: 'Only applies when the repo is created on this run.',
+                    },
+                    {
+                        key: 'revision',
+                        label: 'Branch',
+                        kind: 'text',
+                        defaultValue: 'main',
+                        placeholder: 'main',
+                        description: 'The branch to commit to.',
+                    },
+                    {
+                        key: 'commitMessage',
+                        label: 'Commit message',
+                        kind: 'text',
+                        placeholder: 'Add data/train.parquet',
+                        description: 'Optional. Defaults to "Add <path>".',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'snk.vortex') {
         // Vortex output file written via the duckle-lance sidecar; just a path.
         return base(comp, [

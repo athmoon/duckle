@@ -51,7 +51,7 @@ use plan::{
     DbtSpec, DynamoDbSourceSpec, ElasticSourceSpec, EmailSinkSpec, EmailSourceSpec,
     FormatFileSinkSpec,
     FormatFileSourceSpec, FormatKind, FtpSinkSpec, FtpSourceSpec, GitSourceSpec,
-    GizmoSqlSinkSpec, GizmoSqlSourceSpec, JavaScriptSpec, JqSpec, PythonSpec,
+    GizmoSqlSinkSpec, GizmoSqlSourceSpec, HuggingFaceSinkSpec, JavaScriptSpec, JqSpec, PythonSpec,
     KafkaSinkSpec, KafkaSourceSpec, KinesisSourceSpec, LanceSinkSpec, LanceSourceSpec,
     VortexSinkSpec, VortexSourceSpec,
     MilvusSourceSpec, MongoSinkSpec,
@@ -1393,6 +1393,9 @@ impl DuckdbEngine {
                         self.run_elastic_source(&db_path, spec)
                     }
                     Some(RuntimeSpec::MongoSink(spec)) => self.run_mongo_sink(&db_path, spec),
+                    Some(RuntimeSpec::HuggingFaceSink(spec)) => {
+                        self.run_huggingface_sink(&db_path, spec)
+                    }
                     Some(RuntimeSpec::MongoSource(spec)) => self.run_mongo_source(&db_path, spec),
                     Some(RuntimeSpec::LanceSink(spec)) => self.run_lance_sink(&db_path, spec),
                     Some(RuntimeSpec::LanceSource(spec)) => self.run_lance_source(&db_path, spec),

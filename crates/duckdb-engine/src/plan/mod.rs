@@ -141,6 +141,7 @@ pub enum RuntimeSpec {
     RestSource(RestSourceSpec),
     ElasticSource(ElasticSourceSpec),
     MongoSink(MongoSinkSpec),
+    HuggingFaceSink(HuggingFaceSinkSpec),
     MongoSource(MongoSourceSpec),
     LanceSink(LanceSinkSpec),
     LanceSource(LanceSourceSpec),
@@ -1057,6 +1058,7 @@ fn build_stage(
     let mut rest_source: Option<RestSourceSpec> = None;
     let mut elastic_source: Option<ElasticSourceSpec> = None;
     let mut mongo_sink: Option<MongoSinkSpec> = None;
+    let mut huggingface_sink: Option<HuggingFaceSinkSpec> = None;
     let mut mongo_source: Option<MongoSourceSpec> = None;
     let mut lance_sink: Option<LanceSinkSpec> = None;
     let mut lance_source: Option<LanceSourceSpec> = None;
@@ -1662,6 +1664,49 @@ fn build_stage(
             upsert_keys: upsert_keys_from(&props, component_id)?,
             delete_column: delete_column_from(&props),
             delete_value: delete_value_from(&props),
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.huggingface" {
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let repo = string_prop(&props, "repo")
+            .map(|s| {
+                s.trim()
+                    .trim_start_matches("hf://")
+                    .trim_start_matches("datasets/")
+                    .trim_matches('/')
+                    .to_string()
+            })
+            .filter(|s| s.contains('/'))
+            .ok_or_else(|| {
+                EngineError::Config(format!("{}: repo required as user/dataset", component_id))
+            })?;
+        // A write token is mandatory - unlike the read side there is no
+        // public write path on the Hub.
+        let token = string_prop(&props, "token")
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                EngineError::Config(format!(
+                    "{}: a write-scoped token is required to push to the Hub",
+                    component_id
+                ))
+            })?;
+        let path = string_prop(&props, "path")
+            .map(|s| s.trim().trim_start_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "data/train.parquet".to_string());
+        let commit_message = string_prop(&props, "commitMessage")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| format!("Add {}", path));
+        huggingface_sink = Some(HuggingFaceSinkSpec {
+            from_view: from_view.to_string(),
+            repo,
+            path,
+            revision: string_prop(&props, "revision")
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "main".into()),
+            token,
+            private: props.get("private").and_then(|v| v.as_bool()).unwrap_or(false),
+            commit_message,
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.lancedb" {
@@ -4647,6 +4692,7 @@ fn build_stage(
         .or_else(|| rest_source.map(RuntimeSpec::RestSource))
         .or_else(|| elastic_source.map(RuntimeSpec::ElasticSource))
         .or_else(|| mongo_sink.map(RuntimeSpec::MongoSink))
+        .or_else(|| huggingface_sink.map(RuntimeSpec::HuggingFaceSink))
         .or_else(|| mongo_source.map(RuntimeSpec::MongoSource))
         .or_else(|| lance_sink.map(RuntimeSpec::LanceSink))
         .or_else(|| lance_source.map(RuntimeSpec::LanceSource))

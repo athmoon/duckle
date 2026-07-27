@@ -194,6 +194,26 @@ function computeNodeSchema(
         return mergedUpstream(node.id, nodes, edges, visiting);
     }
 
+    // Create Geometry (#206): with "remove source" on (the engine default) the
+    // X/Y (or WKT/WKB) source columns are dropped and a geometry output column
+    // is added. Mirrors build_geo_create so the Schema tab and downstream
+    // inference match the engine, which emits SELECT * EXCLUDE(src), geom AS out.
+    if (id === 'xf.geo.create') {
+        const up = upstream();
+        const source = (props.source as string) || 'xy';
+        const outputName = (props.outputColumn as string) || 'geom';
+        const removeSource = props.removeSource !== false;
+        const sourceCols =
+            source === 'wkt'
+                ? [props.wktColumn as string]
+                : source === 'wkb'
+                  ? [props.wkbColumn as string]
+                  : [props.xColumn as string, props.yColumn as string];
+        const kept = removeSource ? up.filter(c => !sourceCols.includes(c.name)) : up;
+        if (kept.some(c => c.name === outputName)) return kept;
+        return [...kept, { name: outputName, type: 'geometry', nullable: true }];
+    }
+
     // String / datetime / numeric / json / array - keep input, plus optional output
     if (
         id?.startsWith('xf.dt.') ||

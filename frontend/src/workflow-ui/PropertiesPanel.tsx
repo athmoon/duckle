@@ -662,28 +662,44 @@ export default function PropertiesPanel({
                         </div>
                     ) : null}
 
-                    {tab === 'preview' ? (
-                        <div className="properties-section">
-                            <PreviewTab
-                                schema={
-                                    manifest?.schemaSource === 'upstream'
-                                        ? upstreamSchema
-                                        : declaredSchema.length > 0
-                                          ? declaredSchema
+                    {tab === 'preview'
+                        ? (() => {
+                              // #207 / #206: a run stores this node's OWN preview
+                              // rows keyed by the engine's OUTPUT columns, so the
+                              // headers must come from outputSchema, not the raw
+                              // upstream input names - otherwise headers and row
+                              // keys mismatch and every cell renders empty (rename
+                              // shows the old names; geo.create hides geom). Pre-run
+                              // there are only upstream sample rows (input-keyed),
+                              // so keep upstreamSchema in that case.
+                              const hasOwnRows = !!(
+                                  data.sampleRows && data.sampleRows.length > 0
+                              );
+                              const previewSchema =
+                                  manifest?.schemaSource === 'upstream'
+                                      ? hasOwnRows
+                                          ? outputSchema
                                           : upstreamSchema
-                                }
-                                rows={
-                                    data.sampleRows && data.sampleRows.length > 0
-                                        ? data.sampleRows
-                                        : upstreamSampleRows
-                                }
-                                inheritedRows={
-                                    (!data.sampleRows || data.sampleRows.length === 0) &&
-                                    upstreamSampleRows.length > 0
-                                }
-                            />
-                        </div>
-                    ) : null}
+                                      : declaredSchema.length > 0
+                                        ? declaredSchema
+                                        : upstreamSchema;
+                              return (
+                                  <div className="properties-section">
+                                      <PreviewTab
+                                          schema={previewSchema}
+                                          rows={
+                                              hasOwnRows
+                                                  ? data.sampleRows!
+                                                  : upstreamSampleRows
+                                          }
+                                          inheritedRows={
+                                              !hasOwnRows && upstreamSampleRows.length > 0
+                                          }
+                                      />
+                                  </div>
+                              );
+                          })()
+                        : null}
 
                     {tab === 'advanced' ? (
                         <div className="properties-section">

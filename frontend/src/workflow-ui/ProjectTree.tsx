@@ -483,6 +483,27 @@ export default function ProjectTree(props: Props) {
                     onClick={onClick}
                     onDoubleClick={onDoubleClick}
                     onContextMenu={e => onItemContextMenu(e, item)}
+                    // #209: rows were non-focusable, so the F2 / Del / Enter
+                    // shortcuts the context menu advertises were dead keys.
+                    // tabIndex makes the row focusable (a click focuses it);
+                    // -1 while the inline rename input is open keeps focus there.
+                    tabIndex={isRenaming ? -1 : 0}
+                    onKeyDown={e => {
+                        if (isRenaming) return;
+                        if (e.key === 'F2') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            startRename(item.id);
+                        } else if (e.key === 'Delete') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onDelete(item.id);
+                        } else if (e.key === 'Enter') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onClick();
+                        }
+                    }}
                     title={
                         item.type === 'context'
                             ? `${item.name} - drag onto the canvas to make it the active context, or into a folder to move it`

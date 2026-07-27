@@ -4764,6 +4764,26 @@ html[dir='rtl'] .topbar-lang {
     filter: brightness(1.05);
 }
 
+/* Destructive confirm button (#208 delete confirmation). */
+.btn.is-danger {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+    box-shadow: none;
+}
+
+.btn.is-danger:hover {
+    background: var(--danger);
+    border-color: var(--danger);
+    filter: brightness(1.06);
+}
+
+/* Confirmation dialog message body; pre-wrap so multi-line prompts render. */
+.modal-confirm-message {
+    line-height: 1.55;
+    white-space: pre-wrap;
+}
+
 .btn-primary:disabled {
     background: var(--bg-2);
     border-color: var(--border);

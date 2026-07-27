@@ -45,6 +45,36 @@ export function buildContextVars(repo: RepoItem[]): Record<string, string> {
     return out;
 }
 
+/**
+ * Bare context-variable keys defined by more than one context (#204). In
+ * buildContextVars these share a single slot in the flat map, so a `${KEY}`
+ * reference silently resolves to whichever context is last in repo order;
+ * only `${context.KEY}` is unambiguous. Returns one entry per colliding key
+ * with the names of the contexts that define it, so the validator can warn.
+ * A single context can never collide, so existing single-context workspaces
+ * never trigger this.
+ */
+export function contextKeyCollisions(repo: RepoItem[]): { key: string; contexts: string[] }[] {
+    const byKey = new Map<string, string[]>();
+    for (const item of repo) {
+        if (item.type !== 'context') continue;
+        const payload = item.payload as ContextPayload | undefined;
+        if (!payload?.variables) continue;
+        // A key repeated inside ONE context is not a cross-context collision.
+        const seen = new Set<string>();
+        for (const v of payload.variables) {
+            if (seen.has(v.key)) continue;
+            seen.add(v.key);
+            const list = byKey.get(v.key);
+            if (list) list.push(item.name);
+            else byKey.set(v.key, [item.name]);
+        }
+    }
+    return [...byKey.entries()]
+        .filter(([, contexts]) => contexts.length > 1)
+        .map(([key, contexts]) => ({ key, contexts }));
+}
+
 function pad(n: number): string {
     return String(n).padStart(2, '0');
 }

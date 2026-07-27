@@ -23,6 +23,8 @@ pub fn source_select_for_format(format: &str, props: &JsonValue) -> Option<Strin
         "iceberg" => build_iceberg_source(props),
         "delta" => build_delta_source(props),
         "spatial" => build_spatial_source(props),
+        "gdb" => build_gdb_source(props),
+        "huggingface" => build_huggingface_source(props),
         "fixedwidth" => return build_fixedwidth_source(props).ok(),
         // DuckLake is DuckDB-backed; the catalog is ATTACHed as duckle_src by
         // the inspect prelude (see source_prelude), so the SELECT is identical
@@ -220,6 +222,8 @@ pub(crate) fn build_view_sql(
         "src.iceberg" => Ok(build_iceberg_source(props)),
         "src.delta" => Ok(build_delta_source(props)),
         "src.spatial" => Ok(build_spatial_source(props)),
+        "src.gdb" => Ok(build_gdb_source(props)),
+        "src.huggingface" => Ok(build_huggingface_source(props)),
         "src.fixedwidth" => build_fixedwidth_source(props),
         // Pass-through transforms
         "xf.filter" => build_filter(inputs, props),
@@ -4911,6 +4915,22 @@ pub(crate) fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
         // snk.excel COPYs through the DuckDB excel extension; LOAD is
         // enough since the install paths pre-fetched it.
         "snk.excel" => return "LOAD excel; ".into(),
+        // Hugging Face dataset read over hf:// (native HF connector). httpfs
+        // resolves the URL; public datasets need only the extension. A private
+        // or gated dataset needs a HUGGINGFACE secret with a token - emitted
+        // only when one is set. The `token` prop is redacted in exported SQL by
+        // is_secret_prop_key and resolved from ${ENV:...} at run time, like every
+        // other connector secret.
+        "src.huggingface" => {
+            let mut prelude = String::from("INSTALL httpfs; LOAD httpfs; ");
+            if let Some(token) = string_prop(props, "token").filter(|s| !s.trim().is_empty()) {
+                prelude.push_str(&format!(
+                    "CREATE OR REPLACE SECRET duckle_hf (TYPE HUGGINGFACE, TOKEN '{}'); ",
+                    sql_escape(&token)
+                ));
+            }
+            return prelude;
+        }
         // Extensions are pre-installed (desktop: the first-launch
         // installer; CI: a dedicated pre-install step). Each fresh
         // DuckDB process still needs LOAD. Concurrent INSTALL would
@@ -4942,6 +4962,7 @@ pub(crate) fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
             return "INSTALL spatial; LOAD spatial; SET geometry_always_xy = true; ".into();
         }
         "src.spatial"
+        | "src.gdb"
         | "snk.spatial"
         | "xf.geo.buffer"
         | "xf.geo.flip"
@@ -7483,6 +7504,49 @@ pub(crate) fn build_vector_search(inputs: &NodeInputs, props: &JsonValue) -> Res
 pub(crate) fn build_spatial_source(props: &JsonValue) -> String {
     let path = string_prop(props, "path").unwrap_or_default();
     format!("SELECT * FROM ST_Read('{}')", sql_escape(&path))
+}
+
+/// Esri File Geodatabase (.gdb) source via the spatial extension (#205).
+/// ST_Read is GDAL-backed and opens the OpenFileGDB dataset (a folder); a
+/// .gdb usually holds several feature classes, so `layer` names the one to
+/// read (omitted = GDAL's first/default layer). That per-layer selection is
+/// why this is a distinct source from src.spatial, which reads only the
+/// default layer.
+pub(crate) fn build_gdb_source(props: &JsonValue) -> String {
+    let path = string_prop(props, "path").unwrap_or_default();
+    match string_prop(props, "layer").filter(|s| !s.trim().is_empty()) {
+        Some(layer) => format!(
+            "SELECT * FROM ST_Read('{}', layer='{}')",
+            sql_escape(&path),
+            sql_escape(&layer)
+        ),
+        None => format!("SELECT * FROM ST_Read('{}')", sql_escape(&path)),
+    }
+}
+
+/// Hugging Face dataset source (native HF connector). DuckDB's httpfs reads
+/// `hf://datasets/<repo>[@<revision>]/<path>` directly, so this assembles that
+/// URL and lets DuckDB auto-detect Parquet / CSV / JSON by extension (a glob
+/// like `**/*.parquet` reads every shard). Auth for private / gated datasets
+/// comes from the HUGGINGFACE secret emitted by attach_prelude; public datasets
+/// need none.
+pub(crate) fn build_huggingface_source(props: &JsonValue) -> String {
+    // Accept a bare id ("stanfordnlp/imdb"), a "datasets/..." prefix, or a full
+    // hf:// URL; normalise to the bare id.
+    let repo = string_prop(props, "repo").unwrap_or_default();
+    let repo = repo
+        .trim()
+        .trim_start_matches("hf://")
+        .trim_start_matches("datasets/")
+        .trim_matches('/')
+        .to_string();
+    let path = string_prop(props, "path").unwrap_or_default();
+    let path = path.trim().trim_start_matches('/');
+    let url = match string_prop(props, "revision").filter(|s| !s.trim().is_empty()) {
+        Some(rev) => format!("hf://datasets/{}@{}/{}", repo, rev.trim(), path),
+        None => format!("hf://datasets/{}/{}", repo, path),
+    };
+    format!("SELECT * FROM '{}'", sql_escape(&url))
 }
 
 /// Fixed-width / positional source. The form gives a `columns` array

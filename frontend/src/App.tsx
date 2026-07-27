@@ -86,6 +86,7 @@ import PropertiesPanel from './workflow-ui/PropertiesPanel';
 import BottomPanel from './workflow-ui/BottomPanel';
 import StatusBar from './workflow-ui/StatusBar';
 import NewPipelineModal, { type PipelineTemplate } from './workflow-ui/NewPipelineModal';
+import ConfirmModal from './workflow-ui/ConfirmModal';
 import EdgeEditorModal from './canvas/EdgeEditorModal';
 import VisualMapperModal, {
     type MapperState,
@@ -1282,8 +1283,8 @@ export default function App() {
     );
 
     const validation = useMemo(
-        () => validatePipeline(nodes, edges),
-        [nodes, edges],
+        () => validatePipeline(nodes, edges, repo),
+        [nodes, edges, repo],
     );
 
     const [validateRequest, setValidateRequest] = useState<number>(0);
@@ -1954,6 +1955,33 @@ export default function App() {
         [repo, jobs, activeJobId],
     );
 
+    // #208: gate deletion behind a confirmation. The context menu / Del key now
+    // request a delete (open the dialog) instead of mutating state immediately;
+    // handleDeleteRepoItem above is the actual delete, called only on confirm.
+    const [pendingDelete, setPendingDelete] = useState<RepoItem | null>(null);
+    const requestDeleteRepoItem = useCallback(
+        (id: string) => {
+            const item = repo.find(i => i.id === id);
+            if (!item || item.type === 'project') return;
+            setPendingDelete(item);
+        },
+        [repo],
+    );
+    const describeDelete = (item: RepoItem): string => {
+        const ids = new Set<string>([item.id]);
+        const addKids = (pid: string) => {
+            for (const c of repo)
+                if (c.parentId === pid) {
+                    ids.add(c.id);
+                    addKids(c.id);
+                }
+        };
+        addKids(item.id);
+        const n = ids.size - 1;
+        const nested = n > 0 ? ` and its ${n} nested item${n === 1 ? '' : 's'}` : '';
+        return `Delete ${item.type} "${item.name}"${nested}?\n\nThis cannot be undone.`;
+    };
+
     const handleCreatePipeline = useCallback(
         (rawName: string, parentId: string, template: PipelineTemplate) => {
             const id = freshId('p');
@@ -2452,7 +2480,7 @@ export default function App() {
                     onNewDashboard={handleNewDashboard}
                     onRenameRepoItem={handleRenameRepoItem}
                     onDuplicateRepoItem={handleDuplicateRepoItem}
-                    onDeleteRepoItem={handleDeleteRepoItem}
+                    onDeleteRepoItem={requestDeleteRepoItem}
                     onMoveRepoItem={handleMoveRepoItem}
                     onSchedulePipeline={handleSchedulePipeline}
                     onBackfillPipeline={handleBackfillPipeline}
@@ -2542,6 +2570,18 @@ export default function App() {
                     setNewPipelineModal({ open: false, defaultParent: 'pipelines' })
                 }
                 onCreate={handleCreatePipeline}
+            />
+
+            <ConfirmModal
+                open={pendingDelete !== null}
+                title={pendingDelete ? `Delete ${pendingDelete.type}` : 'Delete'}
+                message={pendingDelete ? describeDelete(pendingDelete) : ''}
+                confirmLabel="Delete"
+                onCancel={() => setPendingDelete(null)}
+                onConfirm={() => {
+                    if (pendingDelete) handleDeleteRepoItem(pendingDelete.id);
+                    setPendingDelete(null);
+                }}
             />
 
             {showEngineSetup ? (

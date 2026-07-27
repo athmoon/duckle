@@ -1,6 +1,8 @@
 import type { Edge, Node } from '@xyflow/react';
 import type { DuckleNodeData } from './pipeline-types';
+import type { RepoItem } from './repo-types';
 import { getManifest } from './workflow-ui/fields/component-manifests';
+import { contextKeyCollisions } from './run-resolve';
 
 export type ValidationIssue = {
     id: string;
@@ -47,6 +49,7 @@ const PATH_REQUIRED_SINKS = new Set<string>([
 export function validatePipeline(
     nodes: Node<DuckleNodeData>[],
     edges: Edge[],
+    repo: RepoItem[] = [],
 ): ValidationResult {
     if (nodes.length === 0) return EMPTY;
 
@@ -213,6 +216,22 @@ export function validatePipeline(
             severity: 'error',
             code: 'cycle',
             message: 'Pipeline contains a cycle in the data-flow graph.',
+        });
+    }
+
+    // ---- Context key collisions (#204) ----
+    // Two contexts defining the same bare key share one slot in
+    // buildContextVars' flat map, so `${KEY}` silently resolves to whichever
+    // context is last in repo order. Warn (not error) and point at the
+    // unambiguous `${context.KEY}` form. A single context never collides.
+    for (const c of contextKeyCollisions(repo)) {
+        push({
+            severity: 'warning',
+            code: 'duplicate-context-key',
+            message:
+                `Variable "${c.key}" is defined by ${c.contexts.length} contexts ` +
+                `(${c.contexts.join(', ')}); a bare \${${c.key}} resolves to only one. ` +
+                `Use \${context.${c.key}} to pick a specific context.`,
         });
     }
 

@@ -3411,6 +3411,42 @@
     }
 
     #[test]
+    fn huggingface_source_builds_hf_url() {
+        // Bare id + file -> hf://datasets/<repo>/<path>; DuckDB auto-detects format.
+        assert_eq!(
+            build_huggingface_source(&serde_json::json!({
+                "repo": "stanfordnlp/imdb",
+                "path": "plain_text/train-00000.parquet"
+            })),
+            "SELECT * FROM 'hf://datasets/stanfordnlp/imdb/plain_text/train-00000.parquet'"
+        );
+        // A revision maps to @rev; a stray datasets/ prefix and leading slashes
+        // are normalised, and a glob path is preserved.
+        assert_eq!(
+            build_huggingface_source(&serde_json::json!({
+                "repo": "datasets/ibm/duorc",
+                "path": "/ParaphraseRC/*.parquet",
+                "revision": "~parquet"
+            })),
+            "SELECT * FROM 'hf://datasets/ibm/duorc@~parquet/ParaphraseRC/*.parquet'"
+        );
+    }
+
+    #[test]
+    fn gdb_source_reads_a_named_layer() {
+        // #205: a File Geodatabase reads one feature class via ST_Read(layer=).
+        assert_eq!(
+            build_gdb_source(&serde_json::json!({ "path": "C:/Data/My.gdb", "layer": "Roads" })),
+            "SELECT * FROM ST_Read('C:/Data/My.gdb', layer='Roads')"
+        );
+        // No layer -> GDAL's default (first) layer, same shape as src.spatial.
+        assert_eq!(
+            build_gdb_source(&serde_json::json!({ "path": "C:/Data/My.gdb" })),
+            "SELECT * FROM ST_Read('C:/Data/My.gdb')"
+        );
+    }
+
+    #[test]
     fn driver_sink_upsert_rejects_missing_conflict_columns() {
         // The driver sinks (mongo / oracle / databricks / snowflake / sqlserver)
         // route through upsert_keys_from rather than build_sink_sql, and every

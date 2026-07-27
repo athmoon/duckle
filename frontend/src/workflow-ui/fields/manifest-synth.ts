@@ -783,6 +783,81 @@ function defaultDescription(comp: ComponentDef): string {
 }
 
 function synthFileSource(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'src.gdb') {
+        // Esri File Geodatabase (#205): a .gdb is a folder holding several
+        // feature classes, read via the spatial extension's ST_Read with a
+        // layer= argument.
+        return base(comp, [
+            {
+                label: 'File Geodatabase',
+                fields: [
+                    {
+                        key: 'path',
+                        label: '.gdb path',
+                        kind: 'file-path',
+                        required: true,
+                        filters: [
+                            { name: 'File Geodatabase', extensions: ['gdb'] },
+                            { name: 'All files', extensions: ['*'] },
+                        ],
+                        description: 'Path to the .gdb folder (an Esri File Geodatabase).',
+                    },
+                    {
+                        key: 'layer',
+                        label: 'Feature class (layer)',
+                        kind: 'text',
+                        description: 'The feature class to read. Leave blank to read the first layer.',
+                    },
+                ],
+            },
+        ]);
+    }
+    if (comp.id === 'src.huggingface') {
+        // Native Hugging Face dataset read via DuckDB's hf:// (httpfs). The
+        // engine builds hf://datasets/<repo>[@<revision>]/<path>.
+        return base(comp, [
+            {
+                label: 'Hugging Face dataset',
+                fields: [
+                    {
+                        key: 'repo',
+                        label: 'Dataset repo',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'stanfordnlp/imdb',
+                        description:
+                            'The dataset id, e.g. stanfordnlp/imdb. The datasets/ prefix is added automatically.',
+                    },
+                    {
+                        key: 'path',
+                        label: 'File or glob',
+                        kind: 'text',
+                        required: true,
+                        placeholder: '**/*.parquet',
+                        description:
+                            'Path within the repo: a single file (data/train-00000-of-00001.parquet) or a glob (*.parquet, **/*.parquet). CSV / JSON / Parquet are auto-detected.',
+                    },
+                    {
+                        key: 'revision',
+                        label: 'Revision / branch',
+                        kind: 'text',
+                        placeholder: 'main',
+                        description:
+                            "Optional branch, tag, or commit. Use ~parquet for the dataset viewer's auto-converted Parquet.",
+                    },
+                    {
+                        key: 'token',
+                        label: 'Access token',
+                        kind: 'text',
+                        secret: true,
+                        placeholder: '${ENV:HF_TOKEN}',
+                        description:
+                            'Optional. A Hugging Face token for private or gated datasets. Use ${ENV:...} so no secret lands in the pipeline JSON.',
+                    },
+                ],
+            },
+        ]);
+    }
     if (comp.id === 'src.vortex') {
         // Vortex is a binary columnar file read via the duckle-lance sidecar;
         // just a path (no encoding/glob/format options).

@@ -22,7 +22,7 @@
 <img alt="typescript" src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white"/>
 <img alt="duckdb" src="https://img.shields.io/badge/DuckDB-FFF000?logo=duckdb&logoColor=black"/>
 <img alt="stars" src="https://img.shields.io/github/stars/slothflowlabs/duckle?style=social"/>
-[![MCP Toplist](https://mcptoplist.com/badge/glama%2FSouravRoy-ETL%2Fduckle.svg)](https://mcptoplist.com/server/glama%2FSouravRoy-ETL%2Fduckle)
+<a href="https://mcptoplist.com/server/glama%2FSouravRoy-ETL%2Fduckle"><img alt="MCP Toplist" src="https://mcptoplist.com/badge/glama%2FSouravRoy-ETL%2Fduckle.svg"/></a>
 </p>
 
 </div>

@@ -61,6 +61,26 @@ def _slug(component):
     return "".join(c if (c.isalnum() or c == "_") else "_" for c in stem) or "node"
 
 
+def _find_workspace(pipeline_path):
+    """Walk up from a pipeline file to the workspace root that owns it.
+
+    A workspace is the folder holding duckle.json / repository.json, with the
+    pipelines themselves under pipelines/. Resolving from the file's own parent
+    would therefore point at <workspace>/pipelines and miss the state, the
+    connections and the logs that live one level up.
+    """
+    directory = os.path.dirname(os.path.abspath(pipeline_path))
+    own = directory
+    while True:
+        for marker in ("duckle.json", "repository.json"):
+            if os.path.exists(os.path.join(directory, marker)):
+                return directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return own
+        directory = parent
+
+
 class Pipeline:
     """An immutable-ish builder over a Duckle pipeline graph.
 
@@ -68,8 +88,15 @@ class Pipeline:
     the order the data flows.
     """
 
-    def __init__(self, name="pipeline"):
+    def __init__(self, name="pipeline", workspace=None):
         self.name = name
+        # The workspace is where the engine keeps incremental watermarks, saved
+        # connections, run logs and whatever ${workspace} resolves to. It
+        # defaults to the current directory because the pipeline JSON is written
+        # to a temp dir, and the runner would otherwise infer the workspace from
+        # that temp dir: watermarks would be written somewhere discarded after
+        # every run, silently turning an incremental load into a full one.
+        self.workspace = workspace or os.getcwd()
         self._nodes = []
         self._edges = []
         self._last = None
@@ -287,6 +314,11 @@ class Pipeline:
         argv = [_binary_path()] + [
             a.replace("{pipeline}", path) for a in argv_template
         ]
+        # Without this the runner infers the workspace from the pipeline file's
+        # parent, which is the temp dir above, so watermarks, connections and
+        # ${workspace} would all resolve somewhere thrown away.
+        if self.workspace:
+            argv += ["--workspace", str(self.workspace)]
         proc = subprocess.run(
             argv, env=_engine_env(), capture_output=True, text=True,
         )
@@ -342,13 +374,22 @@ def read_duckdb(path, table, **opts):
     return _start("read_duckdb", path, table, **opts)
 
 
-def from_json(path_or_dict):
-    """Load a pipeline the studio wrote, so it can be run or extended here."""
+def from_json(path_or_dict, workspace=None):
+    """Load a pipeline the studio wrote, so it can be run or extended here.
+
+    Given a path, the workspace is resolved from the file's own location, so a
+    pipeline opened out of a studio workspace keeps that workspace's
+    watermarks, connections and logs instead of running against the caller's
+    current directory. Pass `workspace=` to override.
+    """
     p = Pipeline()
     doc = path_or_dict
     if isinstance(path_or_dict, str):
         with open(path_or_dict, encoding="utf-8") as fh:
             doc = json.load(fh)
+        p.workspace = workspace or _find_workspace(path_or_dict)
+    elif workspace:
+        p.workspace = workspace
     p.name = doc.get("name", "pipeline")
     p._nodes = doc.get("nodes", [])
     p._edges = doc.get("edges", [])

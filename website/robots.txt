@@ -32,3 +32,9 @@ User-agent: CCBot
 Allow: /
 
 Sitemap: https://duckle.org/sitemap.xml
+
+# Machine-readable summaries for language models (llmstxt.org).
+# llms-full.txt carries every component id and summary inline, so an assistant
+# can answer "does Duckle support X" from a single fetch.
+# https://duckle.org/llms.txt
+# https://duckle.org/llms-full.txt

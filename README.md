@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FSouravRoy-ETL%2Fduckle.svg)](https://mcptoplist.com/server/glama%2FSouravRoy-ETL%2Fduckle)
+
 <div align="center">
 
 <img src="docs/assets/duckle-readme.png" alt="Duckle" width="460"/>

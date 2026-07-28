@@ -47,7 +47,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
-- [What's new in v0.5.7](#whats-new-in-v057)
+- [What's new in v0.5.8](#whats-new-in-v058)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
 - [Build from source](#build-from-source)
@@ -129,17 +129,17 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 ---
 
-## What's new in v0.5.7
+## What's new in v0.5.8
 
-A pip-installable Python API, faster streaming writes to MongoDB, and a batch of correctness fixes across sinks, derived columns, and concurrent runs.
+A native Hugging Face connector for reading and writing Hub datasets, an Esri File Geodatabase source, and a batch of canvas and correctness fixes from your issue reports.
 
-- **`pip install duckle` (Python API + MCP).** A fluent Python builder that compiles to the same engine and pipeline format as the canvas: write a pipeline in code, and the Python expressions compile to DuckDB SQL at plan time. The wheel bundles the headless runner and the MCP server, so `uvx duckle quickstart` scaffolds and runs a first pipeline, and a coding agent can build pipelines for you to verify on the same canvas.
-- **Faster MongoDB writes.** `snk.mongodb` streams the upstream through newline-delimited JSON on disk instead of buffering the whole result set, cutting a 1,000,000-row load from about 30 s to 8.7 s, and fixing a DECIMAL-as-string bug on the way.
-- **Sinks refuse writes they cannot honour.** A sink no longer silently falls back to plain inserts when handed a write mode or upsert key it does not support. `mode="overwrite"` on MongoDB is accepted as an alias for replace; an unknown mode, or an upsert with no key columns, is now rejected at validate time before any data moves, and `conflictColumns: "id"` is read the same as `["id"]`.
+- **Native Hugging Face connector (source + sink).** `src.huggingface` reads any Hub dataset directly over DuckDB's `hf://` (Parquet / CSV / JSON, globs, and revisions like `~parquet`), with a token for private or gated repos. `snk.huggingface` pushes the other way: the pipeline output is materialized to Parquet and committed to a dataset repo over the Hub API (create-repo, git-LFS upload, commit), creating the repo (public or private) if it does not exist. Both carry the real Hugging Face mark on the canvas.
+- **Esri File Geodatabase source (#205).** `src.gdb` reads a feature class from a `.gdb` folder via the spatial extension's `ST_Read(layer=)`, so ArcGIS geodatabases load like any other geospatial source.
+- **Duplicate context variables are no longer silent (#204).** When two context items defined the same variable name, one used to overwrite the other with no warning and quiet data loss. Validation now flags the collision so you can see and resolve it.
 
-Fixes: a parallel `ctl.foreach` running a `code.python` node no longer shares scratch files, so concurrent iterations cannot corrupt each other's input or output (#203); deriving a column that already exists now replaces it in place instead of leaving the old value under the original name; path, pattern, and spatial property keys are no longer mistaken for secrets, so the SQL from validate and explain runs as written; and the Python API uses the connector property names the engine actually reads (#201, #199).
+Fixes from your reports: Create Geometry now updates the node schema and preview so downstream nodes see the new geometry column (#206); the Rename Columns preview shows the renamed headers instead of the originals (#207); deleting a pipeline or folder asks for confirmation first (#208); and F2 renames, plus Delete and Enter, now work on pipelines and folders in the project tree (#209).
 
-Full notes: see the [v0.5.7 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.7).
+Full notes: see the [v0.5.8 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.8).
 
 ---
 
@@ -461,7 +461,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.7):
+Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.8):
 
 | OS | Asset | How to run |
 |---|---|---|

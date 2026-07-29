@@ -8,8 +8,6 @@
 
 <a href="https://duckle.org/"><img src="website/assets/img/website-hero.gif" alt="Duckle connecting 160+ sources and destinations - databases, warehouses, SaaS apps and the DuckDB ecosystem - all running locally on DuckDB" width="600"/></a>
 
-<a href="https://duckle.org/"><img src="docs/assets/ingest-seconds-benchmark.png" alt="Benchmark: loading a 20M-row CSV into DuckDB at each tool's best config. Duckle 15.69s, dlt 40.68s, Talend bulk 90s, Informatica bulk 100s, ingestr 411s, Airbyte about 1150s." width="820"/></a>
-
 <p><sub><i>Duckle is an independent open-source project by SlothFlowLabs. It builds on the DuckDB engine but is not part of, affiliated with, or endorsed by DuckDB Labs or MotherDuck.</i></sub></p>
 
 <p>
@@ -183,6 +181,10 @@ The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Code
 ## Benchmark
 
 The most common job in data engineering: load a **20M-row CSV into DuckDB**. One identical 2.49 GB file (20M rows of TPC-H lineitem, 16 typed columns), every tool measured at its best configuration, wall-clock time to land the data as a table.
+
+<p align="center">
+  <a href="https://duckle.org/"><img src="docs/assets/ingest-seconds-benchmark.png" alt="Benchmark: loading a 20M-row CSV into DuckDB at each tool's best config. Duckle 15.69s, dlt 40.68s, Talend bulk 90s, Informatica bulk 100s, ingestr 411s, Airbyte about 1150s." width="820"/></a>
+</p>
 
 | Tool | Time | Peak RAM | vs Duckle |
 |---|---|---|---|

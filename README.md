@@ -186,15 +186,6 @@ The most common job in data engineering: load a **20M-row CSV into DuckDB**. One
   <a href="https://duckle.org/"><img src="docs/assets/ingest-seconds-benchmark.png" alt="Benchmark: loading a 20M-row CSV into DuckDB at each tool's best config. Duckle 15.69s, dlt 40.68s, Talend bulk 90s, Informatica bulk 100s, ingestr 411s, Airbyte about 1150s." width="820"/></a>
 </p>
 
-| Tool | Time | Peak RAM | vs Duckle |
-|---|---|---|---|
-| **Duckle** | **15.69s** | 2.88 GB | 1.0x (fastest) |
-| dlt | 40.68s | 2.95 GB | 2.6x |
-| Talend (bulk) | 90s | not captured | 5.7x |
-| Informatica (bulk) | 100s | not captured | 6.4x |
-| ingestr v1 (Go) | 411.01s | 1.01 GB | 26x |
-| Airbyte | ~1150s | 3.4 GB | 73x |
-
 **How it was measured**
 
 - **Machine:** Intel Core i7-13650HX (14C / 20T), 24 GB RAM, NVMe SSD, Windows 11, DuckDB 1.5.4. Duckle, dlt and ingestr ran here.

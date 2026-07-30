@@ -1,0 +1,12 @@
+out/
+logs/
+stamps/
+tools/
+.venv*/
+results.tsv
+dataset.txt
+.duckle_pipeline.json
+.duckle/
+*.parquet
+*.duckdb
+*.duckdb.wal

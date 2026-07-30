@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ${CONTAINER:-bench-pg}
+    environment:
+      POSTGRES_USER: ${PGUSER:-bench}
+      POSTGRES_PASSWORD: ${PGPASS:-bench}
+      POSTGRES_DB: ${PGDB:-bench}
+    ports:
+      - "${PGPORT:-15432}:5432"
+    shm_size: 1gb
+    # Tuned so the server is not the bottleneck being measured. Every tool reads
+    # the same table from the same server, so these settings apply equally to all
+    # of them; they exist to keep the load step and the sequential scans fast,
+    # not to favour any one client.
+    #
+    # fsync=off and full_page_writes=off trade crash safety for load speed. That
+    # is fine for a container full of regenerable TPC-H data and must never be
+    # copied onto a server holding anything you care about.
+    command: >
+      postgres
+      -c shared_buffers=2GB
+      -c work_mem=64MB
+      -c maintenance_work_mem=1GB
+      -c max_wal_size=8GB
+      -c checkpoint_timeout=30min
+      -c synchronous_commit=off
+      -c fsync=off
+      -c full_page_writes=off
+      -c max_connections=50
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-bench} -d ${PGDB:-bench}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Only Airbyte needs this. It has no local-filesystem Parquet destination, so
+  # the only way to make it emit Parquet is destination-s3 against an
+  # S3-compatible store. Started on demand:
+  #   docker compose --profile airbyte up -d
+  minio:
+    image: minio/minio
+    container_name: bench-minio
+    profiles: ["airbyte"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-benchuser}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASS:-benchpass123}
+    ports:
+      - "${MINIO_PORT:-19000}:9000"
+      - "${MINIO_CONSOLE_PORT:-19001}:9001"

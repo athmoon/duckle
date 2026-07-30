@@ -217,8 +217,15 @@ export async function loadWorkspace(path: string): Promise<WorkspaceState | null
         // to a default in-memory state that the auto-save would then write over
         // the still-good files on disk.
         if (err instanceof WorkspaceLoadError) throw err;
+        // Any other failure here is a filesystem error (permission denied, an
+        // fs-scope rejection, I/O), and it is NOT an absent workspace. Returning
+        // null would make it indistinguishable from a fresh folder, and the
+        // caller would then keep the bundled starter in memory, mark the
+        // workspace ready, and let auto-save write that starter over the real
+        // duckle.json and repository.json. Surface it as a load error so the
+        // caller stays un-ready and names the file.
         console.error('Failed to load workspace', err);
-        return null;
+        throw new WorkspaceLoadError(path, err instanceof Error ? err.message : String(err));
     }
 }
 

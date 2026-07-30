@@ -16,7 +16,7 @@
 //!   - App shutdown: kill child
 
 use std::io::{BufRead, BufReader, Read};
-use std::net::TcpListener;
+use std::net::{IpAddr, TcpListener};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -261,6 +261,23 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// True when the endpoint is the bundled llama-server on loopback.
+///
+/// Remote endpoints go through the shared TLS agent so they trust the OS
+/// certificate store; loopback deliberately does not, because that agent also
+/// applies the configured proxy and a corporate proxy must never capture
+/// 127.0.0.1. Parsed as a real address rather than matched as a prefix, so a
+/// remote host like `127.0.0.1.example.com` is correctly treated as remote.
+fn is_loopback_endpoint(endpoint: &str) -> bool {
+    let rest = endpoint.split_once("://").map(|(_, r)| r).unwrap_or(endpoint);
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""), // [::1]:8080
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    host == "localhost" || host.parse::<IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+}
+
 /// Send a user message + prior history to the running llama-server,
 /// stream tokens out via the `on_event` callback as they arrive. The
 /// system prompt is prepended automatically.
@@ -291,7 +308,23 @@ pub fn chat_stream<F: FnMut(ChatEvent)>(
     });
     // #92: works for the local llama-server or an external OpenAI-compatible
     // endpoint (the caller passes the full chat-completions URL + optional key).
-    let mut req = ureq::post(endpoint)
+    //
+    // #183: a remote endpoint has to go through the shared agent so it trusts
+    // the OS certificate store. A private corporate CA lives there and not in
+    // the bundled Mozilla roots, which is exactly why the same endpoint worked
+    // from xf.ai.llm (engine, shared agent) but failed here with
+    // "invalid peer certificate: UnknownIssuer". The agent also applies any
+    // proxy configured in Settings.
+    //
+    // The local llama-server stays on a bare ureq call: that proxy applies to
+    // every request the agent makes, so routing loopback through a corporate
+    // proxy would break local chat for the very users this fixes.
+    let mut req = if is_loopback_endpoint(endpoint) {
+        ureq::post(endpoint)
+    } else {
+        duckle_duckdb_engine::tls::http_agent().post(endpoint)
+    };
+    req = req
         .set("Content-Type", "application/json")
         .timeout(Duration::from_secs(300));
     if let Some(key) = api_key {
@@ -383,6 +416,28 @@ mod tests {
         let pipe = extract_pipeline(text).expect("should parse");
         assert_eq!(pipe["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(pipe["edges"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn loopback_endpoints_bypass_the_shared_agent() {
+        // The bundled llama-server. Must stay on a bare ureq call so a proxy
+        // configured for corporate egress cannot capture it.
+        assert!(is_loopback_endpoint("http://127.0.0.1:8080/v1/chat/completions"));
+        assert!(is_loopback_endpoint("http://localhost:1234/v1/chat/completions"));
+        assert!(is_loopback_endpoint("http://[::1]:9000/v1/chat/completions"));
+        assert!(is_loopback_endpoint("http://127.1.2.3:80/v1"));
+    }
+
+    #[test]
+    fn remote_endpoints_use_the_shared_agent() {
+        // #183: these must go through the shared agent to pick up the OS trust
+        // store, or a private corporate CA yields UnknownIssuer.
+        assert!(!is_loopback_endpoint("https://llm.internal.example/v1/chat/completions"));
+        assert!(!is_loopback_endpoint("https://api.openai.com/v1/chat/completions"));
+        // Hosts that merely start with a loopback-looking label are remote. A
+        // prefix match would have got both of these wrong.
+        assert!(!is_loopback_endpoint("https://localhost.example.com/v1"));
+        assert!(!is_loopback_endpoint("https://127.0.0.1.example.com/v1"));
     }
 
     #[test]

@@ -489,6 +489,19 @@ export default function App() {
                         setReloadNonce(n => n + 1);
                         return;
                     }
+                    // Nothing loaded, and seeding declined. Seeding declines in
+                    // exactly one case: the backend can see a duckle.json or a
+                    // workspace.json that we just failed to read. (It reads
+                    // through std::fs, which has no webview fs scope applied, so
+                    // it sees folders the frontend may not be able to.) The
+                    // folder is therefore a real workspace, not a fresh one.
+                    //
+                    // Falling through here would keep the bundled starter in
+                    // memory, mark the workspace ready, and let auto-save write
+                    // that starter over the user's duckle.json and
+                    // repository.json. Stop instead and name the folder.
+                    setWorkspaceLoadError(workspacePathState);
+                    return;
                 }
                 if (state) {
                     if (state.engine) setEngine(state.engine as EngineId);

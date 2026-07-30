@@ -180,6 +180,8 @@ The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Code
 
 ## Benchmark
 
+### 20M-row CSV into DuckDB
+
 The most common job in data engineering: load a **20M-row CSV into DuckDB**. One identical 2.49 GB file (20M rows of TPC-H lineitem, 16 typed columns), every tool measured at its best configuration, wall-clock time to land the data as a table.
 
 <p align="center">
@@ -195,6 +197,25 @@ The most common job in data engineering: load a **20M-row CSV into DuckDB**. One
 - Wall-clock time, peak working-set of the whole process tree.
 
 **Why Duckle is this fast:** its 15.69s sits right on top of raw DuckDB's own load floor (~16s to fully parse and write all 20M typed rows into an on-disk table). Duckle wraps the engine with pipelines, connectors, and a UI, then gets out of its way. That is the entire design goal. A read-only scan or aggregate over the same CSV is far faster still; this benchmark measures the heavier "materialize it as a table" job that every ETL tool here performs.
+
+### 96M rows, Postgres to Parquet
+
+A second, harder job against a live database: full-refresh extract of **95,988,640 rows** of TPC-H `lineitem` (14 GB in Postgres 16) out to Parquet.
+
+<p align="center">
+  <img src="docs/assets/pg-to-parquet-benchmark.png" alt="Benchmark: 96M rows Postgres to Parquet. Duckle 39.9s, raw DuckDB postgres_scanner floor 44.2s, ingestr 120.8s, dlt 493.6s, sling 1897s." width="880"/>
+</p>
+
+**Run it yourself.** The harness is in this repo at [`benchmarks/pg-to-parquet`](benchmarks/pg-to-parquet). `./bench.sh all` brings up Postgres, generates the data at any scale factor, and times every tool you have installed. No timing is recorded until the output has been reopened and checked for the right row count and the right `sum(l_orderkey)`, so a tool that writes a fast but wrong file gets a failure rather than a number.
+
+**Read it with these caveats**
+
+- **The DuckDB floor is not a competitor.** It is raw `postgres_scanner` plus `COPY TO`: no scheduling, no typing, no incremental state, no UI. It is there to show how much of the clock is the machine reading Postgres. Duckle landing 11% under it is the honest framing, not "Duckle beats DuckDB".
+- **ingestr has no Parquet destination** and writes a DuckDB file, so its output size is not like-for-like. Its time is.
+- **Compression is not normalised.** Duckle wrote zstd, the others snappy.
+- **Airbyte and Meltano are absent.** Airbyte has no local Parquet destination and has only run against an earlier synthetic dataset; Meltano was not wired up. Neither is claimed here.
+
+Hardware, per-run numbers and the two measurement traps that produced wrong figures on the first attempt are written up in [`RESULTS.md`](benchmarks/pg-to-parquet/RESULTS.md).
 
 ---
 

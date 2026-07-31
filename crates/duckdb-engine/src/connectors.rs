@@ -111,6 +111,130 @@ pub(crate) fn mint_oauth_token(o: &plan::RestOAuth) -> Result<(String, String), 
     Ok((access, instance))
 }
 
+/// Counts accumulated across DHIS2 import chunks. DHIS2 reports these under
+/// two different key sets depending on the endpoint (`importCount` vs
+/// `stats`), so both parsers normalise into this one shape.
+#[derive(Default, Debug, PartialEq)]
+pub(crate) struct Dhis2Counts {
+    pub imported: i64,
+    pub updated: i64,
+    pub deleted: i64,
+    pub ignored: i64,
+}
+
+impl Dhis2Counts {
+    fn add(&mut self, o: &Dhis2Counts) {
+        self.imported += o.imported;
+        self.updated += o.updated;
+        self.deleted += o.deleted;
+        self.ignored += o.ignored;
+    }
+}
+
+fn dhis2_i64(v: &JsonValue, key: &str) -> i64 {
+    v.get(key).and_then(|x| x.as_i64()).unwrap_or(0)
+}
+
+/// Parse an aggregate `POST /api/dataValueSets` response.
+///
+/// The synchronous handler wraps the ImportSummary, so counts live at
+/// `response.importCount` and conflicts at `response.conflicts`. Some
+/// deployments return the bare ImportSummary, so both layouts are accepted.
+///
+/// The trap: an ImportConflict's human-readable text serialises under the key
+/// `value`, NOT `message`. The Java field is named `message` but carries
+/// `@JsonProperty("value")`, so a client reading `message` silently gets
+/// nothing and every conflict looks blank.
+pub(crate) fn parse_dhis2_import_summary(root: &JsonValue) -> (Dhis2Counts, Vec<String>) {
+    let body = root.get("response").unwrap_or(root);
+    let null = JsonValue::Null;
+    let ic = body.get("importCount").unwrap_or(&null);
+    let counts = Dhis2Counts {
+        imported: dhis2_i64(ic, "imported"),
+        updated: dhis2_i64(ic, "updated"),
+        deleted: dhis2_i64(ic, "deleted"),
+        ignored: dhis2_i64(ic, "ignored"),
+    };
+    let mut msgs = Vec::new();
+    if let Some(arr) = body.get("conflicts").and_then(|c| c.as_array()) {
+        for c in arr {
+            let text = c
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(no conflict text)");
+            match c.get("object").and_then(|v| v.as_str()) {
+                Some(obj) if !obj.is_empty() => msgs.push(format!("{}: {}", obj, text)),
+                _ => msgs.push(text.to_string()),
+            }
+        }
+    }
+    // status ERROR with an empty conflicts array still has to surface, or a
+    // failed import is reported as a clean run.
+    let status = body
+        .get("status")
+        .or_else(|| root.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if status.eq_ignore_ascii_case("ERROR") && msgs.is_empty() {
+        let d = body
+            .get("description")
+            .and_then(|v| v.as_str())
+            .or_else(|| root.get("message").and_then(|v| v.as_str()))
+            .unwrap_or("import reported status ERROR");
+        msgs.push(d.to_string());
+    }
+    (counts, msgs)
+}
+
+/// Parse a `POST /api/tracker` ImportReport.
+///
+/// Nothing is shared with the aggregate shape: counts sit under `stats` with
+/// different key names (`created`, not `imported`), and the error text is under
+/// `message` here, the exact opposite of the aggregate `value`. One parser for
+/// both would silently report zeroes and no errors.
+pub(crate) fn parse_dhis2_tracker_report(root: &JsonValue) -> (Dhis2Counts, Vec<String>) {
+    let null = JsonValue::Null;
+    let stats = root
+        .get("stats")
+        .or_else(|| root.get("response").and_then(|r| r.get("stats")))
+        .unwrap_or(&null);
+    let counts = Dhis2Counts {
+        imported: dhis2_i64(stats, "created"),
+        updated: dhis2_i64(stats, "updated"),
+        deleted: dhis2_i64(stats, "deleted"),
+        ignored: dhis2_i64(stats, "ignored"),
+    };
+    let mut msgs = Vec::new();
+    let reports = root
+        .get("validationReport")
+        .or_else(|| root.get("response").and_then(|r| r.get("validationReport")));
+    if let Some(errs) = reports
+        .and_then(|v| v.get("errorReports"))
+        .and_then(|v| v.as_array())
+    {
+        for e in errs {
+            let text = e
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(no error text)");
+            match e.get("errorCode").and_then(|v| v.as_str()) {
+                Some(code) if !code.is_empty() => msgs.push(format!("{} {}", code, text)),
+                _ => msgs.push(text.to_string()),
+            }
+        }
+    }
+    let status = root.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status.eq_ignore_ascii_case("ERROR") && msgs.is_empty() {
+        msgs.push(
+            root.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tracker import reported status ERROR")
+                .to_string(),
+        );
+    }
+    (counts, msgs)
+}
+
 impl DuckdbEngine {
     /// Relational-DB upsert. DuckDB's ATTACH doesn't propagate the
     /// target's UNIQUE / PRIMARY KEY constraints, so a native DuckDB
@@ -431,6 +555,169 @@ impl DuckdbEngine {
     ///   update  PATCH  {instance}/services/data/{ver}/composite/sobjects
     ///   upsert  PATCH  {instance}/services/data/{ver}/composite/sobjects/{obj}/{extIdField}
     ///   delete  DELETE {instance}/services/data/{ver}/composite/sobjects?ids=..&allOrNone=..
+    /// snk.dhis2: chunked import with real import-summary parsing.
+    ///
+    /// The parsing is the point. DHIS2 answers HTTP 200 in several situations
+    /// where the import did not do what the caller asked:
+    ///
+    ///  * aggregate conflicts are WARNING on 2.40-2.42 and ERROR on 2.43+, and
+    ///    2.43 remapped WARNING to HTTP 200;
+    ///  * `importCount.ignored` can be non-zero on a plain 200 OK;
+    ///  * synchronous tracker imports return 200 for status WARNING and only
+    ///    409 for ERROR.
+    ///
+    /// Trusting the HTTP status therefore turns a failed import into a green
+    /// run, which for reporting data is worse than an outright error.
+    pub(crate) fn run_dhis2_sink(
+        &self,
+        db: &Path,
+        secret_prefix: &str,
+        spec: &Dhis2SinkSpec,
+    ) -> Result<String, EngineError> {
+        let select = format!(
+            "{}SELECT * FROM {}",
+            secret_prefix,
+            plan::quote_ident(&spec.from_view)
+        );
+        let rows = self.run_rows(Some(db), &select)?;
+        if rows.is_empty() {
+            return Ok(format!("dhis2: 0 rows to {}", spec.url));
+        }
+
+        // Query params. async=false on both endpoints is deliberate: /api/tracker
+        // defaults to async=true and would return only a job reference, whose
+        // outcome has to be polled from a separate endpoint that 404s until the
+        // report exists and evicts it after a restart. Chunking keeps each
+        // synchronous request small enough that this is the safer trade.
+        let mut qs: Vec<(&str, String)> = vec![
+            ("importStrategy", spec.import_strategy.clone()),
+            ("async", "false".into()),
+        ];
+        if spec.import_type == "tracker" {
+            qs.push(("atomicMode", spec.atomic_mode.clone()));
+            if spec.dry_run {
+                qs.push(("importMode", "VALIDATE".into()));
+            }
+        } else if spec.dry_run {
+            qs.push(("dryRun", "true".into()));
+        }
+        let sep = if spec.url.contains('?') { '&' } else { '?' };
+        let url = format!(
+            "{}{}{}",
+            spec.url,
+            sep,
+            qs.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("&")
+        );
+
+        // Aggregate rows go under "dataValues"; tracker rows go under the
+        // collection key matching the resource type. DHIS2 rejects a bare array
+        // in both cases.
+        let wrapper: &str = if spec.import_type == "tracker" {
+            &spec.tracker_resource
+        } else {
+            "dataValues"
+        };
+
+        let mut totals = Dhis2Counts::default();
+        let mut problems: Vec<String> = Vec::new();
+
+        for (idx, chunk) in rows.chunks(spec.chunk_size).enumerate() {
+            self.check_cancelled()?;
+            let mut body = serde_json::Map::new();
+            body.insert(wrapper.to_string(), JsonValue::Array(chunk.to_vec()));
+            let body_str =
+                serde_json::to_string(&JsonValue::Object(body)).unwrap_or_else(|_| "{}".into());
+
+            let mut req = crate::tls::http_agent()
+                .post(&url)
+                .set("Content-Type", "application/json")
+                .set("Accept", "application/json");
+            if let Some((name, value)) = &spec.auth_header {
+                req = req.set(name, value);
+            }
+            // A 409 is a real import summary, not a transport failure: DHIS2
+            // uses it for ERROR (and for WARNING before 2.43). Parse its body
+            // rather than discarding it as an HTTP error.
+            let (code, txt) = match req.send_string(&body_str) {
+                Ok(resp) => (resp.status(), resp.into_string().unwrap_or_default()),
+                Err(ureq::Error::Status(code, response)) => {
+                    (code, response.into_string().unwrap_or_default())
+                }
+                Err(e) => {
+                    return Err(EngineError::Query(format!(
+                        "dhis2: HTTP transport to {} failed on chunk {}: {}",
+                        spec.url,
+                        idx + 1,
+                        e
+                    )))
+                }
+            };
+            let parsed: JsonValue = serde_json::from_str(&txt).unwrap_or(JsonValue::Null);
+            if parsed.is_null() {
+                return Err(EngineError::Query(format!(
+                    "dhis2: chunk {} returned HTTP {} with an unparseable body: {}",
+                    idx + 1,
+                    code,
+                    txt.chars().take(300).collect::<String>()
+                )));
+            }
+            let (counts, mut msgs) = if spec.import_type == "tracker" {
+                parse_dhis2_tracker_report(&parsed)
+            } else {
+                parse_dhis2_import_summary(&parsed)
+            };
+            totals.add(&counts);
+            if !msgs.is_empty() {
+                for m in msgs.drain(..) {
+                    problems.push(format!("chunk {}: {}", idx + 1, m));
+                }
+            }
+        }
+
+        let summary = format!(
+            "dhis2: imported {} updated {} deleted {} ignored {} across {} rows{}",
+            totals.imported,
+            totals.updated,
+            totals.deleted,
+            totals.ignored,
+            rows.len(),
+            if spec.dry_run { " (dry run)" } else { "" }
+        );
+
+        if problems.is_empty() && totals.ignored == 0 {
+            return Ok(summary);
+        }
+        // Cap the echoed detail: a bad mapping can produce one conflict per row
+        // and the error is meant to be readable.
+        let shown: Vec<String> = problems.iter().take(10).cloned().collect();
+        let more = problems.len().saturating_sub(shown.len());
+        let detail = format!(
+            "{}{}{}",
+            summary,
+            if shown.is_empty() {
+                String::new()
+            } else {
+                format!("; {}", shown.join("; "))
+            },
+            if more > 0 {
+                format!(" (+{} more)", more)
+            } else {
+                String::new()
+            }
+        );
+        if spec.fail_on_conflict {
+            Err(EngineError::Query(format!(
+                "dhis2 import reported problems: {}",
+                detail
+            )))
+        } else {
+            Ok(detail)
+        }
+    }
+
     pub(crate) fn run_salesforce_sink(
         &self,
         db: &Path,
@@ -11291,6 +11578,133 @@ mod xml_remote_tests {
              TRY_CAST(NULLIF(\"price\", '') AS DOUBLE) AS \"price\", \
              TRY_CAST(NULLIF(\"title\", '') AS VARCHAR) AS \"title\""
         );
+    }
+}
+
+#[cfg(test)]
+mod dhis2_summary_tests {
+    use super::{parse_dhis2_import_summary, parse_dhis2_tracker_report, Dhis2Counts};
+    use serde_json::json;
+
+    #[test]
+    fn aggregate_conflict_text_is_read_from_value_not_message() {
+        // The whole reason this parser exists. DHIS2 serialises an
+        // ImportConflict's human-readable text under `value`; the Java field is
+        // called `message` but carries @JsonProperty("value"). Reading
+        // `message` yields nothing, so every conflict renders blank and the
+        // operator cannot tell what was rejected.
+        let body = json!({
+            "httpStatus": "Conflict", "httpStatusCode": 409, "status": "ERROR",
+            "response": {
+                "responseType": "ImportSummary", "status": "ERROR",
+                "importCount": {"imported": 0, "updated": 3, "ignored": 2, "deleted": 0},
+                "conflicts": [
+                    {"object": "fbfJHSPpUQD",
+                     "value": "Data element not found or not accessible",
+                     "message": "SHOULD NOT BE READ",
+                     "errorCode": "E7610"}
+                ]
+            }
+        });
+        let (counts, msgs) = parse_dhis2_import_summary(&body);
+        assert_eq!(
+            counts,
+            Dhis2Counts { imported: 0, updated: 3, deleted: 0, ignored: 2 }
+        );
+        assert_eq!(msgs.len(), 1);
+        assert!(
+            msgs[0].contains("Data element not found"),
+            "conflict text must come from `value`, got: {}",
+            msgs[0]
+        );
+        assert!(!msgs[0].contains("SHOULD NOT BE READ"));
+    }
+
+    #[test]
+    fn aggregate_success_with_ignored_rows_is_not_silently_clean() {
+        // HTTP 200, status SUCCESS, no conflicts - but rows were ignored.
+        // The caller treats a non-zero ignored count as a problem, because
+        // "we accepted your request and wrote nothing" is the failure mode
+        // this connector exists to catch.
+        let body = json!({
+            "status": "SUCCESS",
+            "response": {
+                "status": "SUCCESS",
+                "importCount": {"imported": 0, "updated": 0, "ignored": 4, "deleted": 0},
+                "conflicts": []
+            }
+        });
+        let (counts, msgs) = parse_dhis2_import_summary(&body);
+        assert_eq!(counts.ignored, 4);
+        assert!(msgs.is_empty(), "no conflicts were reported by the server");
+    }
+
+    #[test]
+    fn aggregate_error_without_conflicts_still_surfaces() {
+        let body = json!({
+            "status": "ERROR",
+            "response": {"status": "ERROR", "description": "Data set not found"}
+        });
+        let (_, msgs) = parse_dhis2_import_summary(&body);
+        assert_eq!(msgs, vec!["Data set not found".to_string()]);
+    }
+
+    #[test]
+    fn tracker_report_uses_stats_and_message_not_importcount_and_value() {
+        // Tracker shares no keys with the aggregate shape: counts are under
+        // `stats` with `created` rather than `imported`, and the error text is
+        // under `message`, the opposite of the aggregate `value`. Using one
+        // parser for both would report zero counts and zero errors.
+        let body = json!({
+            "status": "ERROR",
+            "stats": {"created": 2, "updated": 1, "deleted": 0, "ignored": 3, "total": 6},
+            "validationReport": {
+                "errorReports": [
+                    {"message": "Could not find TrackedEntityType: `Q9GufDoplCL`.",
+                     "errorCode": "E1005",
+                     "trackerType": "TRACKED_ENTITY",
+                     "uid": "Kj6vYde4LHh"}
+                ],
+                "warningReports": []
+            }
+        });
+        let (counts, msgs) = parse_dhis2_tracker_report(&body);
+        assert_eq!(
+            counts,
+            Dhis2Counts { imported: 2, updated: 1, deleted: 0, ignored: 3 }
+        );
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].starts_with("E1005 "), "got: {}", msgs[0]);
+        assert!(msgs[0].contains("Q9GufDoplCL"));
+    }
+
+    #[test]
+    fn tracker_ok_report_is_clean() {
+        let body = json!({
+            "status": "OK",
+            "stats": {"created": 5, "updated": 0, "deleted": 0, "ignored": 0, "total": 5},
+            "validationReport": {"errorReports": [], "warningReports": []}
+        });
+        let (counts, msgs) = parse_dhis2_tracker_report(&body);
+        assert_eq!(counts.imported, 5);
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn each_parser_ignores_the_other_endpoints_shape() {
+        // Guards against someone later "simplifying" the two parsers into one.
+        let tracker_body = json!({
+            "status": "OK",
+            "stats": {"created": 7, "updated": 0, "deleted": 0, "ignored": 0}
+        });
+        let (aggregate_view, _) = parse_dhis2_import_summary(&tracker_body);
+        assert_eq!(aggregate_view.imported, 0, "aggregate parser must not read `stats`");
+
+        let aggregate_body = json!({
+            "response": {"importCount": {"imported": 7, "updated": 0, "ignored": 0, "deleted": 0}}
+        });
+        let (tracker_view, _) = parse_dhis2_tracker_report(&aggregate_body);
+        assert_eq!(tracker_view.imported, 0, "tracker parser must not read `importCount`");
     }
 }
 

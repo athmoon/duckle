@@ -60,7 +60,7 @@ use plan::{
     PubSubSourceSpec, QdrantSourceSpec, QvdSinkSpec, QvdSourceSpec, RabbitSinkSpec,
     RabbitSourceSpec, RedisSinkSpec,
     RedisSourceSpec, RestPagination, RestResponseFormat, RestSourceSpec, RuntimeSpec, ShellSpec,
-    SalesforceBulkSinkSpec, SalesforceBulkSourceSpec, SalesforceSinkSpec, SftpSinkSpec, SftpSourceSpec, SnowflakeAuth,
+    Dhis2SinkSpec, SalesforceBulkSinkSpec, SalesforceBulkSourceSpec, SalesforceSinkSpec, SftpSinkSpec, SftpSourceSpec, SnowflakeAuth,
     SnowflakeSinkSpec,
     SnowflakeSourceSpec,
     SqlServerSinkSpec,
@@ -1371,6 +1371,9 @@ impl DuckdbEngine {
                     }
                     Some(RuntimeSpec::SalesforceSink(spec)) => {
                         self.run_salesforce_sink(&db_path, &secret_prefix, spec)
+                    }
+                    Some(RuntimeSpec::Dhis2Sink(spec)) => {
+                        self.run_dhis2_sink(&db_path, &secret_prefix, spec)
                     }
                     Some(RuntimeSpec::SalesforceBulkSink(spec)) => {
                         self.run_salesforce_bulk_sink(&db_path, &secret_prefix, spec)

@@ -329,6 +329,11 @@ COMPONENTS = {
         'summary': 'INSERT to a Databricks table via the Statement Execution API with PAT Bearer auth. Multi-row INSERTs batched at 1000 rows; sync wait up to 50s.',
         'params': ['workspace', 'pat', 'warehouseId', 'catalog', 'schema', 'tableName', 'batchSize', 'waitTimeoutSeconds', 'mode', 'conflictColumns', 'deleteColumn', 'deleteValue'],
     },
+    'snk.dhis2': {
+        'kind': 'sink',
+        'summary': 'Import rows into DHIS2. Set url to https://<host>/api/dataValueSets (importType aggregate) or https://<host>/api/tracker (importType tracker + trackerResource trackedEntities/events/enrollments/relationships). Rows are chunked (chunkSize, default 1000) and wrapped in the collection key DHIS2 expe...',
+        'params': ['url', 'importType', 'trackerResource', 'importStrategy', 'chunkSize', 'dryRun', 'atomicMode', 'failOnConflict', 'authType', 'authHeader', 'authToken'],
+    },
     'snk.duckdb': {
         'kind': 'sink',
         'summary': 'Write a table into a DuckDB file',

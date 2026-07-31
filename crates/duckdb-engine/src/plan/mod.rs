@@ -130,6 +130,9 @@ pub enum RuntimeSpec {
     /// snk.salesforce: write rows into a Salesforce object via the sObject
     /// Collections API. See SalesforceSinkSpec / docs/salesforce-sink.
     SalesforceSink(SalesforceSinkSpec),
+    /// snk.dhis2: chunked import into DHIS2 with import-summary parsing.
+    /// See Dhis2SinkSpec for why snk.rest cannot stand in for this.
+    Dhis2Sink(Dhis2SinkSpec),
     /// snk.salesforce.bulk: write rows into a Salesforce object via Bulk API
     /// 2.0's async job lifecycle. See SalesforceBulkSinkSpec.
     SalesforceBulkSink(SalesforceBulkSinkSpec),
@@ -1051,6 +1054,7 @@ fn build_stage(
     let mut snowflake_sink: Option<SnowflakeSinkSpec> = None;
     let mut databricks_sink: Option<DatabricksSinkSpec> = None;
     let mut salesforce_sink: Option<SalesforceSinkSpec> = None;
+    let mut dhis2_sink: Option<Dhis2SinkSpec> = None;
     let mut salesforce_bulk_sink: Option<SalesforceBulkSinkSpec> = None;
     let mut salesforce_bulk_source: Option<SalesforceBulkSourceSpec> = None;
     let mut snowflake_source: Option<SnowflakeSourceSpec> = None;
@@ -1209,6 +1213,60 @@ fn build_stage(
             url,
             message_column: string_prop(&props, "messageColumn").filter(|s| !s.is_empty()),
             headers: headers_from_props(&props),
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.dhis2" {
+        let from_view = inputs
+            .main()
+            .ok_or_else(|| EngineError::Config("snk.dhis2 needs an upstream input".into()))?;
+        let url = string_prop(&props, "url").unwrap_or_default();
+        if url.is_empty() {
+            return Err(EngineError::Config(
+                "snk.dhis2: set url to the import endpoint, e.g. \
+                 https://<host>/api/dataValueSets or https://<host>/api/tracker"
+                    .into(),
+            ));
+        }
+        // Reuse the shared REST auth builder so ApiToken / Basic / Bearer all
+        // behave exactly as they do on the source side.
+        let mut auth_headers: Vec<(String, String)> = Vec::new();
+        builders::push_rest_auth(&mut auth_headers, &props);
+        let import_type = string_prop(&props, "importType").unwrap_or_else(|| "aggregate".into());
+        if import_type != "aggregate" && import_type != "tracker" {
+            return Err(EngineError::Config(format!(
+                "snk.dhis2: importType must be 'aggregate' or 'tracker', got '{}'",
+                import_type
+            )));
+        }
+        let tracker_resource =
+            string_prop(&props, "trackerResource").unwrap_or_else(|| "events".into());
+        if import_type == "tracker"
+            && !matches!(
+                tracker_resource.as_str(),
+                "trackedEntities" | "events" | "enrollments" | "relationships"
+            )
+        {
+            return Err(EngineError::Config(format!(
+                "snk.dhis2: trackerResource must be one of trackedEntities / events / \
+                 enrollments / relationships, got '{}'",
+                tracker_resource
+            )));
+        }
+        dhis2_sink = Some(Dhis2SinkSpec {
+            from_view: from_view.to_string(),
+            url,
+            auth_header: auth_headers.into_iter().next(),
+            import_type,
+            tracker_resource,
+            import_strategy: string_prop(&props, "importStrategy")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "CREATE_AND_UPDATE".into()),
+            chunk_size: props.get("chunkSize").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(1000) as usize,
+            dry_run: props.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false),
+            atomic_mode: string_prop(&props, "atomicMode")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "ALL".into()),
+            fail_on_conflict: props.get("failOnConflict").and_then(|v| v.as_bool()).unwrap_or(true),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.webhook" || component_id == "snk.rest" {
@@ -4686,6 +4744,7 @@ fn build_stage(
         .or_else(|| snowflake_sink.map(RuntimeSpec::SnowflakeSink))
         .or_else(|| databricks_sink.map(RuntimeSpec::DatabricksSink))
         .or_else(|| salesforce_sink.map(RuntimeSpec::SalesforceSink))
+        .or_else(|| dhis2_sink.map(RuntimeSpec::Dhis2Sink))
         .or_else(|| salesforce_bulk_sink.map(RuntimeSpec::SalesforceBulkSink))
         .or_else(|| salesforce_bulk_source.map(RuntimeSpec::SalesforceBulkSource))
         .or_else(|| snowflake_source.map(RuntimeSpec::SnowflakeSource))

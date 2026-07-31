@@ -7691,6 +7691,163 @@ fn rest_basic_auth_encodes_user_password() {
     );
 }
 
+/// Serve `n` requests, replying with `reply_body` each time, and return every
+/// request's raw text. DHIS2 chunking means several requests per run, so the
+/// single-shot helper above cannot be used here.
+fn serve_n_json(
+    n: usize,
+    status_line: &'static str,
+    reply_body: &'static str,
+) -> (u16, std::sync::mpsc::Receiver<String>, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel::<String>();
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(n) {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
+            let resp = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status_line,
+                reply_body.len(),
+                reply_body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    (port, rx, handle)
+}
+
+#[test]
+fn snk_dhis2_chunks_rows_into_multiple_requests() {
+    // Chunking is half the reason this sink exists: snk.rest would serialise
+    // all five rows into one body. 5 rows at chunkSize 2 must be 3 requests,
+    // each carrying a {"dataValues":[...]} wrapper (DHIS2 rejects a bare array).
+    let engine = engine_or_skip!();
+    let ok_body = r#"{"httpStatus":"OK","status":"SUCCESS","response":{"status":"SUCCESS","importCount":{"imported":2,"updated":0,"ignored":0,"deleted":0},"conflicts":[]}}"#;
+    let (port, rx, handle) = serve_n_json(3, "200 OK", ok_body);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "dv.csv",
+        "dataElement,period,orgUnit,value\na,202401,o1,1\nb,202401,o1,2\nc,202401,o1,3\nd,202401,o1,4\ne,202401,o1,5\n",
+    );
+    let url = format!("http://127.0.0.1:{}/api/dataValueSets", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("d", "snk.dhis2", json!({
+                "url": url,
+                "importType": "aggregate",
+                "chunkSize": 2,
+                "authType": "apikey",
+                "authHeader": "Authorization",
+                "authToken": "ApiToken d2pat_TEST_NOT_REAL",
+            })),
+        ]),
+        json!([main_edge("e1", "s", "d")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "snk.dhis2 failed: {:?}", r.error);
+
+    let reqs: Vec<String> = rx.try_iter().collect();
+    assert_eq!(reqs.len(), 3, "5 rows at chunkSize 2 should be 3 requests");
+    for req in &reqs {
+        assert!(req.contains("\"dataValues\""), "body must be wrapped: {}", req);
+        assert!(
+            req.contains("Authorization: ApiToken d2pat_TEST_NOT_REAL"),
+            "auth header missing on chunk request"
+        );
+        // Sent explicitly because the published tracker docs and the source
+        // disagree about the default.
+        assert!(req.contains("importStrategy=CREATE_AND_UPDATE"));
+        // async=false: the alternative is a job reference nobody polls.
+        assert!(req.contains("async=false"));
+    }
+}
+
+#[test]
+fn snk_dhis2_fails_on_http_200_with_conflicts() {
+    // The failure this connector exists to prevent. DHIS2 answers HTTP 200
+    // while rejecting rows, so a sink that trusts the status code reports a
+    // green run having written nothing.
+    let engine = engine_or_skip!();
+    let conflict_body = r#"{"httpStatus":"OK","status":"WARNING","response":{"status":"WARNING","importCount":{"imported":0,"updated":0,"ignored":2,"deleted":0},"conflicts":[{"object":"fbfJHSPpUQD","value":"Data element not found or not accessible","errorCode":"E7610"}]}}"#;
+    let (port, _rx, handle) = serve_n_json(1, "200 OK", conflict_body);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "dv.csv", "dataElement,value\na,1\nb,2\n");
+    let url = format!("http://127.0.0.1:{}/api/dataValueSets", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("d", "snk.dhis2", json!({ "url": url, "importType": "aggregate" })),
+        ]),
+        json!([main_edge("e1", "s", "d")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "error", "HTTP 200 with conflicts must fail the run");
+    let err = r.error.unwrap_or_default();
+    assert!(
+        err.contains("Data element not found"),
+        "the operator needs the actual conflict text, got: {}",
+        err
+    );
+    assert!(err.contains("ignored 2"), "counts should be reported, got: {}", err);
+}
+
+#[test]
+fn snk_dhis2_tracker_wraps_rows_in_the_resource_collection() {
+    // Tracker payloads are wrapped in the collection key matching the resource
+    // type, and DHIS2 rejects a bare array. A wrong key imports nothing.
+    let engine = engine_or_skip!();
+    let ok_body = r#"{"status":"OK","stats":{"created":2,"updated":0,"deleted":0,"ignored":0,"total":2},"validationReport":{"errorReports":[],"warningReports":[]}}"#;
+    let (port, rx, handle) = serve_n_json(1, "200 OK", ok_body);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "ev.csv", "program,orgUnit,occurredAt\np1,o1,2024-01-01\np1,o2,2024-01-02\n");
+    let url = format!("http://127.0.0.1:{}/api/tracker", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("d", "snk.dhis2", json!({
+                "url": url,
+                "importType": "tracker",
+                "trackerResource": "events",
+            })),
+        ]),
+        json!([main_edge("e1", "s", "d")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "tracker import failed: {:?}", r.error);
+    let req = rx.try_iter().next().unwrap_or_default();
+    assert!(req.contains("\"events\""), "tracker body must be wrapped in the resource key: {}", req);
+    assert!(req.contains("atomicMode=ALL"));
+}
+
 #[test]
 fn src_linear_alias_routes_through_graphql_path() {
     // Linear is GraphQL-only. The src.linear tile aliases src.graphql

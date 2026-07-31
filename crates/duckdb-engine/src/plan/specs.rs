@@ -1575,6 +1575,53 @@ pub struct SalesforceSinkSpec {
     pub results_path: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+/// snk.dhis2: import rows into a DHIS2 instance.
+///
+/// This is not expressible as a `snk.rest` config for two reasons, both of
+/// which silently lose data rather than failing loudly:
+///
+///  * `snk.rest` serialises every upstream row into a single request body, so
+///    a real import becomes one enormous POST.
+///  * `snk.rest` discards the response body on success, and DHIS2 puts its
+///    import summary there. DHIS2 answers HTTP 200 even when it rejected every
+///    record, so a generic sink reports a green run having written nothing.
+pub struct Dhis2SinkSpec {
+    pub from_view: String,
+    /// Full endpoint URL, e.g. https://play.dhis2.org/api/dataValueSets
+    /// or https://play.dhis2.org/api/tracker.
+    pub url: String,
+    /// Pre-built Authorization header value, e.g. "ApiToken d2pat_..." or
+    /// "Basic <base64>". Built by the planner from the shared REST auth props.
+    pub auth_header: Option<(String, String)>,
+    /// "aggregate" (POST /api/dataValueSets) or "tracker" (POST /api/tracker).
+    /// These have completely different payload wrappers AND completely
+    /// different response schemas, so the parser branches on this.
+    pub import_type: String,
+    /// Tracker only: the collection key the rows are wrapped in, one of
+    /// trackedEntities / events / enrollments / relationships. DHIS2 rejects a
+    /// bare array, and the key must match the resource type.
+    pub tracker_resource: String,
+    /// CREATE | UPDATE | CREATE_AND_UPDATE | DELETE. DHIS2 has no separate
+    /// upsert flag: CREATE_AND_UPDATE *is* the upsert, and is its own default.
+    /// Sent explicitly because the published tracker docs claim a default of
+    /// CREATE while the source says CREATE_AND_UPDATE.
+    pub import_strategy: String,
+    /// Rows per request. Chunking is the whole reason this sink exists.
+    pub chunk_size: usize,
+    /// Sends dryRun=true (aggregate) / importMode=VALIDATE (tracker), so DHIS2
+    /// validates and reports without committing.
+    pub dry_run: bool,
+    /// Tracker atomicMode: "ALL" rolls the whole request back on any error,
+    /// "OBJECT" commits what it can. Relevant to retry safety: a 409 under
+    /// OBJECT means part of the data landed.
+    pub atomic_mode: String,
+    /// When true (default) any conflict, error report, or non-zero `ignored`
+    /// count fails the stage. When false they are reported and the run
+    /// continues, which is only safe if something downstream reconciles.
+    pub fail_on_conflict: bool,
+}
+
 /// snk.salesforce.bulk: write upstream rows into a Salesforce object via Bulk
 /// API 2.0 - the migration-scale path, where snk.salesforce (sObject
 /// Collections, <=200 records per round-trip) would mean one HTTP call per 200

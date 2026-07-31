@@ -2945,7 +2945,152 @@ function synthApiSource(comp: ComponentDef): ComponentManifest {
     ]);
 }
 
+/// DHIS2 imports do not fit the generic API-sink form: the method is always
+/// POST, there is no batch-mode choice (chunking is mandatory), and the useful
+/// knobs are DHIS2's own import options. It gets its own field set.
+function synthDhis2Sink(comp: ComponentDef): ComponentManifest {
+    const whenTracker = [{ key: 'importType', equals: 'tracker' }];
+    return base(
+        comp,
+        [
+            {
+                label: 'Endpoint',
+                fields: [
+                    {
+                        key: 'url',
+                        label: 'Import URL',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'https://play.dhis2.org/api/dataValueSets',
+                        description:
+                            'Full endpoint. Aggregate: {host}/api/dataValueSets. Tracker: {host}/api/tracker.',
+                    },
+                    {
+                        key: 'importType',
+                        label: 'Import type',
+                        kind: 'select',
+                        defaultValue: 'aggregate',
+                        options: [
+                            { label: 'Aggregate data values', value: 'aggregate' },
+                            { label: 'Tracker', value: 'tracker' },
+                        ],
+                        description:
+                            'Picks both the payload wrapper and the response parser. The two endpoints share no response keys.',
+                    },
+                    {
+                        key: 'trackerResource',
+                        label: 'Tracker resource',
+                        kind: 'select',
+                        defaultValue: 'events',
+                        options: [
+                            { label: 'Events', value: 'events' },
+                            { label: 'Tracked entities', value: 'trackedEntities' },
+                            { label: 'Enrollments', value: 'enrollments' },
+                            { label: 'Relationships', value: 'relationships' },
+                        ],
+                        description:
+                            'The collection key rows are wrapped in. DHIS2 rejects a bare array, and a wrong key imports nothing.',
+                        visibleWhen: whenTracker,
+                    },
+                ],
+            },
+            {
+                label: 'Import options',
+                fields: [
+                    {
+                        key: 'importStrategy',
+                        label: 'Import strategy',
+                        kind: 'select',
+                        defaultValue: 'CREATE_AND_UPDATE',
+                        options: [
+                            { label: 'Create and update (upsert)', value: 'CREATE_AND_UPDATE' },
+                            { label: 'Create only', value: 'CREATE' },
+                            { label: 'Update only', value: 'UPDATE' },
+                            { label: 'Delete', value: 'DELETE' },
+                        ],
+                        description:
+                            'DHIS2 has no separate upsert flag: CREATE_AND_UPDATE is the upsert. Always sent explicitly, because the published docs and the DHIS2 source disagree about the default.',
+                    },
+                    {
+                        key: 'chunkSize',
+                        label: 'Rows per request',
+                        kind: 'integer',
+                        defaultValue: 1000,
+                        description:
+                            'Rows are split across requests so one import is not a single enormous POST.',
+                    },
+                    {
+                        key: 'dryRun',
+                        label: 'Dry run',
+                        kind: 'bool',
+                        defaultValue: false,
+                        description:
+                            'Validate and report without committing (dryRun for aggregate, importMode=VALIDATE for tracker).',
+                    },
+                    {
+                        key: 'atomicMode',
+                        label: 'Atomic mode',
+                        kind: 'select',
+                        defaultValue: 'ALL',
+                        options: [
+                            { label: 'ALL - roll back the whole request on any error', value: 'ALL' },
+                            { label: 'OBJECT - commit what is valid', value: 'OBJECT' },
+                        ],
+                        description:
+                            'Under OBJECT a rejected import may still have committed part of the data, so re-running can double-write.',
+                        visibleWhen: whenTracker,
+                    },
+                    {
+                        key: 'failOnConflict',
+                        label: 'Fail the run on import conflicts',
+                        kind: 'bool',
+                        defaultValue: true,
+                        description:
+                            'DHIS2 answers HTTP 200 even when it rejects every record. Leave this on unless something downstream reconciles what was ignored.',
+                    },
+                ],
+            },
+            {
+                label: 'Authentication',
+                fields: [
+                    {
+                        key: 'authType',
+                        label: 'Auth type',
+                        kind: 'select',
+                        defaultValue: 'apikey',
+                        options: [
+                            { label: 'Personal access token / API key', value: 'apikey' },
+                            { label: 'Basic (user:password)', value: 'basic' },
+                            { label: 'Bearer token', value: 'bearer' },
+                            { label: 'None', value: 'none' },
+                        ],
+                    },
+                    {
+                        key: 'authHeader',
+                        label: 'API key header',
+                        kind: 'text',
+                        defaultValue: 'Authorization',
+                        description:
+                            'For a DHIS2 personal access token keep this as Authorization; the token is sent verbatim, so the value must read "ApiToken d2pat_...".',
+                        visibleWhen: [{ key: 'authType', equals: 'apikey' }],
+                    },
+                    {
+                        key: 'authToken',
+                        label: 'Token / credentials',
+                        kind: 'text',
+                        secret: true,
+                        placeholder: '${ENV:DHIS2_AUTH}',
+                        description:
+                            'API key: "ApiToken d2pat_...". Basic: user:password, encoded for you. Use ${ENV:...} so no secret lands in the pipeline JSON.',
+                    },
+                ],
+            },
+        ],
+    );
+}
+
 function synthApiSink(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'snk.dhis2') return synthDhis2Sink(comp);
     return base(
         comp,
         [

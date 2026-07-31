@@ -3739,6 +3739,7 @@ fn build_stage(
             | "src.discord"
             | "src.twilio"
             | "src.telegram"
+            | "src.dhis2"
     ) {
         // Generic REST source + thin vendor aliases. Vendors share
         // the same plumbing - the palette/form pre-fills url, auth

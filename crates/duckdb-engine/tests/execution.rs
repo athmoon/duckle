@@ -7568,6 +7568,129 @@ fn src_github_alias_routes_through_rest_path() {
     );
 }
 
+/// Serve `body` once on a loopback port, capturing the request text.
+/// Returns (port, captured, join handle).
+#[allow(clippy::type_complexity)]
+fn serve_once_json(
+    body: &'static [u8],
+) -> (
+    u16,
+    std::sync::Arc<std::sync::Mutex<String>>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let cap = captured.clone();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            *cap.lock().unwrap() = String::from_utf8_lossy(&buf).to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    (port, captured, handle)
+}
+
+#[test]
+fn src_dhis2_alias_routes_through_rest_path() {
+    // DHIS2 is a thin engine alias of src.rest. This exercises the exact
+    // recipe the palette tile documents: aggregate data values, whose records
+    // are nested under /dataValues, authenticated with a personal access token
+    // sent verbatim in an explicit Authorization header (apikey + authHeader,
+    // because DHIS2 wants "ApiToken <pat>" rather than "Bearer <pat>").
+    let engine = engine_or_skip!();
+    let body = br#"{"dataValues":[{"dataElement":"fbfJHSPpUQD","period":"202401","orgUnit":"DiszpKrYNg8","value":"12"},{"dataElement":"cYeuwXTCPkU","period":"202401","orgUnit":"DiszpKrYNg8","value":"34"}]}"#;
+    let (port, captured, handle) = serve_once_json(body);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "dhis2.csv");
+    let url = format!("http://127.0.0.1:{}/api/dataValueSets", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("d", "src.dhis2", json!({
+                "url": url,
+                "method": "GET",
+                "responsePath": "/dataValues",
+                "authType": "apikey",
+                "authHeader": "Authorization",
+                "authToken": "ApiToken d2pat_TEST_NOT_REAL",
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "d", "k")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "src.dhis2 alias failed: {:?}", r.error);
+    // The envelope was unwrapped and both data values reached the sink.
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 2);
+    // The token went out verbatim under the header name the tile documents.
+    // An implicit default would have sent X-API-Key and DHIS2 would 401.
+    let req = captured.lock().unwrap();
+    assert!(
+        req.contains("Authorization: ApiToken d2pat_TEST_NOT_REAL"),
+        "expected verbatim ApiToken header on src.dhis2 request, got: {}",
+        req.lines().next().unwrap_or("")
+    );
+}
+
+#[test]
+fn rest_basic_auth_encodes_user_password() {
+    // Before this existed, authType=basic fell through push_rest_auth's
+    // catch-all and NO auth header was sent, so half a dozen palette tiles
+    // promising Basic auth produced a silent 401. The credential field holds
+    // user:password and is base64-encoded by the engine.
+    let engine = engine_or_skip!();
+    let body = br#"[{"id":1}]"#;
+    let (port, captured, handle) = serve_once_json(body);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "basic.csv");
+    let url = format!("http://127.0.0.1:{}/api/me", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("b", "src.rest", json!({
+                "url": url,
+                "method": "GET",
+                "authType": "basic",
+                "authToken": "admin:district",
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "b", "k")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "basic auth run failed: {:?}", r.error);
+    let req = captured.lock().unwrap();
+    // base64("admin:district")
+    assert!(
+        req.contains("Authorization: Basic YWRtaW46ZGlzdHJpY3Q="),
+        "expected base64-encoded Basic header, got: {}",
+        req.lines().next().unwrap_or("")
+    );
+}
+
 #[test]
 fn src_linear_alias_routes_through_graphql_path() {
     // Linear is GraphQL-only. The src.linear tile aliases src.graphql

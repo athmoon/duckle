@@ -2796,6 +2796,7 @@ function synthApiSource(comp: ComponentDef): ComponentManifest {
                               { label: 'None', value: 'none' },
                               { label: 'Bearer token', value: 'bearer' },
                               { label: 'API key (header)', value: 'apikey' },
+                              { label: 'Basic (user:password)', value: 'basic' },
                               // #195: any REST alias can mint a token per run
                               // once it supplies its own token endpoint.
                               { label: 'OAuth 2.0 Client Credentials (mint per run)', value: 'oauth_client_credentials' },
@@ -2809,6 +2810,8 @@ function synthApiSource(comp: ComponentDef): ComponentManifest {
                     label: 'Token / API key',
                     kind: 'text',
                     placeholder: '••••••••',
+                    description:
+                        'Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON.',
                     ...(isSalesforce
                         ? { visibleWhen: [whenNoConnection(), { key: 'authType', equals: 'bearer' }] }
                         : {}),

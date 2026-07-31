@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "componentCount": 378,
+  "componentCount": 379,
   "components": [
     {
       "id": "src.csv",
@@ -7942,6 +7942,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -7951,7 +7955,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -8254,6 +8259,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -8263,7 +8272,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -8566,6 +8576,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -8575,7 +8589,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -8960,6 +8975,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -8969,7 +8988,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -9272,6 +9292,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -9281,7 +9305,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -9613,6 +9638,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -9622,7 +9651,325 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
+              },
+              {
+                "key": "authHeader",
+                "label": "API key header",
+                "kind": "text",
+                "placeholder": "X-API-Key",
+                "description": "Header name for API key auth (e.g. X-API-Key or X-Redmine-API-Key). Used only when Auth type is API key; leave blank to default to X-API-Key."
+              },
+              {
+                "key": "tokenUrl",
+                "label": "Token URL",
+                "kind": "text",
+                "placeholder": "https://identity.xero.com/connect/token",
+                "description": "OAuth 2.0 token endpoint. A fresh access token is minted per run, so no expiring token has to be pasted.",
+                "visibleWhen": [
+                  {
+                    "key": "authType",
+                    "equals": "oauth_client_credentials"
+                  }
+                ]
+              },
+              {
+                "key": "clientId",
+                "label": "Client ID",
+                "kind": "text",
+                "visibleWhen": [
+                  {
+                    "key": "authType",
+                    "equals": "oauth_client_credentials"
+                  }
+                ]
+              },
+              {
+                "key": "clientSecret",
+                "label": "Client secret",
+                "kind": "text",
+                "secret": true,
+                "placeholder": "${ENV:OAUTH_CLIENT_SECRET}",
+                "description": "Use ${ENV:...} so no secret lands in the pipeline JSON.",
+                "visibleWhen": [
+                  {
+                    "key": "authType",
+                    "equals": "oauth_client_credentials"
+                  }
+                ]
+              },
+              {
+                "key": "clientAuth",
+                "label": "Client authentication",
+                "kind": "select",
+                "defaultValue": "body",
+                "options": [
+                  {
+                    "label": "Credentials in POST body",
+                    "value": "body"
+                  },
+                  {
+                    "label": "HTTP Basic header",
+                    "value": "basic"
+                  }
+                ],
+                "description": "How the client id/secret reach the token endpoint. Xero requires HTTP Basic.",
+                "visibleWhen": [
+                  {
+                    "key": "authType",
+                    "equals": "oauth_client_credentials"
+                  }
+                ]
+              },
+              {
+                "key": "scope",
+                "label": "Scope",
+                "kind": "text",
+                "placeholder": "accounting.transactions",
+                "description": "Optional scope form field, required by some providers.",
+                "visibleWhen": [
+                  {
+                    "key": "authType",
+                    "equals": "oauth_client_credentials"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "label": "Response",
+            "fields": [
+              {
+                "key": "responsePath",
+                "label": "Records JSON pointer",
+                "kind": "text",
+                "placeholder": "/data",
+                "description": "RFC 6901 JSON pointer to the array of row objects in the response. Leave empty if the response root IS the array."
+              },
+              {
+                "key": "jsonPath",
+                "label": "Records JSONPath (legacy)",
+                "kind": "text",
+                "placeholder": "$.data[*]",
+                "description": "JSONPath form for compatibility with older pipelines. Prefer the JSON pointer above."
+              }
+            ]
+          },
+          {
+            "label": "Pagination",
+            "fields": [
+              {
+                "key": "paginationType",
+                "label": "Style",
+                "kind": "select",
+                "defaultValue": "none",
+                "options": [
+                  {
+                    "label": "None (single-shot fetch)",
+                    "value": "none"
+                  },
+                  {
+                    "label": "Cursor (token in response body)",
+                    "value": "cursor"
+                  },
+                  {
+                    "label": "Offset / limit",
+                    "value": "offset"
+                  },
+                  {
+                    "label": "Page number",
+                    "value": "page"
+                  },
+                  {
+                    "label": "RFC 5988 Link header (rel=\"next\")",
+                    "value": "link"
+                  }
+                ]
+              },
+              {
+                "key": "cursorNextPath",
+                "label": "Cursor JSON pointer (cursor style)",
+                "kind": "text",
+                "placeholder": "/meta/next_cursor"
+              },
+              {
+                "key": "cursorParam",
+                "label": "Cursor query parameter (cursor style)",
+                "kind": "text",
+                "placeholder": "cursor"
+              },
+              {
+                "key": "offsetParam",
+                "label": "Offset query parameter (offset style)",
+                "kind": "text",
+                "placeholder": "offset"
+              },
+              {
+                "key": "pageSize",
+                "label": "Page size (offset style)",
+                "kind": "integer",
+                "defaultValue": 100
+              },
+              {
+                "key": "totalCountPath",
+                "label": "Total-count JSON pointer (offset style)",
+                "kind": "text",
+                "placeholder": "/total_count",
+                "description": "Optional. JSON pointer to a total-row count in the response (e.g. /total_count for Redmine). When set, offset paging stops once offset + page size reaches the total, instead of relying on a short page."
+              },
+              {
+                "key": "pageParam",
+                "label": "Page query parameter (page style)",
+                "kind": "text",
+                "placeholder": "page"
+              },
+              {
+                "key": "startPage",
+                "label": "Start page (page style)",
+                "kind": "integer",
+                "defaultValue": 1
+              },
+              {
+                "key": "maxPages",
+                "label": "Max pages (safety cap)",
+                "kind": "integer",
+                "defaultValue": 100
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [],
+          "outputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject",
+              "optional": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "src.dhis2",
+      "label": "DHIS2",
+      "kind": "source",
+      "availability": "available",
+      "summary": "DHIS2 Web API source - thin alias over src.rest. Auth: pick API key, set authHeader to Authorization, and put \"ApiToken d2pat_...\" (2.37+) or \"Basic <user:password>\" in the token field; plain Basic works too. Set responsePath per endpoint, since DHIS2 uses a different envelope for each: /api/dataValueSets -> /dataValues (unpaged); metadata lists like /api/organisationUnits or /api/dataElements -> the camelCase plural name, with paginationType page + pageSize; /api/tracker/trackedEntities -> the plural type name on 2.41+ but \"instances\" on 2.38-2.40. Raw /api/analytics is NOT supported: it returns headers[] plus positional rows[][] rather than record objects - use /api/analytics/dataValueSet.json (responsePath /dataValues) instead. Writing back to DHIS2 is not supported yet: the generic REST sink cannot chunk an import and discards the import summary, and DHIS2 returns HTTP 200 even when every record is rejected.",
+      "ports": {
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject",
+            "optional": true
+          }
+        ]
+      },
+      "manifest": {
+        "id": "src.dhis2",
+        "kind": "source",
+        "label": "DHIS2",
+        "description": "DHIS2 Web API source - thin alias over src.rest. Auth: pick API key, set authHeader to Authorization, and put \"ApiToken d2pat_...\" (2.37+) or \"Basic <user:password>\" in the token field; plain Basic works too. Set responsePath per endpoint, since DHIS2 uses a different envelope for each: /api/dataValueSets -> /dataValues (unpaged); metadata lists like /api/organisationUnits or /api/dataElements -> the camelCase plural name, with paginationType page + pageSize; /api/tracker/trackedEntities -> the plural type name on 2.41+ but \"instances\" on 2.38-2.40. Raw /api/analytics is NOT supported: it returns headers[] plus positional rows[][] rather than record objects - use /api/analytics/dataValueSet.json (responsePath /dataValues) instead. Writing back to DHIS2 is not supported yet: the generic REST sink cannot chunk an import and discards the import summary, and DHIS2 returns HTTP 200 even when every record is rejected.",
+        "schemaSource": "autodetect",
+        "sections": [
+          {
+            "label": "Request",
+            "fields": [
+              {
+                "key": "url",
+                "label": "URL",
+                "kind": "text",
+                "required": true,
+                "placeholder": "https://api.example.com/v1/resource"
+              },
+              {
+                "key": "method",
+                "label": "Method",
+                "kind": "select",
+                "defaultValue": "GET",
+                "options": [
+                  {
+                    "label": "GET",
+                    "value": "GET"
+                  },
+                  {
+                    "label": "POST",
+                    "value": "POST"
+                  },
+                  {
+                    "label": "PUT",
+                    "value": "PUT"
+                  },
+                  {
+                    "label": "DELETE",
+                    "value": "DELETE"
+                  }
+                ]
+              },
+              {
+                "key": "headers",
+                "label": "Headers",
+                "kind": "key-value"
+              },
+              {
+                "key": "body",
+                "label": "Request body",
+                "kind": "textarea",
+                "rows": 4
+              }
+            ]
+          },
+          {
+            "label": "Auth",
+            "fields": [
+              {
+                "key": "authType",
+                "label": "Auth type",
+                "kind": "select",
+                "defaultValue": "none",
+                "options": [
+                  {
+                    "label": "None",
+                    "value": "none"
+                  },
+                  {
+                    "label": "Bearer token",
+                    "value": "bearer"
+                  },
+                  {
+                    "label": "API key (header)",
+                    "value": "apikey"
+                  },
+                  {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
+                    "label": "OAuth 2.0 Client Credentials (mint per run)",
+                    "value": "oauth_client_credentials"
+                  }
+                ]
+              },
+              {
+                "key": "authToken",
+                "label": "Token / API key",
+                "kind": "text",
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -9925,6 +10272,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -9934,7 +10285,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -11219,6 +11571,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -11228,7 +11584,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -40571,6 +40928,7 @@
                 "label": "Token / API key",
                 "kind": "text",
                 "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON.",
                 "visibleWhen": [
                   {
                     "key": "connectionRef",
@@ -41103,6 +41461,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -41112,7 +41474,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -41415,6 +41778,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -41424,7 +41791,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -41727,6 +42095,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -41736,7 +42108,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -42039,6 +42412,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -42048,7 +42425,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -42351,6 +42729,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -42360,7 +42742,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -42663,6 +43046,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -42672,7 +43059,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -42975,6 +43363,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -42984,7 +43376,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -43287,6 +43680,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -43296,7 +43693,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -43599,6 +43997,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -43608,7 +44010,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -43911,6 +44314,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -43920,7 +44327,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -44223,6 +44631,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -44232,7 +44644,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -44535,6 +44948,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -44544,7 +44961,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -44847,6 +45265,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -44856,7 +45278,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -45159,6 +45582,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -45168,7 +45595,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -45471,6 +45899,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -45480,7 +45912,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -45783,6 +46216,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -45792,7 +46229,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -46095,6 +46533,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -46104,7 +46546,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -46407,6 +46850,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -46416,7 +46863,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -46719,6 +47167,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -46728,7 +47180,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -47031,6 +47484,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -47040,7 +47497,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -47343,6 +47801,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -47352,7 +47814,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -47655,6 +48118,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -47664,7 +48131,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -47967,6 +48435,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -47976,7 +48448,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -48279,6 +48752,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -48288,7 +48765,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -48591,6 +49069,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -48600,7 +49082,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -48903,6 +49386,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -48912,7 +49399,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",
@@ -49215,6 +49703,10 @@
                     "value": "apikey"
                   },
                   {
+                    "label": "Basic (user:password)",
+                    "value": "basic"
+                  },
+                  {
                     "label": "OAuth 2.0 Client Credentials (mint per run)",
                     "value": "oauth_client_credentials"
                   }
@@ -49224,7 +49716,8 @@
                 "key": "authToken",
                 "label": "Token / API key",
                 "kind": "text",
-                "placeholder": "••••••••"
+                "placeholder": "••••••••",
+                "description": "Bearer: the token. API key: the key. Basic: user:password, which is base64-encoded for you, so do not paste an already-encoded value. Use ${ENV:...} to keep the secret out of the pipeline JSON."
               },
               {
                 "key": "authHeader",

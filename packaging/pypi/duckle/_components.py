@@ -296,8 +296,7 @@ COMPONENTS = {
     'snk.bigquery': {
         'kind': 'sink',
         'summary': 'Write tables to BigQuery via the duckdb-bigquery community extension',
-        'params': ['project', 'dataset', 'schemaName', 'tableName', 'mode'],
-        'unverified': ['credentialsPath'],
+        'params': ['project', 'dataset', 'schemaName', 'tableName', 'mode', 'credentialsPath'],
     },
     'snk.cassandra': {
         'kind': 'sink',
@@ -380,6 +379,11 @@ COMPONENTS = {
         'kind': 'sink',
         'summary': 'POST a GraphQL mutation per upstream row. The mutation body can reference row fields via ${field} substitution.',
         'params': ['url', 'method', 'headers', 'batchMode', 'bodyType', 'bodyTemplate', 'authType', 'authToken', 'authHeader'],
+    },
+    'snk.huggingface': {
+        'kind': 'sink',
+        'summary': 'Push the pipeline output to a Hugging Face Hub dataset repo. The engine materializes a Parquet and commits it over the Hub API (create-repo -> preupload -> git-LFS -> commit). Needs a write-scoped token; the repo is created if it does not exist.',
+        'params': ['repo', 'path', 'token', 'private', 'revision', 'commitMessage'],
     },
     'snk.iceberg': {
         'kind': 'sink',
@@ -633,14 +637,12 @@ COMPONENTS = {
     'src.airtable': {
         'kind': 'source',
         'summary': 'Airtable REST. Bearer Personal Access Token. Cursor pagination on `offset` (cursorNextPath /offset, cursorParam `offset`). responsePath /records.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.asana': {
         'kind': 'source',
         'summary': 'Asana REST. Bearer Personal Access Token (https://app.asana.com/0/my-apps). Cursor pagination on `next_page.offset` (cursorNextPath /next_page/offset, cursorParam `offset`). responsePath /data. Base URL https://app.asana.com/api/1.0.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.avro': {
         'kind': 'source',
@@ -663,8 +665,7 @@ COMPONENTS = {
     'src.bigquery': {
         'kind': 'source',
         'summary': 'Read tables from BigQuery via the duckdb-bigquery community extension - uses standard GCP credential discovery',
-        'params': ['project', 'dataset', 'schemaName', 'tableName', 'query'],
-        'unverified': ['credentialsPath'],
+        'params': ['project', 'dataset', 'schemaName', 'tableName', 'query', 'credentialsPath'],
     },
     'src.cassandra': {
         'kind': 'source',
@@ -685,8 +686,7 @@ COMPONENTS = {
     'src.clickup': {
         'kind': 'source',
         'summary': 'ClickUp REST. Bearer Personal API token (pk_... from Settings > Apps). Page pagination on `?page=N` (paginationType `page`, pageParam `page`). responsePath /tasks (or whatever resource). Base URL https://api.clickup.com/api/v2.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.clipboard': {
         'kind': 'source',
@@ -720,11 +720,15 @@ COMPONENTS = {
         'summary': 'Read Delta Lake tables via DuckDB delta_scan',
         'params': ['path'],
     },
+    'src.dhis2': {
+        'kind': 'source',
+        'summary': 'DHIS2 Web API source - thin alias over src.rest. Auth: pick API key, set authHeader to Authorization, and put "ApiToken d2pat_..." (2.37+) or "Basic <user:password>" in the token field; plain Basic works too. Set responsePath per endpoint, since DHIS2 uses a different envelope for each: /api/data...',
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
+    },
     'src.discord': {
         'kind': 'source',
         'summary': 'Discord REST. Bot token in Authorization header (prefix `Bot `). No native pagination on most endpoints; use `?limit=N&before=ID` patterns. responsePath empty (responses are top-level arrays). Base URL https://discord.com/api/v10.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.duckdb': {
         'kind': 'source',
@@ -785,6 +789,11 @@ COMPONENTS = {
         'params': ['bucket', 'key', 'region', 'accessKey', 'secretKey', 'sessionToken', 'connectionRef', 'endpoint', 'urlStyle', 'useSsl', 'format'],
         'unverified': ['glob'],
     },
+    'src.gdb': {
+        'kind': 'source',
+        'summary': 'Read a feature class (layer) from an Esri File Geodatabase via the spatial extension (ST_Read with layer=)',
+        'params': ['path', 'layer'],
+    },
     'src.git': {
         'kind': 'source',
         'summary': 'Read commit log or file tree from a local git working copy. Shells out to the system `git` CLI - no extra Rust dep. mode=log emits {hash, short_hash, author_name, author_email, date, subject}; mode=files emits {mode, type, hash, size, path}.',
@@ -793,14 +802,12 @@ COMPONENTS = {
     'src.github': {
         'kind': 'source',
         'summary': 'GitHub REST. Bearer Personal Access Token. Link header pagination (paginationType `link`). Accept: application/vnd.github+json header recommended; defaults to https://api.github.com.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.gitlab': {
         'kind': 'source',
         'summary': 'GitLab REST. Bearer Personal Access Token. Link header pagination (paginationType `link`). Base URL https://gitlab.com/api/v4 (or self-hosted).',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.gizmosql': {
         'kind': 'source',
@@ -810,20 +817,22 @@ COMPONENTS = {
     'src.graphql': {
         'kind': 'source',
         'summary': 'POST a GraphQL query to an endpoint and walk the response data path. Rides snk.rest/src.rest infrastructure; auth via Bearer / API-Key.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.http': {
         'kind': 'source',
         'summary': 'Read CSV / Parquet / JSON from any HTTP(S) URL via httpfs',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.hubspot': {
         'kind': 'source',
         'summary': 'HubSpot REST. Bearer auth via a Private App access token. Cursor pagination on `paging.next.after` (cursorNextPath /paging/next/after, cursorParam `after`). responsePath /results.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
+    },
+    'src.huggingface': {
+        'kind': 'source',
+        'summary': 'Read a Hugging Face Hub dataset directly via DuckDB hf:// (httpfs). Give the repo id and a file/glob; CSV / JSON / Parquet auto-detected. Token for private or gated datasets.',
+        'params': ['repo', 'path', 'revision', 'token'],
     },
     'src.iceberg': {
         'kind': 'source',
@@ -833,14 +842,12 @@ COMPONENTS = {
     'src.intercom': {
         'kind': 'source',
         'summary': 'Intercom REST. Bearer auth. Cursor pagination via `pages.next.starting_after` + `starting_after` param. responsePath /data.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.jira': {
         'kind': 'source',
         'summary': 'Jira Cloud REST. Basic auth (email + API token). Offset pagination on `startAt` + `maxResults`. responsePath /issues for /search.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.json': {
         'kind': 'source',
@@ -874,14 +881,12 @@ COMPONENTS = {
     'src.linear': {
         'kind': 'source',
         'summary': 'Linear GraphQL. Rides src.graphql; auth via API key in Authorization header. responsePath walks /data.<query>.<edges> or similar.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.mailchimp': {
         'kind': 'source',
         'summary': 'Mailchimp REST. Bearer API key (the key has a region suffix - the URL is https://{region}.api.mailchimp.com/3.0). Offset pagination via `offset` + `count`. responsePath /lists (or /campaigns / etc).',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.mariadb': {
         'kind': 'source',
@@ -904,8 +909,7 @@ COMPONENTS = {
     'src.monday': {
         'kind': 'source',
         'summary': 'Monday.com GraphQL. Rides src.graphql; auth via Bearer token in Authorization header. POST a GraphQL query as `body`; responsePath /data.<query_name>. Base URL https://api.monday.com/v2.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.mongodb': {
         'kind': 'source',
@@ -932,14 +936,12 @@ COMPONENTS = {
     'src.notion': {
         'kind': 'source',
         'summary': 'Notion REST. Bearer integration token + Notion-Version header. Cursor pagination on `next_cursor` (cursorNextPath /next_cursor, cursorParam `start_cursor`). responsePath /results.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.odata': {
         'kind': 'source',
         'summary': 'OData v4 source - thin alias over src.rest. Defaults: responsePath /value, pagination follows @odata.nextLink as a complete URL. Set authType (basic / bearer / apikey) on the form. Works with SAP, D365, Microsoft Graph, any OData v4 endpoint.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.opensearch': {
         'kind': 'source',
@@ -972,8 +974,7 @@ COMPONENTS = {
     'src.pipedrive': {
         'kind': 'source',
         'summary': 'Pipedrive REST. URL ?api_token=... or Bearer auth. Cursor pagination on `additional_data.pagination.next_start` (start parameter). responsePath /data.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.postgres': {
         'kind': 'source',
@@ -1001,8 +1002,7 @@ COMPONENTS = {
     'src.quickbooks': {
         'kind': 'source',
         'summary': "QuickBooks Online REST. Bearer OAuth token; users assemble the query URL (Intuit's API requires SQL-like queries). responsePath /QueryResponse.",
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.qvd': {
         'kind': 'source',
@@ -1042,8 +1042,7 @@ COMPONENTS = {
     'src.rest': {
         'kind': 'source',
         'summary': 'Generic HTTP GET/POST source. Parses JSON response, optionally walks a JSON pointer (responsePath) to find the row array, and follows cursor-style pagination if configured (cursorNextPath + cursorParam).',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.s3': {
         'kind': 'source',
@@ -1053,20 +1052,22 @@ COMPONENTS = {
     'src.salesforce': {
         'kind': 'source',
         'summary': 'Salesforce REST. Rides the generic src.rest path with a Bearer token or OAuth 2.0 client-credentials (a fresh token minted per run from a connected app); users typically point url at https://{instance}.my.salesforce.com/services/data/v60.0/query/?q=SELECT+... and walk responsePath /records.',
-        'params': ['url', 'method', 'headers', 'body', 'connectionRef', 'authType', 'authToken', 'authHeader', 'loginUrl', 'clientId', 'clientSecret', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'connectionRef', 'authType', 'authToken', 'authHeader', 'loginUrl', 'clientId', 'clientSecret', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
+    },
+    'src.salesforce.bulk': {
+        'kind': 'source',
+        'summary': 'Salesforce Bulk API 2.0 query source for migration-scale reads: a SOQL query runs as an async query job (query / queryAll incl. deleted+archived), the paged CSV result sets stream to disk via Sforce-Locator, and DuckDB reads them out-of-core - a multi-GB result never lands in memory. Same auth as...',
+        'params': ['connectionRef', 'authMode', 'instanceUrl', 'accessToken', 'loginUrl', 'clientId', 'clientSecret', 'apiVersion', 'query', 'operation', 'maxRecords', 'pollIntervalSecs', 'timeoutSecs'],
     },
     'src.sap': {
         'kind': 'source',
         'summary': 'SAP S/4HANA & ECC source over OData - covers OData services and CDS views published as OData (@OData.publish). Native HTTP, no SAP GUI or SDK. Set odataVersion (v2 classic Gateway = /d/results with __next paging; v4 RAP = /value with @odata.nextLink), sapClient (mandate, appended as sap-client=NN...',
-        'params': ['odataVersion', 'sapClient', 'url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['odataVersion', 'sapClient', 'url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.sap.rfc': {
         'kind': 'source',
         'summary': 'Call an RFC-enabled function module / BAPI exposed as a SOAP web service (SOAMANAGER, or the generic /sap/bc/soap/rfc endpoint). Native HTTP + XML, no proprietary SAP NW RFC SDK. Set url to the service endpoint, body to the SOAP envelope, responsePath to the element-name walk to the result table,...',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.scylla': {
         'kind': 'source',
@@ -1076,26 +1077,22 @@ COMPONENTS = {
     'src.segment': {
         'kind': 'source',
         'summary': 'Segment Public API. Bearer access token. Cursor pagination via `pagination.next` + `pagination[cursor]` param. responsePath /data.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.sendgrid': {
         'kind': 'source',
         'summary': 'SendGrid REST. Bearer API key. Offset pagination via `offset` + `limit`. responsePath /result for /v3/marketing/* endpoints.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.shopify': {
         'kind': 'source',
         'summary': 'Shopify Admin API. Bearer auth via X-Shopify-Access-Token. Link header pagination supported by recent Admin API endpoints. responsePath depends on resource (e.g. /products).',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.slack': {
         'kind': 'source',
         'summary': 'Slack Web API. Bearer Bot User OAuth Token (xoxb-...). Cursor pagination via `response_metadata.next_cursor` + `cursor` param. responsePath depends on endpoint (e.g. /messages for conversations.history). Base URL https://slack.com/api.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.snowflake': {
         'kind': 'source',
@@ -1105,8 +1102,7 @@ COMPONENTS = {
     'src.soap': {
         'kind': 'source',
         'summary': 'SOAP / generic XML-API source. Thin alias over src.rest with defaults: POST, Content-Type text/xml; charset=utf-8, responseFormat=xml. Set responsePath to the element-name walk into the body (e.g. Envelope/Body/GetUsersResponse/Users/User), supply the XML envelope in `body`, optionally add a `soa...',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.spatial': {
         'kind': 'source',
@@ -1127,8 +1123,7 @@ COMPONENTS = {
     'src.stripe': {
         'kind': 'source',
         'summary': 'Stripe REST. Bearer auth with the Secret Key (sk_live_... / sk_test_...). Cursor pagination on `data[-1].id` via `starting_after`. responsePath /data.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.synapse': {
         'kind': 'source',
@@ -1139,8 +1134,7 @@ COMPONENTS = {
     'src.telegram': {
         'kind': 'source',
         'summary': 'Telegram Bot API. Token in URL path (https://api.telegram.org/bot{token}/getUpdates). Offset pagination via `?offset=N`. responsePath /result. No auth header needed - token is in the URL.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.teradata': {
         'kind': 'source',
@@ -1156,8 +1150,7 @@ COMPONENTS = {
     'src.trello': {
         'kind': 'source',
         'summary': 'Trello REST. Anonymous-style auth: append `?key={apiKey}&token={token}` to the URL. No body, no pagination (the API returns full result sets by default). Set responsePath empty since responses are top-level arrays. Base URL https://api.trello.com/1.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.tsv': {
         'kind': 'source',
@@ -1168,8 +1161,7 @@ COMPONENTS = {
     'src.twilio': {
         'kind': 'source',
         'summary': 'Twilio REST. Basic auth (Account SID + Auth Token). Page-cursor pagination via `next_page_uri`. responsePath depends on resource (e.g. /messages, /calls). Base URL https://api.twilio.com/2010-04-01/Accounts/{AccountSid}.',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.vortex': {
         'kind': 'source',
@@ -1195,8 +1187,7 @@ COMPONENTS = {
     'src.xero': {
         'kind': 'source',
         'summary': 'Xero REST. Either paste a Bearer OAuth token, or pick OAuth 2.0 Client Credentials and give the token URL (https://identity.xero.com/connect/token) with HTTP Basic client auth so a fresh token is minted per run - that suits a Xero Custom Connection. Pass Xero-Tenant-Id as a custom header. respons...',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'src.xml': {
         'kind': 'source',
@@ -1213,8 +1204,7 @@ COMPONENTS = {
     'src.zendesk': {
         'kind': 'source',
         'summary': 'Zendesk Support REST. Basic auth (email/token + API token). Cursor pagination via `meta.after_cursor` + `page[after]` param. responsePath /tickets (or whatever resource).',
-        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
-        'unverified': ['jsonPath'],
+        'params': ['url', 'method', 'headers', 'body', 'authType', 'authToken', 'authHeader', 'tokenUrl', 'clientId', 'clientSecret', 'clientAuth', 'scope', 'responsePath', 'jsonPath', 'paginationType', 'cursorNextPath', 'cursorParam', 'offsetParam', 'pageSize', 'totalCountPath', 'pageParam', 'startPage', 'maxPages'],
     },
     'xf.addcol': {
         'kind': 'transform',

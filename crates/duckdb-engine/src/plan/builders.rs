@@ -8330,6 +8330,23 @@ pub(crate) fn push_rest_auth(headers: &mut Vec<(String, String)>, props: &JsonVa
             let (name, value) = api_key_header(props, &token);
             headers.push((name, value));
         }
+        // HTTP Basic. Several palette summaries (Jira, Zendesk, Twilio, CouchDB,
+        // OData, SAP, DHIS2) already tell users to pick Basic, but until this arm
+        // existed the match fell through to `_ => {}` and sent NO auth header at
+        // all - a silent 401 rather than a configuration error.
+        //
+        // The credential field carries `user:password` and is encoded here, so a
+        // user never has to run base64 by hand and no pre-encoded blob has to be
+        // pasted into pipeline JSON. Anything already base64 would be encoded a
+        // second time, which is why the form labels the field explicitly.
+        "basic" => {
+            use base64::engine::general_purpose::STANDARD as B64;
+            use base64::Engine as _;
+            headers.push((
+                "Authorization".into(),
+                format!("Basic {}", B64.encode(token.as_bytes())),
+            ));
+        }
         _ => {}
     }
 }

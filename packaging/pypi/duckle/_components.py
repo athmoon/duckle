@@ -1510,6 +1510,11 @@ COMPONENTS = {
         'summary': 'A buffered geometry around each row (ST_Buffer)',
         'params': ['geomColumn', 'distance', 'outputColumn'],
     },
+    'xf.geo.clip': {
+        'kind': 'transform',
+        'summary': 'Two-input overlay (#217): keeps every attribute of the input layer on the main input and replaces its geometry with the part inside the clip layer on the second input. The clip layer is dissolved with ST_Union_Agg first, so a feature spanning several clip polygons yields one row rather than one p...',
+        'params': ['geomColumn', 'clipGeomColumn'],
+    },
     'xf.geo.create': {
         'kind': 'transform',
         'summary': 'Build a geometry column from X/Y coordinates, WKT, or WKB (ST_Point / ST_GeomFromText / ST_GeomFromWKB)',
@@ -1519,6 +1524,11 @@ COMPONENTS = {
         'kind': 'transform',
         'summary': 'Distance from each row to a target geometry; auto-picks planar or spheroid from the CRS',
         'params': ['geomColumn', 'targetWkt', 'outputColumn'],
+    },
+    'xf.geo.erase': {
+        'kind': 'transform',
+        'summary': 'Two-input overlay (#218): keeps every attribute of the input layer on the main input and subtracts the erase layer on the second input (ST_Difference). The erase layer is dissolved with ST_Union_Agg first, since differencing each feature in turn would only remove the last. Features left with no g...',
+        'params': ['geomColumn', 'eraseGeomColumn'],
     },
     'xf.geo.flip': {
         'kind': 'transform',

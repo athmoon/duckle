@@ -1880,7 +1880,7 @@
         assert!(sql.contains("regexp_extract(typeof("), "no CRS probe: {sql}");
         assert!(sql.contains("error("), "no error guard: {sql}");
         assert!(
-            sql.contains("WHERE (SELECT __ok FROM __sj_crs)"),
+            sql.contains("WHERE (SELECT __ok FROM __crs_guard)"),
             "guard must be a filter so it cannot be pruned: {sql}"
         );
         // Both column names must be probed, not just one.
@@ -1888,6 +1888,65 @@
         // Only two KNOWN and DIFFERENT systems are an error; an unresolved CRS
         // stays permissive so existing pipelines keep running.
         assert!(sql.contains("__l <> '' AND __r <> '' AND __l <> __r"), "{sql}");
+    }
+
+    #[test]
+    fn geo_clip_dissolves_the_clip_layer_and_keeps_attributes() {
+        // #217. Two behaviours make this Clip rather than a spatial join:
+        // the clip layer is dissolved first (otherwise one input feature
+        // spanning three clip polygons comes back three times), and the input's
+        // attributes survive with only the geometry column replaced.
+        use crate::plan::builders::build_geo_clip;
+        let props = serde_json::json!({ "geomColumn": "geom" });
+        let sql = build_geo_clip(&spatial_join_inputs(), &props).expect("clip");
+        assert!(sql.contains("ST_Union_Agg("), "clip layer must be dissolved: {sql}");
+        assert!(sql.contains("ST_Intersection("), "{sql}");
+        assert!(
+            sql.contains("m.* REPLACE (ST_Intersection("),
+            "attributes must be preserved with only geometry replaced: {sql}"
+        );
+        // Non-overlapping features are excluded, not returned with empty geometry.
+        assert!(sql.contains("ST_Intersects("), "{sql}");
+        // And the shared CRS guard applies.
+        assert!(sql.contains("__crs_guard"), "{sql}");
+
+        // A separate clip-layer column name is honoured.
+        let props = serde_json::json!({ "geomColumn": "geom", "clipGeomColumn": "boundary" });
+        let sql = build_geo_clip(&spatial_join_inputs(), &props).unwrap();
+        assert!(sql.contains("\"boundary\""), "{sql}");
+
+        // Both inputs are required, and the message says which is missing.
+        let mut only_main = crate::plan::graph::NodeInputs::default();
+        only_main.ports.insert("main".into(), vec!["a".into()]);
+        let err = build_geo_clip(&only_main, &serde_json::json!({ "geomColumn": "geom" }))
+            .unwrap_err();
+        assert!(err.contains("clip layer"), "{err}");
+    }
+
+    #[test]
+    fn geo_erase_dissolves_the_erase_layer_and_drops_emptied_rows() {
+        // #218. Dissolving matters even more here: differencing against each
+        // erase feature in turn would only ever remove the last one.
+        use crate::plan::builders::build_geo_erase;
+        let props = serde_json::json!({ "geomColumn": "geom" });
+        let sql = build_geo_erase(&spatial_join_inputs(), &props).expect("erase");
+        assert!(sql.contains("ST_Union_Agg("), "erase layer must be dissolved: {sql}");
+        assert!(sql.contains("ST_Difference("), "{sql}");
+        assert!(
+            sql.contains("ST_IsEmpty("),
+            "fully erased features must be dropped: {sql}"
+        );
+        assert!(sql.contains("__crs_guard"), "{sql}");
+        // An empty erase layer must leave the input untouched rather than
+        // NULL out every geometry.
+        assert!(sql.contains("__e.__g IS NULL"), "{sql}");
+
+        let err = build_geo_erase(
+            &crate::plan::graph::NodeInputs::default(),
+            &serde_json::json!({ "geomColumn": "geom" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("input layer"), "{err}");
     }
 
     #[test]

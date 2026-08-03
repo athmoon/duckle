@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "componentCount": 380,
+  "componentCount": 382,
   "components": [
     {
       "id": "src.csv",
@@ -26156,6 +26156,162 @@
                 "kind": "bool",
                 "defaultValue": true,
                 "description": "Drop the X/Y, WKT, or WKB column(s) once the geometry column is built."
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject",
+              "optional": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "xf.geo.clip",
+      "label": "Clip Geometry",
+      "kind": "transform",
+      "availability": "available",
+      "summary": "Two-input overlay (#217): keeps every attribute of the input layer on the main input and replaces its geometry with the part inside the clip layer on the second input. The clip layer is dissolved with ST_Union_Agg first, so a feature spanning several clip polygons yields one row rather than one per polygon. Features that do not intersect are dropped. Both layers must share a CRS or the run fails naming each one.",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject",
+            "optional": true
+          }
+        ]
+      },
+      "manifest": {
+        "id": "xf.geo.clip",
+        "kind": "transform",
+        "label": "Clip Geometry",
+        "description": "Two-input overlay (#217): keeps every attribute of the input layer on the main input and replaces its geometry with the part inside the clip layer on the second input. The clip layer is dissolved with ST_Union_Agg first, so a feature spanning several clip polygons yields one row rather than one per polygon. Features that do not intersect are dropped. Both layers must share a CRS or the run fails naming each one.",
+        "schemaSource": "autodetect",
+        "sections": [
+          {
+            "label": "Clip layers",
+            "fields": [
+              {
+                "key": "geomColumn",
+                "label": "Input geometry column",
+                "kind": "column",
+                "required": true,
+                "description": "Geometry column on the main input. Its attributes are all preserved; only this column is replaced."
+              },
+              {
+                "key": "clipGeomColumn",
+                "label": "Clip layer geometry column",
+                "kind": "text",
+                "description": "Geometry column on the second input (the clip layer). Defaults to the same name as the input geometry column."
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject",
+              "optional": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "xf.geo.erase",
+      "label": "Erase Geometry",
+      "kind": "transform",
+      "availability": "available",
+      "summary": "Two-input overlay (#218): keeps every attribute of the input layer on the main input and subtracts the erase layer on the second input (ST_Difference). The erase layer is dissolved with ST_Union_Agg first, since differencing each feature in turn would only remove the last. Features left with no geometry are dropped. Both layers must share a CRS or the run fails naming each one.",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject",
+            "optional": true
+          }
+        ]
+      },
+      "manifest": {
+        "id": "xf.geo.erase",
+        "kind": "transform",
+        "label": "Erase Geometry",
+        "description": "Two-input overlay (#218): keeps every attribute of the input layer on the main input and subtracts the erase layer on the second input (ST_Difference). The erase layer is dissolved with ST_Union_Agg first, since differencing each feature in turn would only remove the last. Features left with no geometry are dropped. Both layers must share a CRS or the run fails naming each one.",
+        "schemaSource": "autodetect",
+        "sections": [
+          {
+            "label": "Erase layers",
+            "fields": [
+              {
+                "key": "geomColumn",
+                "label": "Input geometry column",
+                "kind": "column",
+                "required": true,
+                "description": "Geometry column on the main input. Its attributes are all preserved; only this column is replaced."
+              },
+              {
+                "key": "eraseGeomColumn",
+                "label": "Erase layer geometry column",
+                "kind": "text",
+                "description": "Geometry column on the second input (the erase layer). Defaults to the same name as the input geometry column."
               }
             ]
           }

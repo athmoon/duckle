@@ -6221,6 +6221,34 @@ function synthGeoTransform(comp: ComponentDef): ComponentManifest {
             },
         ], 'upstream');
     }
+    // #217 / #218: the two overlay transforms take a second layer on the
+    // lookup input, so both need a geometry column per side.
+    if (comp.id === 'xf.geo.clip' || comp.id === 'xf.geo.erase') {
+        const isClip = comp.id === 'xf.geo.clip';
+        const otherLabel = isClip ? 'Clip' : 'Erase';
+        const otherKey = isClip ? 'clipGeomColumn' : 'eraseGeomColumn';
+        return base(comp, [
+            {
+                label: `${otherLabel} layers`,
+                fields: [
+                    {
+                        key: 'geomColumn',
+                        label: 'Input geometry column',
+                        kind: 'column',
+                        required: true,
+                        description:
+                            'Geometry column on the main input. Its attributes are all preserved; only this column is replaced.',
+                    },
+                    {
+                        key: otherKey,
+                        label: `${otherLabel} layer geometry column`,
+                        kind: 'text',
+                        description: `Geometry column on the second input (the ${otherLabel.toLowerCase()} layer). Defaults to the same name as the input geometry column.`,
+                    },
+                ],
+            },
+        ]);
+    }
     if (comp.id === 'xf.geo.create') {
         return base(comp, [
             {

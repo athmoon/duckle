@@ -13,9 +13,9 @@ catalog the application itself reads, so the names and counts here are exact.
 - Free and open source, dual-licensed MIT OR Apache-2.0. No per-row, per-connector, or per-seat billing.
 - Local-first desktop app: runs fully offline, no account and no telemetry, suitable for air-gapped and compliance-sensitive work.
 - Engine: pipelines compile to SQL and execute on DuckDB, an in-process analytical database, at native speed.
-- 380 components, 362 available today: sources, transforms, destinations, data-quality checks, control-flow nodes, and code runners.
+- 382 components, 364 available today: sources, transforms, destinations, data-quality checks, control-flow nodes, and code runners.
 - 173 connectors (106 sources / 67 destinations): databases, warehouses, lakehouses, object stores, streaming brokers, NoSQL, vector databases, geospatial formats, and SaaS APIs.
-- Transformation: 138 transforms including joins, window functions, aggregates, CDC/SCD, incremental loads, upsert with delete propagation, and a visual Map (tMap-style) editor.
+- Transformation: 140 transforms including joins, window functions, aggregates, CDC/SCD, incremental loads, upsert with delete propagation, and a visual Map (tMap-style) editor.
 - Data quality: 27 checks, plus 18 control-flow nodes for branching, iteration, parallel branches, and calling child pipelines.
 - Three ways to author the same pipeline: the visual canvas, the Python API (`pip install duckle`), or plain English via the built-in assistant. All three produce the same pipeline JSON and the same SQL.
 - dbt: runs dbt on DuckDB with a GUI, using a fast build engine by default and dbt-core as a fallback.
@@ -275,7 +275,7 @@ marked [planned] or [preview] are not usable yet.
 - `snk.xml` XML: Write rows as XML via `quick-xml`. Default shape: `<root><row><col>val</col>...</row>...</root>`. rootElement / rowElement override the wrapper names. Complex (object/array) cell values are JSON-encoded inside CDATA so the file round-trips back through src.xml losslessly
 - `snk.yaml` YAML: Write the upstream rows as a top-level YAML array (`- key: value` per row)
 
-### Transforms (138)
+### Transforms (140)
 
 - `xf.addcol` Add Column: Transforms data with Add Column
 - `xf.aggwin` Window Aggregate: Aggregate over a window, keep every row
@@ -335,8 +335,10 @@ marked [planned] or [preview] are not usable yet.
 - `xf.format` Format String: Transforms data with Format String
 - `xf.geo.area` Spatial Area: Area of each polygon; auto-picks planar or spheroid metres from the CRS
 - `xf.geo.buffer` Spatial Buffer: A buffered geometry around each row (ST_Buffer)
+- `xf.geo.clip` Clip Geometry: Two-input overlay (#217): keeps every attribute of the input layer on the main input and replaces its geometry with the part inside the clip layer on the second input. The clip layer is dissolved with ST_Union_Agg first, so a feature spanning several clip polygons yields one row rather than one per polygon. Features that do not intersect are dropped. Both layers must share a CRS or the run fails naming each one
 - `xf.geo.create` Create Geometry: Build a geometry column from X/Y coordinates, WKT, or WKB (ST_Point / ST_GeomFromText / ST_GeomFromWKB)
 - `xf.geo.distance` Spatial Distance: Distance from each row to a target geometry; auto-picks planar or spheroid from the CRS
+- `xf.geo.erase` Erase Geometry: Two-input overlay (#218): keeps every attribute of the input layer on the main input and subtracts the erase layer on the second input (ST_Difference). The erase layer is dissolved with ST_Union_Agg first, since differencing each feature in turn would only remove the last. Features left with no geometry are dropped. Both layers must share a CRS or the run fails naming each one
 - `xf.geo.flip` Flip Coordinates: Swap X/Y of every vertex to fix lat,lon vs lon,lat order (ST_FlipCoordinates)
 - `xf.geo.intersects` Spatial Intersects: Boolean: does each row overlap a target geometry? (ST_Intersects)
 - `xf.geo.length` Spatial Length: Length of each line; auto-picks planar or spheroid metres from the CRS

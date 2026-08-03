@@ -119,7 +119,7 @@ In short: a free, open-source, single-engine alternative to hosted, per-row-pric
 Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 1. **An AI assistant that ships in the box.** Describe the pipeline you want in English; Duckie writes the JSON and drops it onto the canvas. The model runs locally - no API key, no telemetry, no cloud round-trip.
-2. **362 components ready at install time.** Files, lakehouses, SQL databases, warehouses, NoSQL, vector DBs, streaming brokers, SaaS REST/GraphQL APIs, even FTP and IMAP - working today, not coming-soon.
+2. **364 components ready at install time.** Files, lakehouses, SQL databases, warehouses, NoSQL, vector DBs, streaming brokers, SaaS REST/GraphQL APIs, even FTP and IMAP - working today, not coming-soon.
 3. **A self-contained binary you can audit.** ~65 MB download. Engines install on first launch. Workspaces are plain files in a folder you choose. Diff them, branch them, ship them.
 
 <div align="center">
@@ -171,7 +171,7 @@ The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Code
 | **Single-file binary, no bundled DB** | ~65 MB app (it embeds the headless runner + MCP server). DuckDB downloads on first launch with a guided step. AI engine is opt-in. |
 | **Native speed** | Execution runs through DuckDB: vectorized, columnar, local. A clean-and-export job that crawls in a spreadsheet finishes in milliseconds. |
 | **Git-friendly by design** | Pipelines, connections, contexts, and routines persist as plain files in a folder you pick. Diff them, branch them, review them. |
-| **362 components ready today** | Files, databases, warehouses, lakehouses, object stores, SaaS APIs, NoSQL, streaming brokers, vector DBs, FTP, IMAP, SMTP. Each is covered by tests. |
+| **364 components ready today** | Files, databases, warehouses, lakehouses, object stores, SaaS APIs, NoSQL, streaming brokers, vector DBs, FTP, IMAP, SMTP. Each is covered by tests. |
 | **Honest about scope** | Single-machine and embedded by design. Built to make local and small-team data work fast, not to replace a distributed warehouse. |
 | **60 UI languages** | Topbar, palette, chat assistant, properties panel, and common dialogs ship localized. English, Spanish, Chinese (Simplified + Traditional), Hindi, Arabic, Portuguese (Brazil), Bengali, Russian, Japanese, Punjabi, German, Korean, French, Vietnamese, Telugu, Marathi, Turkish, Tamil, Urdu, Persian, Polish, Italian, Ukrainian, Indonesian, Thai, Dutch, Hebrew, Swedish, Greek, Czech, Hungarian, Romanian, Filipino, Malay, Norwegian, Danish, Finnish, Catalan, Bulgarian, Slovak, Croatian, Serbian, Slovenian, Lithuanian, Latvian, Estonian, Khmer, Burmese, Sinhala, Nepali, Swahili, Afrikaans, Welsh, Irish, Icelandic, Albanian, Azerbaijani, Mongolian, Kazakh. RTL (Arabic, Hebrew, Persian, Urdu) supported. Switch languages from the topbar globe. |
 | **Open source** | Dual-licensed MIT OR Apache-2.0. Yours to use, fork, and extend. |
@@ -225,9 +225,9 @@ Duckle is in **public beta**. The visual designer, the DuckDB execution engine, 
 
 **Scope, stated plainly:** Duckle is a single-machine, embedded studio. If you outgrow one box, point Duckle's output at the system that scales (a warehouse, an object store, a lakehouse). It will not pretend to be a cluster.
 
-The component palette ships **380 nodes** so the roadmap is visible in the product itself:
+The component palette ships **382 nodes** so the roadmap is visible in the product itself:
 
-- **362 available** runs on the DuckDB engine today
+- **364 available** runs on the DuckDB engine today
 - **3 preview** is configurable in the designer (drag, wire, set properties); execution is being wired engine-by-engine
 - **15 planned** is reserved in the palette but not yet executable - see [`docs/roadmap.md`](docs/roadmap.md)
 
@@ -311,7 +311,7 @@ For JSON sources, a **Format** selector picks how the file is read (auto / array
 | **Fields** | Map (visual mapper: joins a main input to up to 3 lookup inputs with inner / left joins and per-output expressions + filter), Project / Select, Cast, Rename, Add / Drop / Reorder Column, Coalesce, UUID v4 |
 | **Rows** | Filter (visual or raw SQL, with reject port), Distinct, Sample, Top N / Limit, Sort, Skip, Top N per Group, Forward Fill, Backward Fill, Constant Fill |
 | **Aggregate** | Group By, Rollup, Cube, Count, Window Aggregate, Cumulative, Approx Quantile (t-digest), Approx Count Distinct (HyperLogLog) |
-| **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti, Spatial Join |
+| **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti, Spatial Join (Intersects, Contains, Within, Touches, Crosses, Overlaps, Equals, Covers, Covered by; fails naming both systems when the two geometry columns use different CRS, rather than returning zero rows) |
 | **Set operations** | Union, Union All, Intersect, Except / Minus |
 | **Window** | Row Number, Rank, Dense Rank, Lead, Lag, First Value, Last Value, NTile |
 | **Strings** | Regex Replace, Regex Extract, Regex Match, Split, Concat, Trim, Case Change, Length, Substring, Format, Hash (md5 / sha1 / sha256), IP Parse, URL Parse, Text Similarity (Levenshtein / Jaro-Winkler / Jaccard), Base64, Pad, Text Match |
@@ -322,7 +322,7 @@ For JSON sources, a **Format** selector picks how the file is read (auto / array
 | **Pivot / shape** | Pivot, Unpivot, Denormalize, Normalize, Transpose |
 | **CDC / SCD** | Incremental Load (watermark column; saves the high-water mark to workspace state and advances only on a fully successful run), Diff Detect, SCD Type 1, SCD Type 2 (valid_from / valid_to / is_current), Merge / Upsert (universal across embedded, network, warehouse and Mongo sinks, with optional delete propagation driven by a CDC change-type column), DuckLake CDC change-feed reader, Row Hash (md5 / sha1 / sha256 fingerprint), Audit Stamp (`_loaded_at` / `_loaded_date` / `_source` / `_batch_id`) |
 | **AI / Search** | **Vector Similarity Search** (cosine / L2 / inner product over FLOAT[N] via `vss`), **Full-Text Search** (BM25 via `fts`), **Embeddings** (OpenAI-compatible `/v1/embeddings`), **LLM Transform** (per-row chat completion with `{column}` templates), **Classify** (LLM-backed, normalizes to UNKNOWN), **Text Chunker** (RAG-ready, pure local), **PII Redact** (regex - emails / phones / SSNs / cards), **Semantic Dedupe** (cosine over precomputed embeddings) |
-| **Geospatial** | Spatial Distance, Length, Perimeter, Area (each auto-picks the planar or spheroidal function from the geometry CRS, and rejects geometry with no CRS), Spatial Buffer (ST_Buffer), Spatial Intersects (ST_Intersects), Flip Coordinates (ST_FlipCoordinates - fix lat,lon vs lon,lat order), Define Projection (ST_SetCRS - stamp a CRS without moving coordinates), Reproject Geometry (ST_Transform between CRS, target CRS preserved on the output), Create Geometry (from X/Y, WKT, or WKB) |
+| **Geospatial** | Spatial Distance, Length, Perimeter, Area (each auto-picks the planar or spheroidal function from the geometry CRS, and rejects geometry with no CRS), Spatial Buffer (ST_Buffer), Spatial Intersects (ST_Intersects), Flip Coordinates (ST_FlipCoordinates - fix lat,lon vs lon,lat order), Define Projection (ST_SetCRS - stamp a CRS without moving coordinates), Reproject Geometry (ST_Transform between CRS, target CRS preserved on the output), Create Geometry (from X/Y, WKT, or WKB), Clip Geometry and Erase Geometry (two-layer overlays; the second layer is dissolved with ST_Union_Agg so a feature spanning several polygons is not duplicated, and both refuse to run when the two layers carry different CRS) |
 | **Debug** | Log Rows, Assert (hard-fail on SQL predicate violation) |
 
 > **All 6 AI transforms ship today.** Three need a model API (LLM, Classify, Embeddings) and ride the apiKey-in-props pattern; three are pure-local (Chunk, PII Redact, Dedupe).

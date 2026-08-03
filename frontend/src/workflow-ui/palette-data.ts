@@ -473,6 +473,8 @@ export const PALETTE: Category[] = [
                     xf('geo.setcrs', 'Define Projection', 'available', 'Assign a CRS to geometry with missing/unknown CRS, without moving the coordinates (ST_SetCRS)'),
                     xf('geo.reproject', 'Reproject Geometry', 'available', 'Reproject a geometry column from one CRS to another (ST_Transform)'),
                     xf('geo.create', 'Create Geometry', 'available', 'Build a geometry column from X/Y coordinates, WKT, or WKB (ST_Point / ST_GeomFromText / ST_GeomFromWKB)'),
+                    xf('geo.clip', 'Clip Geometry', 'available', 'Two-input overlay (#217): keeps every attribute of the input layer on the main input and replaces its geometry with the part inside the clip layer on the second input. The clip layer is dissolved with ST_Union_Agg first, so a feature spanning several clip polygons yields one row rather than one per polygon. Features that do not intersect are dropped. Both layers must share a CRS or the run fails naming each one.'),
+                    xf('geo.erase', 'Erase Geometry', 'available', 'Two-input overlay (#218): keeps every attribute of the input layer on the main input and subtracts the erase layer on the second input (ST_Difference). The erase layer is dissolved with ST_Union_Agg first, since differencing each feature in turn would only remove the last. Features left with no geometry are dropped. Both layers must share a CRS or the run fails naming each one.'),
                 ],
             },
             {

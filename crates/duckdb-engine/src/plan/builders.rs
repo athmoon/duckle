@@ -314,6 +314,8 @@ pub(crate) fn build_view_sql(
         "xf.geo.setcrs" => build_geo_setcrs(inputs, props),
         "xf.geo.reproject" => build_geo_reproject(inputs, props),
         "xf.geo.create" => build_geo_create(inputs, props),
+        "xf.geo.clip" => build_geo_clip(inputs, props),
+        "xf.geo.erase" => build_geo_erase(inputs, props),
         "xf.num.round" | "xf.num.abs" | "xf.num.mod" | "xf.num.power" | "xf.num.sqrt"
         | "xf.num.log" => build_numeric(inputs, props, component_id),
         "xf.num.bucketize" => build_bucketize(inputs, props),
@@ -5035,6 +5037,8 @@ pub(crate) fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
         | "xf.geo.setcrs"
         | "xf.geo.reproject"
         | "xf.join.spatial"
+        | "xf.geo.clip"
+        | "xf.geo.erase"
         // Geometry DQ tools (issue #158) call ST_IsValid / ST_MakeValid / ST_IsEmpty.
         | "qa.geomvalidate"
         | "qa.geomrepair"
@@ -7357,34 +7361,147 @@ pub(crate) fn build_spatial_join(inputs: &NodeInputs, props: &JsonValue) -> Resu
     // cross-joined column that nothing reads can be optimised away, and a
     // pruned guard never fires. An unresolved CRS on either side stays
     // permissive: only two KNOWN and DIFFERENT systems are an error.
-    let crs_probe = |view: &str, col: &str| {
+    let (guard_cte, guard_pred) =
+        crs_match_guard(left, &left_col, right, &right_col, "Spatial Join");
+    Ok(format!(
+        "WITH {guard} \
+         SELECT m.*, r.* FROM {lv} m {kind} JOIN {rv} r \
+         ON {fnm}(CAST(m.{lc} AS GEOMETRY), CAST(r.{rc} AS GEOMETRY)) \
+         WHERE {pred}",
+        guard = guard_cte,
+        pred = guard_pred,
+        lv = quote_ident(left),
+        rv = quote_ident(right),
+        kind = kind,
+        fnm = fn_name,
+        lc = quote_ident(&left_col),
+        rc = quote_ident(&right_col),
+    ))
+}
+
+/// A CTE plus a filter that fails when two geometry columns carry KNOWN and
+/// DIFFERENT coordinate systems (#219).
+///
+/// Shared by every two-layer geometry operation, because the failure mode is
+/// identical in all of them: mismatched CRS silently produces an empty or wrong
+/// result rather than an error. The CRS lives in the column TYPE
+/// (`GEOMETRY('EPSG:4326')`), not the value, so it is read via typeof() the
+/// same way the CRS-aware measurements do (#177).
+///
+/// Returns `(cte, predicate)`. The predicate belongs in WHERE, not the select
+/// list: a cross-joined column that nothing reads can be optimised away, and a
+/// pruned guard never fires.
+///
+/// An unresolved CRS on either side stays permissive. Only two known and
+/// different systems are an error, so layers without CRS metadata keep working.
+fn crs_match_guard(
+    first_view: &str,
+    first_col: &str,
+    second_view: &str,
+    second_col: &str,
+    label: &str,
+) -> (String, &'static str) {
+    let probe = |view: &str, col: &str| {
         format!(
             "regexp_extract(typeof((SELECT {} FROM {} LIMIT 1)), 'GEOMETRY\\(''([^'']*)''\\)', 1)",
             quote_ident(col),
             quote_ident(view)
         )
     };
-    Ok(format!(
-        "WITH __sj_crs AS (\
+    let cte = format!(
+        "__crs_guard AS (\
            SELECT CASE \
              WHEN __l <> '' AND __r <> '' AND __l <> __r \
-               THEN error('Spatial Join: the left geometry column uses ' || __l || \
-                          ' but the right uses ' || __r || \
+               THEN error('{label}: the first layer uses ' || __l || \
+                          ' but the second uses ' || __r || \
                           '. Reproject one side (Reproject Geometry) so both layers share a CRS.') \
              ELSE TRUE END AS __ok \
-           FROM (SELECT {lprobe} AS __l, {rprobe} AS __r)\
-         ) \
-         SELECT m.*, r.* FROM {lv} m {kind} JOIN {rv} r \
-         ON {fn}(CAST(m.{lc} AS GEOMETRY), CAST(r.{rc} AS GEOMETRY)) \
-         WHERE (SELECT __ok FROM __sj_crs)",
-        lprobe = crs_probe(left, &left_col),
-        rprobe = crs_probe(right, &right_col),
-        lv = quote_ident(left),
-        rv = quote_ident(right),
-        kind = kind,
-        fn = fn_name,
-        lc = quote_ident(&left_col),
-        rc = quote_ident(&right_col),
+           FROM (SELECT {l} AS __l, {r} AS __r)\
+         )",
+        label = label,
+        l = probe(first_view, first_col),
+        r = probe(second_view, second_col),
+    );
+    (cte, "(SELECT __ok FROM __crs_guard)")
+}
+
+/// Clip (#217): keep every attribute of the input layer, replace its geometry
+/// with the part falling inside the clip layer, and drop features that do not
+/// intersect it at all.
+///
+/// The clip layer is dissolved with ST_Union_Agg before use. Without that, a
+/// plain join emits one output row per overlapping clip polygon, so an input
+/// feature spanning three clip tiles would be triplicated - which is not what
+/// Clip means in QGIS, ArcGIS or FME.
+pub(crate) fn build_geo_clip(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let input = inputs
+        .main()
+        .ok_or_else(|| "Clip needs an input layer on the main input".to_string())?;
+    let clip = inputs
+        .first_lookup()
+        .ok_or_else(|| "Clip needs a clip layer on the second input".to_string())?;
+    let in_col = string_prop(props, "geomColumn")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Clip needs the input layer's geometry column".to_string())?;
+    // Defaults to the same name, which is the common case when both layers come
+    // from the same kind of source.
+    let clip_col = string_prop(props, "clipGeomColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| in_col.clone());
+    let (guard_cte, guard_pred) = crs_match_guard(input, &in_col, clip, &clip_col, "Clip");
+    Ok(format!(
+        "WITH {guard}, \
+         __clip AS (SELECT ST_Union_Agg(CAST({cc} AS GEOMETRY)) AS __g FROM {cv}) \
+         SELECT m.* REPLACE (ST_Intersection(CAST(m.{ic} AS GEOMETRY), __c.__g) AS {ic}) \
+         FROM {iv} m CROSS JOIN __clip __c \
+         WHERE {pred} AND __c.__g IS NOT NULL \
+           AND ST_Intersects(CAST(m.{ic} AS GEOMETRY), __c.__g)",
+        guard = guard_cte,
+        pred = guard_pred,
+        cc = quote_ident(&clip_col),
+        cv = quote_ident(clip),
+        ic = quote_ident(&in_col),
+        iv = quote_ident(input),
+    ))
+}
+
+/// Erase (#218): keep every attribute of the input layer, subtract the erase
+/// layer from its geometry, and drop features left with nothing.
+///
+/// Like Clip, the erase layer is dissolved first: ST_Difference against each
+/// erase feature in turn would only remove the last one. The emptiness check
+/// runs on the computed geometry in an outer query so the difference is
+/// expressed once.
+pub(crate) fn build_geo_erase(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let input = inputs
+        .main()
+        .ok_or_else(|| "Erase needs an input layer on the main input".to_string())?;
+    let erase = inputs
+        .first_lookup()
+        .ok_or_else(|| "Erase needs an erase layer on the second input".to_string())?;
+    let in_col = string_prop(props, "geomColumn")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Erase needs the input layer's geometry column".to_string())?;
+    let erase_col = string_prop(props, "eraseGeomColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| in_col.clone());
+    let (guard_cte, guard_pred) = crs_match_guard(input, &in_col, erase, &erase_col, "Erase");
+    Ok(format!(
+        "SELECT * FROM (\
+           WITH {guard}, \
+           __erase AS (SELECT ST_Union_Agg(CAST({ec} AS GEOMETRY)) AS __g FROM {ev}) \
+           SELECT m.* REPLACE (\
+             CASE WHEN __e.__g IS NULL THEN CAST(m.{ic} AS GEOMETRY) \
+                  ELSE ST_Difference(CAST(m.{ic} AS GEOMETRY), __e.__g) END AS {ic}) \
+           FROM {iv} m CROSS JOIN __erase __e \
+           WHERE {pred}\
+         ) WHERE NOT ST_IsEmpty(CAST({ic} AS GEOMETRY))",
+        guard = guard_cte,
+        pred = guard_pred,
+        ec = quote_ident(&erase_col),
+        ev = quote_ident(erase),
+        ic = quote_ident(&in_col),
+        iv = quote_ident(input),
     ))
 }
 

@@ -46,7 +46,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
-- [What's new in v0.5.8](#whats-new-in-v058)
+- [What's new in v0.5.9](#whats-new-in-v059)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
 - [Build from source](#build-from-source)
@@ -128,17 +128,20 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 ---
 
-## What's new in v0.5.8
+## What's new in v0.5.9
 
-A native Hugging Face connector for reading and writing Hub datasets, an Esri File Geodatabase source, and a batch of canvas and correctness fixes from your issue reports.
+DHIS2 in both directions, two GIS overlay transforms, and correctness fixes for the Mapper, spatial joins, DuckLake catalogs and the Duckie assistant.
 
-- **Native Hugging Face connector (source + sink).** `src.huggingface` reads any Hub dataset directly over DuckDB's `hf://` (Parquet / CSV / JSON, globs, and revisions like `~parquet`), with a token for private or gated repos. `snk.huggingface` pushes the other way: the pipeline output is materialized to Parquet and committed to a dataset repo over the Hub API (create-repo, git-LFS upload, commit), creating the repo (public or private) if it does not exist. Both carry the real Hugging Face mark on the canvas.
-- **Esri File Geodatabase source (#205).** `src.gdb` reads a feature class from a `.gdb` folder via the spatial extension's `ST_Read(layer=)`, so ArcGIS geodatabases load like any other geospatial source.
-- **Duplicate context variables are no longer silent (#204).** When two context items defined the same variable name, one used to overwrite the other with no warning and quiet data loss. Validation now flags the collision so you can see and resolve it.
+- **DHIS2 connector, read and write.** `src.dhis2` reads the DHIS2 Web API: aggregate `dataValueSets`, paged metadata lists, tracker exports, and `analytics/dataValueSet.json`. `snk.dhis2` imports back with chunked requests, `importStrategy` (CREATE_AND_UPDATE is DHIS2's upsert) and `dryRun`. The sink parses the import summary rather than trusting the HTTP status, because DHIS2 answers 200 even when it rejects every record; conflicts, error reports and a non-zero `ignored` count fail the run instead of passing as green. Raw `/api/analytics` and async tracker jobs are not supported yet, and the palette says so.
+- **Clip and Erase geometry transforms (#217, #218).** Two-layer overlays that keep every attribute of the input layer and replace only its geometry. The second layer is dissolved with `ST_Union_Agg` first, so a feature spanning several clip polygons yields one row rather than one per polygon.
+- **Spatial Join fails on mismatched CRS (#219).** Joining layers in different coordinate systems made every predicate false, so the run succeeded and returned zero rows with nothing to explain why. It now stops and names both systems. **Covers and Covered by** are also available as predicates (#220).
+- **Mapper handles column names with spaces (#214).** With a lookup present, a spaced column produced invalid SQL (`""s1"."col" one"`) or an unqualified reference. Both forms now resolve, and the mapper UI emits properly delimited references.
+- **HTTP Basic auth actually works.** Jira, Zendesk, Twilio, CouchDB, OData and SAP all advertised Basic auth that silently sent no header at all, producing a 401 with no explanation.
+- **DuckLake catalogs on Postgres, SQLite or MySQL.** A `dataPath` option now emits `DATA_PATH`, which DuckLake requires when the catalog is a DSN rather than a local file. Without it a Postgres-catalogued lake could not be attached.
+- **Duckie trusts your OS certificate store (#183).** A custom internal AI endpoint behind a private CA failed with `UnknownIssuer` while the same endpoint worked from `xf.ai.llm`. The chat path now uses the same merged trust store as the engine.
+- **A workspace that cannot be read is no longer overwritten (#213).** A filesystem error looked identical to an empty folder, so the app kept the bundled starter project and auto-save then wrote it over the real workspace metadata. It now stops and names the folder.
 
-Fixes from your reports: Create Geometry now updates the node schema and preview so downstream nodes see the new geometry column (#206); the Rename Columns preview shows the renamed headers instead of the originals (#207); deleting a pipeline or folder asks for confirmation first (#208); and F2 renames, plus Delete and Enter, now work on pipelines and folders in the project tree (#209).
-
-Full notes: see the [v0.5.8 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.8).
+Full notes: see the [v0.5.9 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.9).
 
 ---
 
@@ -477,7 +480,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.8):
+Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.9):
 
 | OS | Asset | How to run |
 |---|---|---|

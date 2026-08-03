@@ -2519,9 +2519,20 @@ impl DuckdbEngine {
         use parquet::arrow::ArrowWriter;
         use parquet::file::properties::{EnabledStatistics, WriterProperties};
 
-        const BATCH: usize = 65_536;
         let schema = std::sync::Arc::new(schema);
-        let ncols = schema.fields().len();
+        let ncols = schema.fields().len().max(1);
+        // Size the batch and the row group by CELLS, not rows. A fixed row
+        // count silently scales the buffered working set with table width: at
+        // 65 536 rows a 40-column table buffers 2.6M cells, but a 232-column
+        // one buffers 15M, times the channel depth, which stops fitting in
+        // cache and starts costing allocator and page-fault time. Wide fact
+        // tables are exactly the case #221 is about.
+        let batch_rows = (2_000_000 / ncols).clamp(1024, 65_536);
+        // Same reasoning for the row group, plus: DuckDB reads a parquet row
+        // group per thread, so a single giant group pins the downstream scan
+        // to one core. Measured on 1M x 40, one 1M-row group made the read-back
+        // 1.9s and 128K groups 0.8s.
+        let row_group = (16_000_000 / ncols).clamp(8192, 131_072);
         // Sibling of the run's db file so TempDbGuard sweeps it at run end; the
         // file has to outlive this stage when we hand back a lazy VIEW.
         let db_name = db.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -2533,13 +2544,13 @@ impl DuckdbEngine {
         let parquet_path = db.with_file_name(format!("{}.oraarrow-{}.parquet", db_name, safe_node));
         let file = std::fs::File::create(&parquet_path)
             .map_err(|e| EngineError::Query(format!("oracle: temp parquet: {}", e)))?;
-        // 128K-row groups, not one group for the whole pull: DuckDB reads a
-        // parquet row group per thread, so a single giant group pins the
-        // downstream scan to one core. Measured on 1M x 40: one 1M-row group
-        // made the read-back 1.9s, 128K groups 0.8s.
+        // Left uncompressed on purpose: this file is written once and read
+        // once, by DuckDB, on the same machine. Measured at 232 columns,
+        // snappy and zstd on the intermediate changed the read-back by less
+        // than run-to-run noise and zstd cost 5s more to write.
         let props = WriterProperties::builder()
             .set_statistics_enabled(EnabledStatistics::None)
-            .set_max_row_group_size(131_072)
+            .set_max_row_group_size(row_group)
             .build();
         let wschema = schema.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel::<arrow_array::RecordBatch>(4);
@@ -2563,16 +2574,26 @@ impl DuckdbEngine {
             .fields()
             .iter()
             .map(|f| match f.data_type() {
-                DataType::Int64 => OraCol::I64(Int64Builder::new()),
-                DataType::Float64 => OraCol::F64(Float64Builder::new()),
-                DataType::Float32 => OraCol::F32(Float32Builder::new()),
-                DataType::Utf8 => OraCol::Str(StringBuilder::new()),
-                DataType::Binary => OraCol::Bin(BinaryBuilder::new()),
+                // Pre-sized: finish() hands its buffers to the RecordBatch and
+                // leaves the builder empty, so every batch re-grows from zero.
+                // Without a capacity hint that is a doubling realloc-and-copy
+                // chain per column per batch.
+                DataType::Int64 => OraCol::I64(Int64Builder::with_capacity(batch_rows)),
+                DataType::Float64 => OraCol::F64(Float64Builder::with_capacity(batch_rows)),
+                DataType::Float32 => OraCol::F32(Float32Builder::with_capacity(batch_rows)),
+                DataType::Utf8 => {
+                    OraCol::Str(StringBuilder::with_capacity(batch_rows, batch_rows * 16))
+                }
+                DataType::Binary => {
+                    OraCol::Bin(BinaryBuilder::with_capacity(batch_rows, batch_rows * 16))
+                }
                 DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                    OraCol::Ts(TimestampMicrosecondBuilder::new())
+                    OraCol::Ts(TimestampMicrosecondBuilder::with_capacity(batch_rows))
                 }
                 DataType::Decimal128(p, s) => OraCol::Dec(
-                    Decimal128Builder::new().with_precision_and_scale(*p, *s).unwrap(),
+                    Decimal128Builder::with_capacity(batch_rows)
+                        .with_precision_and_scale(*p, *s)
+                        .unwrap(),
                     *s,
                 ),
                 other => unreachable!("oracle_arrow_schema admitted {:?}", other),
@@ -2591,14 +2612,14 @@ impl DuckdbEngine {
             }
             in_batch += 1;
             total += 1;
-            if in_batch >= BATCH {
+            if in_batch >= batch_rows {
                 let batch = Self::finish_batch(&schema, &mut builders)?;
                 in_batch = 0;
                 if tx.send(batch).is_err() {
                     send_err = Some("parquet writer stopped early".into());
                     break;
                 }
-                if total % (BATCH * 8) == 0 {
+                if total % (batch_rows * 8) == 0 {
                     mark(&format!("{} rows encoded", total));
                 }
             }

@@ -2372,6 +2372,7 @@ impl DuckdbEngine {
         &self,
         db: &Path,
         spec: &OracleSourceSpec,
+        direct: Option<&DirectSinkTarget>,
     ) -> Result<String, EngineError> {
         // Liveness trace (issue #4): each phase plus periodic row progress
         // is timestamped to a temp file so a stuck pull can be located from
@@ -2458,7 +2459,7 @@ impl DuckdbEngine {
                 drop(stmt);
                 return self.oracle_parallel_to_parquet(db, spec, schema, par, &mark);
             }
-            return self.oracle_rows_to_parquet(db, spec, rs, schema, &mark);
+            return self.oracle_rows_to_parquet(db, spec, rs, schema, direct, &mark);
         }
         mark("arrow fast path unavailable (ambiguous column type); using NDJSON");
 
@@ -2520,6 +2521,7 @@ impl DuckdbEngine {
         spec: &OracleSourceSpec,
         rs: oracle::ResultSet<'_, oracle::Row>,
         schema: arrow_schema::Schema,
+        direct: Option<&DirectSinkTarget>,
         mark: &dyn Fn(&str),
     ) -> Result<String, EngineError> {
         let schema = std::sync::Arc::new(schema);
@@ -2532,10 +2534,48 @@ impl DuckdbEngine {
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .collect();
-        let parquet_path = db.with_file_name(format!("{}.oraarrow-{}.parquet", db_name, safe_node));
-        let written =
-            Self::oracle_write_parquet_part(rs, &schema, &parquet_path, &self.cancel, Some(mark))?;
+        // When the only consumer is a plain Parquet sink, write ITS file and
+        // skip the encode-decode-encode round trip entirely. The sink is told
+        // to stand down only after the write succeeds.
+        let parquet_path = match direct {
+            Some(t) => PathBuf::from(t.path),
+            None => db.with_file_name(format!("{}.oraarrow-{}.parquet", db_name, safe_node)),
+        };
+        if let Some(parent) = parquet_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        // A temp file wants no compression; the sink's own file must match what
+        // the sink would have written, and the Parquet sink's default is ZSTD -
+        // so an unset compression means ZSTD here, NOT uncompressed.
+        let written = Self::oracle_write_parquet_part(
+            rs,
+            &schema,
+            &parquet_path,
+            direct.map(|t| t.compression.unwrap_or("ZSTD")),
+            &self.cancel,
+            Some(mark),
+        )?;
         mark(&format!("parquet written: {} rows, {} cols", written, ncols));
+        if let Some(t) = direct {
+            // The relation still has to exist: downstream row counting and the
+            // run preview read it, and it is now a view over the sink's own
+            // output rather than over a temp file.
+            let dest = t.path.replace('\\', "/").replace('\'', "''");
+            self.run(
+                Some(db),
+                &format!(
+                    "CREATE OR REPLACE VIEW {} AS SELECT * FROM read_parquet('{}')",
+                    plan::quote_ident(&spec.node_id),
+                    dest
+                ),
+                false,
+            )?;
+            t.written.store(true, std::sync::atomic::Ordering::Relaxed);
+            mark("wrote the sink's parquet directly; skipping the second pass");
+            return Ok(format!("oracle: {} rows into {}", written, spec.node_id));
+        }
 
         let ppath = parquet_path
             .to_string_lossy()
@@ -2799,7 +2839,7 @@ impl DuckdbEngine {
                     .build()
                     .map_err(|e| format!("prepare: {}", e))?;
                 let rs = stmt.query(&[]).map_err(|e| format!("query: {}", e))?;
-                let n = Self::oracle_write_parquet_part(rs, &schema, &part, &cancel, None)
+                let n = Self::oracle_write_parquet_part(rs, &schema, &part, None, &cancel, None)
                     .map_err(|e| format!("band {}: {}", i, e))?;
                 Ok((n, part))
             }));
@@ -2864,6 +2904,7 @@ impl DuckdbEngine {
         rs: oracle::ResultSet<'_, oracle::Row>,
         schema: &std::sync::Arc<arrow_schema::Schema>,
         path: &Path,
+        compression: Option<&str>,
         cancel: &std::sync::atomic::AtomicBool,
         mark: Option<&dyn Fn(&str)>,
     ) -> Result<usize, EngineError> {
@@ -2892,9 +2933,35 @@ impl DuckdbEngine {
         // once, by DuckDB, on the same machine. Measured at 232 columns,
         // snappy and zstd on the intermediate changed the read-back by less
         // than run-to-run noise and zstd cost 5s more to write.
+        // A temp file that DuckDB reads once on the same machine is left
+        // uncompressed on purpose (measured: snappy and zstd move the read-back
+        // less than run-to-run noise, and zstd costs 5s more to write). When
+        // this IS the user's output file, honour what they asked the sink for.
+        let codec = match compression.map(|c| c.to_ascii_uppercase()).as_deref() {
+            None | Some("UNCOMPRESSED") | Some("NONE") | Some("") => {
+                parquet::basic::Compression::UNCOMPRESSED
+            }
+            Some("SNAPPY") => parquet::basic::Compression::SNAPPY,
+            Some("GZIP") => {
+                parquet::basic::Compression::GZIP(parquet::basic::GzipLevel::default())
+            }
+            Some("LZ4") | Some("LZ4_RAW") => parquet::basic::Compression::LZ4_RAW,
+            // ZSTD is the Parquet sink's default, so this is the common case.
+            _ => parquet::basic::Compression::ZSTD(
+                parquet::basic::ZstdLevel::try_new(3).unwrap(),
+            ),
+        };
         let props = WriterProperties::builder()
             .set_statistics_enabled(EnabledStatistics::None)
             .set_max_row_group_size(row_group)
+            .set_compression(codec)
+            // The default 1 MB dictionary budget is per column, and a wide fact
+            // table full of repeated text blows through it immediately; once it
+            // does, the column falls back to PLAIN for the rest of the row group
+            // and stops compressing. Measured on 232 columns: the default turned
+            // a 324 MB file into 910 MB.
+            .set_dictionary_page_size_limit(16 * 1024 * 1024)
+            .set_write_batch_size(8192)
             .build();
         let wschema = schema.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel::<arrow_array::RecordBatch>(4);
@@ -13136,6 +13203,21 @@ impl std::io::Read for SftpFileReader {
         // returns 0 at EOF, matching std::io::Read.
         self.rt.block_on(self.file.read(buf))
     }
+}
+
+/// A file sink that a source is allowed to write itself.
+///
+/// When an Oracle source is the only producer feeding a plain Parquet sink,
+/// the rows would otherwise be encoded to Parquet once by the source, decoded
+/// by DuckDB and encoded again by the sink. Handing the source the sink's own
+/// destination collapses that to a single encode. `written` is how the source
+/// tells the executor it actually took the path, so the sink is skipped ONLY
+/// when the file really was produced; every path that declines leaves it false
+/// and the sink runs normally.
+pub(crate) struct DirectSinkTarget<'a> {
+    pub path: &'a str,
+    pub compression: Option<&'a str>,
+    pub written: &'a std::sync::atomic::AtomicBool,
 }
 
 /// How a parallel Oracle read is split. Only ever built when the read could be

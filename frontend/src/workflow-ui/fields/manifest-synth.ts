@@ -177,6 +177,20 @@ const upsertModeFields = (supportsMerge = false): Field[] => [
     },
 ];
 
+// snk.parquet only. When the upstream is a source that can produce Parquet
+// itself (today: Oracle), letting it write this file skips a decode and
+// re-encode of every cell. Off by default because the source's writer does not
+// compress as well as DuckDB's - measured on a 232-column extract, the run went
+// 74s to 57s but the file went 275 MB to 945 MB.
+const directWriteField = (): Field => ({
+    key: 'directWrite',
+    label: 'Write directly from the source',
+    kind: 'bool',
+    defaultValue: false,
+    description:
+        'Skip the intermediate pass and let a capable upstream source write this file itself. Faster, but the file is usually larger than DuckDB would write for the same compression. Ignored when the upstream cannot do it, in which case the normal path runs.',
+});
+
 const compressionField = (): Field => ({
     key: 'compression',
     label: 'Compression',
@@ -1126,6 +1140,7 @@ function synthFileSink(comp: ComponentDef): ComponentManifest {
                     writeModeField(),
                     encodingField(),
                     compressionField(),
+                    ...(comp.id === 'snk.parquet' ? [directWriteField()] : []),
                 ],
             },
             ...fileFormatSection(comp),

@@ -36,6 +36,15 @@ pub struct Stage {
     /// enforce "error if exists" before writing.
     pub sink_path: Option<String>,
     pub sink_mode: Option<String>,
+    /// For a file sink: the compression its COPY will use. A source that can
+    /// write the destination itself reads this so the file it produces matches
+    /// what the sink would have written.
+    pub sink_compression: Option<String>,
+    /// The sink opted in to letting its upstream source write the file itself,
+    /// skipping the decode-and-re-encode pass. Off by default: it is faster but
+    /// the source's Parquet writer does not compress as well as DuckDB's, so
+    /// the file can be several times larger.
+    pub sink_direct: bool,
     /// Single runtime action this stage performs beyond plain DuckDB SQL:
     /// a driver source/sink, an HTTP/AI/code transform, or a control-flow
     /// side effect. None means the stage is pure SQL. Replacing the former
@@ -1035,6 +1044,8 @@ fn build_stage(
         .cloned()
         .unwrap_or(JsonValue::Null);
     let mut sink_path: Option<String> = None;
+    let mut sink_compression: Option<String> = None;
+    let mut sink_direct = false;
     let mut sink_mode: Option<String> = None;
     let mut upsert: Option<UpsertSpec> = None;
     let mut text_search: Option<TextSearchSpec> = None;
@@ -2505,6 +2516,14 @@ fn build_stage(
             .ok_or_else(|| missing_input(node, "main"))?;
         sink_path = string_prop(&props, "path").filter(|s| !s.is_empty());
         sink_mode = string_prop(&props, "mode").filter(|s| !s.is_empty());
+        sink_compression = string_prop(&props, "compression").filter(|s| !s.is_empty());
+        sink_direct = props
+            .get("directWrite")
+            .and_then(|v| {
+                v.as_bool()
+                    .or_else(|| v.as_str().map(|t| t.eq_ignore_ascii_case("true")))
+            })
+            .unwrap_or(false);
         // Relational DB upsert is the only sink mode whose SQL the
         // planner can't fully generate up front: the SET clause needs
         // the upstream's non-key column list, which the executor reads
@@ -4877,6 +4896,8 @@ fn build_stage(
         from,
         sink_path,
         sink_mode,
+        sink_compression,
+        sink_direct,
         runtime,
         wait_ms,
         retry_attempts,

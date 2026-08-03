@@ -1010,11 +1010,120 @@ impl DuckdbEngine {
             }
         }
 
+        // A source that is the ONLY producer feeding a plain Parquet sink can
+        // write that sink's file itself, turning encode-decode-encode into a
+        // single encode. Worth ~15s of a 74s wide-table run, because the middle
+        // decode is a real pass over every cell.
+        //
+        // Deliberately narrow, because getting this wrong means a sink silently
+        // does not run: the sink must be snk.parquet with a literal path, no
+        // partitioning, and a write mode this path can honour (overwrite, or
+        // unset). Whether the source can actually do it is only known at run
+        // time - it needs the Arrow fast path, which depends on the Oracle
+        // column types - so nothing is skipped until the source confirms it
+        // wrote the file.
+        let direct_sink_for: std::collections::HashMap<String, (String, String, Option<String>)> = {
+            let mut m = std::collections::HashMap::new();
+            for sink in compiled.stages.iter() {
+                // Opt-in only: faster, but the source's Parquet writer
+                // compresses this shape several times worse than DuckDB's, so
+                // nobody gets bigger files without asking.
+                if !matches!(sink.kind, StageKind::Sink)
+                    || sink.component_id != "snk.parquet"
+                    || !sink.sink_direct
+                {
+                    continue;
+                }
+                let (Some(path), Some(from)) = (sink.sink_path.as_deref(), sink.from.as_deref())
+                else {
+                    continue;
+                };
+                let mode_ok = matches!(sink.sink_mode.as_deref(), None | Some("overwrite"));
+                // A partitioned write fans out into a directory tree; a glob or
+                // template is not a single file either.
+                let plain = !path.contains('*')
+                    && !path.contains('{')
+                    && !sink.sql.contains("PARTITION_BY");
+                if !mode_ok || !plain {
+                    continue;
+                }
+                // Exactly one stage may read the source, and it must be this
+                // sink. single_consumer already encodes the count; this also
+                // guards against another stage naming it in `from`.
+                let others = compiled
+                    .stages
+                    .iter()
+                    .filter(|o| o.node_id != sink.node_id && o.from.as_deref() == Some(from))
+                    .count();
+                if others > 0 {
+                    continue;
+                }
+                let eligible = compiled.stages.iter().any(|src| {
+                    src.node_id == from
+                        && matches!(
+                            src.runtime.as_ref(),
+                            Some(RuntimeSpec::OracleSource(sp))
+                                if sp.single_consumer && sp.parallel_degree <= 1
+                        )
+                });
+                if eligible {
+                    m.insert(
+                        from.to_string(),
+                        (
+                            sink.node_id.clone(),
+                            path.to_string(),
+                            sink.sink_compression.clone(),
+                        ),
+                    );
+                }
+            }
+            m
+        };
+        // Sinks an upstream source has already written. Only ever filled in
+        // after a confirmed write.
+        let mut satisfied_sinks: std::collections::HashSet<String> = Default::default();
+
         for stage in &compiled.stages {
             if self.cancel.load(Ordering::Relaxed) {
                 was_cancelled = true;
                 on_event(PipelineEvent::Cancelled);
                 break;
+            }
+            // Its upstream already wrote this sink's file. Report it normally -
+            // the row count still comes from counting the source relation,
+            // which is now a view over the file that was written.
+            if matches!(stage.kind, StageKind::Sink) && satisfied_sinks.contains(&stage.node_id) {
+                on_event(PipelineEvent::StageStarted {
+                    node_id: stage.node_id.clone(),
+                    label: stage.label.clone(),
+                    kind: "sink".into(),
+                });
+                let rows = stage
+                    .from
+                    .as_deref()
+                    .and_then(|f| self.count_rows(&db_path, f).ok());
+                nodes.insert(
+                    stage.node_id.clone(),
+                    NodeRunStatus {
+                        status: "ok".into(),
+                        kind: Some("sink".into()),
+                        rows,
+                        duration_ms: Some(0),
+                        error: None,
+                        category: None,
+                        sql: None,
+                    },
+                );
+                on_event(PipelineEvent::StageFinished {
+                    node_id: stage.node_id.clone(),
+                    kind: "sink".into(),
+                    status: "ok".into(),
+                    rows,
+                    duration_ms: 0,
+                    error: None,
+                    sql: None,
+                });
+                continue;
             }
             let kind_label = match stage.kind {
                 StageKind::Sink => "sink",
@@ -1423,7 +1532,22 @@ impl DuckdbEngine {
                         self.run_cassandra_source(&db_path, spec)
                     }
                     Some(RuntimeSpec::OracleSink(spec)) => self.run_oracle_sink(&db_path, spec),
-                    Some(RuntimeSpec::OracleSource(spec)) => self.run_oracle_source(&db_path, spec),
+                    Some(RuntimeSpec::OracleSource(spec)) => {
+                        let target = direct_sink_for.get(&stage.node_id);
+                        let flag = std::sync::atomic::AtomicBool::new(false);
+                        let dst = target.map(|(_, path, comp)| connectors::DirectSinkTarget {
+                            path: path.as_str(),
+                            compression: comp.as_deref(),
+                            written: &flag,
+                        });
+                        let r = self.run_oracle_source(&db_path, spec, dst.as_ref());
+                        if r.is_ok() && flag.load(Ordering::Relaxed) {
+                            if let Some((sink_id, _, _)) = target {
+                                satisfied_sinks.insert(sink_id.clone());
+                            }
+                        }
+                        r
+                    }
                     Some(RuntimeSpec::AdbcSource(spec)) => self.run_adbc_source(&db_path, spec),
                     Some(RuntimeSpec::AdbcSink(spec)) => self.run_adbc_sink(&db_path, spec),
                     Some(RuntimeSpec::TeradataSource(spec)) => {

@@ -5672,16 +5672,33 @@ pub(crate) fn ducklake_attach(props: &JsonValue, read_only: bool) -> String {
         Some(p) => p,
         None => return String::new(),
     };
-    let (alias, mode) = if read_only {
-        ("duckle_src", " (READ_ONLY)")
+    let alias = if read_only { "duckle_src" } else { "duckle_dst" };
+    let mut opts: Vec<String> = Vec::new();
+    if read_only {
+        opts.push("READ_ONLY".into());
+    }
+    // A DuckLake catalog does not have to be a local DuckDB file: the path may
+    // be `sqlite:...`, `postgres:dbname=lake host=...` or `mysql:...`. Those
+    // forms carry no implied location for the data files, so DuckLake requires
+    // DATA_PATH when the lake does not already exist. Without a way to emit it
+    // a Postgres-catalogued lake could not be attached at all.
+    //
+    // Optional on purpose: an existing lake reads its stored data path from its
+    // own metadata, and omitting the option reproduces the previous output
+    // byte for byte, so saved pipelines are unaffected.
+    if let Some(dp) = string_prop(props, "dataPath").filter(|s| !s.trim().is_empty()) {
+        opts.push(format!("DATA_PATH '{}'", sql_escape(dp.trim())));
+    }
+    let tail = if opts.is_empty() {
+        String::new()
     } else {
-        ("duckle_dst", "")
+        format!(" ({})", opts.join(", "))
     };
     format!(
         "INSTALL ducklake; LOAD ducklake; ATTACH 'ducklake:{}' AS {}{}; ",
         sql_escape(&path),
         alias,
-        mode
+        tail
     )
 }
 
@@ -7319,20 +7336,55 @@ pub(crate) fn build_spatial_join(inputs: &NodeInputs, props: &JsonValue) -> Resu
         "crosses" => "ST_Crosses",
         "overlaps" => "ST_Overlaps",
         "equals" => "ST_Equals",
+        // #220: Covers / CoveredBy differ from Contains / Within at the
+        // boundary - a geometry covers another that touches its edge, which
+        // Contains rejects. That distinction is why GIS tools expose both.
+        "covers" => "ST_Covers",
+        "coveredby" => "ST_CoveredBy",
         _ => "ST_Intersects",
     };
     let kind = match string_prop(props, "joinType").as_deref() {
         Some("left") => "LEFT",
         _ => "INNER",
     };
+    // #219: a spatial join across mismatched CRS is the worst kind of wrong -
+    // every predicate is false, so the run succeeds and returns zero rows with
+    // no hint why. Compare the two CRS up front and fail with both names.
+    //
+    // The CRS lives in the column TYPE (`GEOMETRY('EPSG:4326')`), not the
+    // value, so it is read via typeof() exactly as the CRS-aware measurements
+    // do (#177). The guard sits in WHERE rather than the select list because a
+    // cross-joined column that nothing reads can be optimised away, and a
+    // pruned guard never fires. An unresolved CRS on either side stays
+    // permissive: only two KNOWN and DIFFERENT systems are an error.
+    let crs_probe = |view: &str, col: &str| {
+        format!(
+            "regexp_extract(typeof((SELECT {} FROM {} LIMIT 1)), 'GEOMETRY\\(''([^'']*)''\\)', 1)",
+            quote_ident(col),
+            quote_ident(view)
+        )
+    };
     Ok(format!(
-        "SELECT m.*, r.* FROM {} m {} JOIN {} r ON {}(CAST(m.{} AS GEOMETRY), CAST(r.{} AS GEOMETRY))",
-        quote_ident(left),
-        kind,
-        quote_ident(right),
-        fn_name,
-        quote_ident(&left_col),
-        quote_ident(&right_col)
+        "WITH __sj_crs AS (\
+           SELECT CASE \
+             WHEN __l <> '' AND __r <> '' AND __l <> __r \
+               THEN error('Spatial Join: the left geometry column uses ' || __l || \
+                          ' but the right uses ' || __r || \
+                          '. Reproject one side (Reproject Geometry) so both layers share a CRS.') \
+             ELSE TRUE END AS __ok \
+           FROM (SELECT {lprobe} AS __l, {rprobe} AS __r)\
+         ) \
+         SELECT m.*, r.* FROM {lv} m {kind} JOIN {rv} r \
+         ON {fn}(CAST(m.{lc} AS GEOMETRY), CAST(r.{rc} AS GEOMETRY)) \
+         WHERE (SELECT __ok FROM __sj_crs)",
+        lprobe = crs_probe(left, &left_col),
+        rprobe = crs_probe(right, &right_col),
+        lv = quote_ident(left),
+        rv = quote_ident(right),
+        kind = kind,
+        fn = fn_name,
+        lc = quote_ident(&left_col),
+        rc = quote_ident(&right_col),
     ))
 }
 

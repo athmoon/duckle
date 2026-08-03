@@ -42,6 +42,10 @@ pub struct DuckLakeCdcSpec {
     pub node_id: String,
     /// DuckLake catalog path (a local `.ducklake` file or a metadata DB DSN).
     pub path: String,
+    /// Where the lake's data files live. Required by DuckLake when the catalog
+    /// is a sqlite/postgres/mysql DSN rather than a local file and the lake does
+    /// not exist yet; ignored for an existing lake, which stores its own.
+    pub data_path: Option<String>,
     /// DuckLake schema; default "main".
     pub schema: Option<String>,
     pub table: String,

@@ -9661,9 +9661,19 @@ impl DuckdbEngine {
         pending: &mut Vec<(std::path::PathBuf, JsonValue)>,
     ) -> Result<String, EngineError> {
         let path = spec.path.replace('\\', "/").replace('\'', "''");
+        // This path builds its own ATTACH rather than reusing ducklake_attach,
+        // so it needs the same DATA_PATH handling, or a Postgres-catalogued lake
+        // would be readable everywhere except its change feed.
+        let data_path = spec
+            .data_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| format!(", DATA_PATH '{}'", d.replace('\\', "/").replace('\'', "''")))
+            .unwrap_or_default();
         let attach = format!(
-            "INSTALL ducklake; LOAD ducklake; ATTACH 'ducklake:{}' AS duckle_src (READ_ONLY); ",
-            path
+            "INSTALL ducklake; LOAD ducklake; ATTACH 'ducklake:{}' AS duckle_src (READ_ONLY{}); ",
+            path, data_path
         );
         let node_q = plan::quote_ident(&spec.node_id);
         // Read the change feed via the global ducklake_table_changes(catalog,

@@ -342,7 +342,7 @@ COMPONENTS = {
     'snk.ducklake': {
         'kind': 'sink',
         'summary': 'Write a table into a DuckLake catalog',
-        'params': ['path', 'schemaName', 'tableName', 'mode', 'conflictColumns'],
+        'params': ['path', 'dataPath', 'schemaName', 'tableName', 'mode', 'conflictColumns'],
     },
     'snk.elastic': {
         'kind': 'sink',
@@ -743,17 +743,17 @@ COMPONENTS = {
     'src.ducklake': {
         'kind': 'source',
         'summary': 'Read tables from a DuckLake catalog (DuckDB native lakehouse)',
-        'params': ['path', 'mode', 'schemaName', 'tableName', 'sql', 'asOfVersion', 'asOfTimestamp'],
+        'params': ['path', 'dataPath', 'mode', 'schemaName', 'tableName', 'sql', 'asOfVersion', 'asOfTimestamp'],
     },
     'src.ducklake.changes': {
         'kind': 'source',
         'summary': 'Change-data-feed source: reads table_changes() since the last consumed snapshot (saved in workspace state), emitting row-level insert / delete / update_preimage / update_postimage with a change_type column. True incremental CDC for DuckLake-managed tables.',
-        'params': ['path', 'schema', 'table', 'insertsOnly', 'initialSnapshot'],
+        'params': ['path', 'dataPath', 'schema', 'table', 'insertsOnly', 'initialSnapshot'],
     },
     'src.ducklake.diff': {
         'kind': 'source',
         'summary': 'Data diff between two snapshots of a DuckLake table: emits the row-level change feed (insert / delete / update_preimage / update_postimage with a change_type column) between a chosen From and To snapshot. Pick snapshots with Browse; wire into a validator to assert expected changes in CI.',
-        'params': ['path', 'schema', 'table', 'fromVersion', 'toVersion'],
+        'params': ['path', 'dataPath', 'schema', 'table', 'fromVersion', 'toVersion'],
     },
     'src.dynamodb': {
         'kind': 'source',

@@ -1829,6 +1829,108 @@
         assert!(build_freshness(&ni, &serde_json::json!({ "column": "ts", "maxAge": 1, "mode": "bogus" })).is_err());
     }
 
+    /// A driving input on `main` plus a second layer on `lookup_1`, which is
+    /// how the canvas wires a two-input transform.
+    fn spatial_join_inputs() -> crate::plan::graph::NodeInputs {
+        let mut ni = crate::plan::graph::NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["left_layer".into()]);
+        ni.ports.insert("lookup_1".into(), vec!["right_layer".into()]);
+        ni
+    }
+
+    #[test]
+    #[allow(clippy::bool_assert_comparison)]
+    fn spatial_join_supports_covers_and_covered_by() {
+        // #220: Covers / CoveredBy differ from Contains / Within at the
+        // boundary, which is exactly when they matter.
+        use crate::plan::builders::build_spatial_join;
+        let inputs = spatial_join_inputs();
+        for (relation, expect) in [
+            ("covers", "ST_Covers("),
+            ("coveredby", "ST_CoveredBy("),
+            ("contains", "ST_Contains("),
+            ("intersects", "ST_Intersects("),
+        ] {
+            let props = serde_json::json!({
+                "leftGeomColumn": "geom", "rightGeomColumn": "geom", "relation": relation
+            });
+            let sql = build_spatial_join(&inputs, &props).expect(relation);
+            assert!(sql.contains(expect), "{relation}: {sql}");
+        }
+        // An unknown relation still falls back rather than emitting bad SQL.
+        let props = serde_json::json!({
+            "leftGeomColumn": "geom", "rightGeomColumn": "geom", "relation": "nonsense"
+        });
+        let sql = build_spatial_join(&inputs, &props).unwrap();
+        assert!(sql.contains("ST_Intersects("), "fallback: {sql}");
+    }
+
+    #[test]
+    fn spatial_join_guards_against_mismatched_crs() {
+        // #219: joining across different CRS made every predicate false, so the
+        // run succeeded and returned zero rows with no clue why. The guard is a
+        // WHERE predicate rather than a select-list column on purpose: a
+        // cross-joined column nothing reads can be optimised away, and a pruned
+        // guard never fires.
+        use crate::plan::builders::build_spatial_join;
+        let props = serde_json::json!({
+            "leftGeomColumn": "geom", "rightGeomColumn": "shape", "relation": "intersects"
+        });
+        let sql = build_spatial_join(&spatial_join_inputs(), &props).unwrap();
+        assert!(sql.contains("regexp_extract(typeof("), "no CRS probe: {sql}");
+        assert!(sql.contains("error("), "no error guard: {sql}");
+        assert!(
+            sql.contains("WHERE (SELECT __ok FROM __sj_crs)"),
+            "guard must be a filter so it cannot be pruned: {sql}"
+        );
+        // Both column names must be probed, not just one.
+        assert!(sql.contains("\"geom\"") && sql.contains("\"shape\""), "{sql}");
+        // Only two KNOWN and DIFFERENT systems are an error; an unresolved CRS
+        // stays permissive so existing pipelines keep running.
+        assert!(sql.contains("__l <> '' AND __r <> '' AND __l <> __r"), "{sql}");
+    }
+
+    #[test]
+    fn ducklake_attach_emits_data_path_only_when_set() {
+        // A postgres:/sqlite:/mysql: catalog carries no implied data location,
+        // so DuckLake needs DATA_PATH. Omitting the property must reproduce the
+        // previous output exactly, or every saved pipeline changes behaviour.
+        use crate::plan::builders::ducklake_attach;
+        let plain = ducklake_attach(&serde_json::json!({ "path": "/lakes/a.ducklake" }), true);
+        assert!(plain.contains("ATTACH 'ducklake:/lakes/a.ducklake' AS duckle_src (READ_ONLY);"));
+        assert!(!plain.contains("DATA_PATH"), "{plain}");
+
+        let pg = ducklake_attach(
+            &serde_json::json!({
+                "path": "postgres:dbname=lake host=localhost",
+                "dataPath": "s3://bucket/lake/"
+            }),
+            true,
+        );
+        assert!(
+            pg.contains(
+                "ATTACH 'ducklake:postgres:dbname=lake host=localhost' AS duckle_src \
+                 (READ_ONLY, DATA_PATH 's3://bucket/lake/');"
+            ),
+            "{pg}"
+        );
+        // Write mode has no READ_ONLY, so DATA_PATH must still be parenthesised.
+        let w = ducklake_attach(
+            &serde_json::json!({ "path": "sqlite:m.db", "dataPath": "data_files/" }),
+            false,
+        );
+        assert!(
+            w.contains("AS duckle_dst (DATA_PATH 'data_files/');"),
+            "{w}"
+        );
+        // Blank is treated as absent.
+        let blank = ducklake_attach(
+            &serde_json::json!({ "path": "/lakes/a.ducklake", "dataPath": "   " }),
+            false,
+        );
+        assert!(!blank.contains("DATA_PATH"), "{blank}");
+    }
+
     #[test]
     fn attach_prelude_loads_spatial_for_sql_template() {
         // #84: spatial loads on opt-in OR when the SQL references an ST_ function,

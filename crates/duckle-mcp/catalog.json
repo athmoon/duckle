@@ -2163,6 +2163,13 @@
                 "required": true,
                 "placeholder": "/var/lakes/catalog.duckdb",
                 "description": "Path to the DuckLake catalog file (DuckDB-format)."
+              },
+              {
+                "key": "dataPath",
+                "label": "Data path",
+                "kind": "text",
+                "placeholder": "s3://bucket/lake/ or data_files/",
+                "description": "Where the lake stores its Parquet files. DuckLake requires this when the catalog is a sqlite:/postgres:/mysql: DSN and the lake does not exist yet; an existing lake reads its own stored path, so leave blank for a local .ducklake file."
               }
             ]
           },
@@ -2284,7 +2291,14 @@
                 "kind": "text",
                 "required": true,
                 "placeholder": "/var/lakes/catalog.ducklake",
-                "description": "Path to the DuckLake catalog (a .ducklake file or metadata DB DSN)."
+                "description": "Path to the DuckLake catalog (a .ducklake file or metadata DB DSN). A non-file catalog uses a DSN, e.g. postgres:dbname=lake host=localhost - set Data path alongside it."
+              },
+              {
+                "key": "dataPath",
+                "label": "Data path",
+                "kind": "text",
+                "placeholder": "s3://bucket/lake/ or data_files/",
+                "description": "Where the lake stores its Parquet files. DuckLake requires this when the catalog is a sqlite:/postgres:/mysql: DSN and the lake does not exist yet; an existing lake reads its own stored path, so leave blank for a local .ducklake file."
               }
             ]
           },
@@ -2377,7 +2391,14 @@
                 "kind": "text",
                 "required": true,
                 "placeholder": "/var/lakes/catalog.ducklake",
-                "description": "Path to the DuckLake catalog (a .ducklake file or metadata DB DSN)."
+                "description": "Path to the DuckLake catalog (a .ducklake file or metadata DB DSN). A non-file catalog uses a DSN, e.g. postgres:dbname=lake host=localhost - set Data path alongside it."
+              },
+              {
+                "key": "dataPath",
+                "label": "Data path",
+                "kind": "text",
+                "placeholder": "s3://bucket/lake/ or data_files/",
+                "description": "Where the lake stores its Parquet files. DuckLake requires this when the catalog is a sqlite:/postgres:/mysql: DSN and the lake does not exist yet; an existing lake reads its own stored path, so leave blank for a local .ducklake file."
               }
             ]
           },
@@ -15740,6 +15761,14 @@
                   {
                     "label": "Equals",
                     "value": "equals"
+                  },
+                  {
+                    "label": "Covers (left covers right)",
+                    "value": "covers"
+                  },
+                  {
+                    "label": "Covered by (left covered by right)",
+                    "value": "coveredby"
                   }
                 ]
               },
@@ -28515,6 +28544,13 @@
                 "kind": "text",
                 "required": true,
                 "placeholder": "/var/lakes/catalog.duckdb"
+              },
+              {
+                "key": "dataPath",
+                "label": "Data path",
+                "kind": "text",
+                "placeholder": "s3://bucket/lake/ or data_files/",
+                "description": "Where the lake stores its Parquet files. DuckLake requires this when the catalog is a sqlite:/postgres:/mysql: DSN and the lake does not exist yet; an existing lake reads its own stored path, so leave blank for a local .ducklake file."
               }
             ]
           },

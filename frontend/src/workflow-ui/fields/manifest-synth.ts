@@ -1372,7 +1372,8 @@ function synthLakehouseSource(comp: ComponentDef): ComponentManifest {
             {
                 label: 'Catalog',
                 fields: [
-                    { key: 'path', label: 'Catalog path', kind: 'text', required: true, placeholder: '/var/lakes/catalog.ducklake', description: 'Path to the DuckLake catalog (a .ducklake file or metadata DB DSN).' },
+                    { key: 'path', label: 'Catalog path', kind: 'text', required: true, placeholder: '/var/lakes/catalog.ducklake', description: 'Path to the DuckLake catalog (a .ducklake file or metadata DB DSN). A non-file catalog uses a DSN, e.g. postgres:dbname=lake host=localhost - set Data path alongside it.' },
+                    { key: 'dataPath', label: 'Data path', kind: 'text', placeholder: 's3://bucket/lake/ or data_files/', description: 'Where the lake stores its Parquet files. DuckLake requires this when the catalog is a sqlite:/postgres:/mysql: DSN and the lake does not exist yet; an existing lake reads its own stored path, so leave blank for a local .ducklake file.' },
                 ],
             },
             {
@@ -1393,7 +1394,8 @@ function synthLakehouseSource(comp: ComponentDef): ComponentManifest {
             {
                 label: 'Catalog',
                 fields: [
-                    { key: 'path', label: 'Catalog path', kind: 'text', required: true, placeholder: '/var/lakes/catalog.ducklake', description: 'Path to the DuckLake catalog (a .ducklake file or metadata DB DSN).' },
+                    { key: 'path', label: 'Catalog path', kind: 'text', required: true, placeholder: '/var/lakes/catalog.ducklake', description: 'Path to the DuckLake catalog (a .ducklake file or metadata DB DSN). A non-file catalog uses a DSN, e.g. postgres:dbname=lake host=localhost - set Data path alongside it.' },
+                    { key: 'dataPath', label: 'Data path', kind: 'text', placeholder: 's3://bucket/lake/ or data_files/', description: 'Where the lake stores its Parquet files. DuckLake requires this when the catalog is a sqlite:/postgres:/mysql: DSN and the lake does not exist yet; an existing lake reads its own stored path, so leave blank for a local .ducklake file.' },
                 ],
             },
             {
@@ -1420,6 +1422,7 @@ function synthLakehouseSource(comp: ComponentDef): ComponentManifest {
                 label: 'Catalog',
                 fields: [
                     { key: 'path', label: 'Catalog path', kind: 'text', required: true, placeholder: '/var/lakes/catalog.duckdb', description: 'Path to the DuckLake catalog file (DuckDB-format).' },
+                    { key: 'dataPath', label: 'Data path', kind: 'text', placeholder: 's3://bucket/lake/ or data_files/', description: 'Where the lake stores its Parquet files. DuckLake requires this when the catalog is a sqlite:/postgres:/mysql: DSN and the lake does not exist yet; an existing lake reads its own stored path, so leave blank for a local .ducklake file.' },
                 ],
             },
             {
@@ -1462,6 +1465,7 @@ function synthLakehouseSink(comp: ComponentDef): ComponentManifest {
                 label: 'Catalog',
                 fields: [
                     { key: 'path', label: 'Catalog path', kind: 'text', required: true, placeholder: '/var/lakes/catalog.duckdb' },
+                    { key: 'dataPath', label: 'Data path', kind: 'text', placeholder: 's3://bucket/lake/ or data_files/', description: 'Where the lake stores its Parquet files. DuckLake requires this when the catalog is a sqlite:/postgres:/mysql: DSN and the lake does not exist yet; an existing lake reads its own stored path, so leave blank for a local .ducklake file.' },
                 ],
             },
             {
@@ -3832,6 +3836,11 @@ function synthJoinTransform(comp: ComponentDef): ComponentManifest {
                             { label: 'Crosses', value: 'crosses' },
                             { label: 'Overlaps', value: 'overlaps' },
                             { label: 'Equals', value: 'equals' },
+                            // Covers / Covered by differ from Contains / Within
+                            // only at the boundary: a geometry covers another
+                            // that touches its edge, which Contains rejects.
+                            { label: 'Covers (left covers right)', value: 'covers' },
+                            { label: 'Covered by (left covered by right)', value: 'coveredby' },
                         ],
                     },
                     {

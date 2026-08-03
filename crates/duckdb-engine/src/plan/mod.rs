@@ -2727,6 +2727,7 @@ fn build_stage(
         ducklake_cdc = Some(DuckLakeCdcSpec {
             node_id: node.id.clone(),
             path,
+            data_path: string_prop(&props, "dataPath").filter(|s| !s.trim().is_empty()),
             schema: string_prop(&props, "schema").filter(|s| !s.is_empty()),
             table,
             initial_snapshot: props.get("initialSnapshot").and_then(|v| v.as_u64()).unwrap_or(0),

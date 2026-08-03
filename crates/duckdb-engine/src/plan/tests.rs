@@ -104,6 +104,89 @@
     }
 
     #[test]
+    fn map_qualifies_columns_whose_names_contain_spaces() {
+        // #214: with a lookup present the qualifier ran over double-quoted
+        // identifiers as if they were bare text. `"main.col one"` came out as
+        // `""o"."col" one"`, whose leading `""` DuckDB rejects as a zero-length
+        // delimited identifier, and `main."col one"` was left unqualified so
+        // DuckDB reported an unknown table `main`. Both forms must resolve, and
+        // must agree with what the no-lookup path (strip_port_prefixes) yields.
+        let aliases: std::collections::BTreeMap<String, String> = [
+            ("main".to_string(), "\"o\"".to_string()),
+            ("lookup_1".to_string(), "\"c\"".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        // The canonical form the mapper UI now emits.
+        assert_eq!(
+            qualify_port_refs("main.\"col one\"", &aliases),
+            "\"o\".\"col one\""
+        );
+        // The form saved by older pipelines, and what the issue reported.
+        assert_eq!(
+            qualify_port_refs("\"main.col one\"", &aliases),
+            "\"o\".\"col one\""
+        );
+        assert_eq!(
+            qualify_port_refs("\"lookup_1.col one\"", &aliases),
+            "\"c\".\"col one\""
+        );
+        // An embedded escaped quote survives a round trip.
+        assert_eq!(
+            qualify_port_refs("main.\"od\"\"d\"", &aliases),
+            "\"o\".\"od\"\"d\""
+        );
+    }
+
+    #[test]
+    fn map_quoting_fix_does_not_touch_expressions_or_foreign_identifiers() {
+        // The dangerous over-fix is to quote everything after `main.` up to a
+        // delimiter, which would swallow operators. These guard that only text
+        // the user already delimited is ever treated as a column name.
+        let aliases: std::collections::BTreeMap<String, String> = [
+            ("main".to_string(), "\"o\"".to_string()),
+            ("lookup_1".to_string(), "\"c\"".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            qualify_port_refs("main.amount * 1.08", &aliases),
+            "\"o\".\"amount\" * 1.08"
+        );
+        assert_eq!(
+            qualify_port_refs("main.a || main.b", &aliases),
+            "\"o\".\"a\" || \"o\".\"b\""
+        );
+        assert_eq!(
+            qualify_port_refs("UPPER(main.x)", &aliases),
+            "UPPER(\"o\".\"x\")"
+        );
+        // Struct field access must keep working: only the first segment is a
+        // column, the rest is DuckDB struct navigation.
+        assert_eq!(
+            qualify_port_refs("main.payload.id", &aliases),
+            "\"o\".\"payload\".id"
+        );
+        // A quoted identifier that is not a port reference is copied verbatim.
+        assert_eq!(
+            qualify_port_refs("\"some other col\"", &aliases),
+            "\"some other col\""
+        );
+        // An unknown prefix inside quotes is not a port reference either.
+        assert_eq!(
+            qualify_port_refs("\"notaport.col one\"", &aliases),
+            "\"notaport.col one\""
+        );
+        // A double quote inside a string literal must not start an identifier.
+        assert_eq!(
+            qualify_port_refs("main.id || 'he said \"main.x\"'", &aliases),
+            "\"o\".\"id\" || 'he said \"main.x\"'"
+        );
+    }
+
+    #[test]
     fn map_string_literal_with_dot_prefix_not_corrupted() {
         // A string literal containing 'main.' / 'lookup_1.' must be left
         // untouched by qualification (the qualifier is string-aware).

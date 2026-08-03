@@ -52,7 +52,15 @@ function newRowId(): string {
 }
 
 function refFor(portId: string, colName: string): string {
-    return portId + '.' + colName;
+    // A column name that is not a plain identifier has to be delimited, or the
+    // generated reference is ambiguous: `main.col one` is legal SQL meaning
+    // "column main.col, aliased one", so the engine cannot tell where the name
+    // ends (#214). Plain names are emitted unchanged, so existing pipelines and
+    // their saved expressions are byte-identical.
+    const safe = /^[A-Za-z_][A-Za-z0-9_]*$/.test(colName)
+        ? colName
+        : '"' + colName.replace(/"/g, '""') + '"';
+    return portId + '.' + safe;
 }
 
 const SQL_FUNCS: { label: string; insert: string }[] = [

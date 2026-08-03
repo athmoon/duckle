@@ -4032,6 +4032,28 @@ pub(crate) fn referenced_lookup_ports(expr: &str) -> std::collections::BTreeSet<
 /// untouched, so an expression like `'http://main.x'` is not corrupted -
 /// this is the key difference from strip_port_prefixes, which is not
 /// string-aware and is only safe on the no-lookup single-input path.
+/// Read the double-quoted identifier starting at `i` (which must be the opening
+/// `"`), honouring `""` as an escaped quote. Returns the index just past the
+/// closing quote plus the unescaped content, or None when the quote is never
+/// closed - in which case the caller leaves the text alone rather than guessing.
+fn read_quoted_ident(expr: &str, i: usize) -> Option<(usize, String)> {
+    let rest = &expr[i + 1..];
+    let mut content = String::new();
+    let mut it = rest.char_indices();
+    while let Some((off, ch)) = it.next() {
+        if ch == '"' {
+            if rest[off + 1..].starts_with('"') {
+                content.push('"');
+                it.next();
+                continue;
+            }
+            return Some((i + 1 + off + 1, content));
+        }
+        content.push(ch);
+    }
+    None
+}
+
 pub(crate) fn qualify_port_refs(
     expr: &str,
     aliases: &std::collections::BTreeMap<String, String>,
@@ -4061,6 +4083,35 @@ pub(crate) fn qualify_port_refs(
             i += 1;
             continue;
         }
+        // A double-quoted identifier is ONE token. Without this the walker
+        // rewrote inside it: `"main.col one"` became `""s1"."col" one"`, and
+        // DuckDB rejects the leading `""` as a zero-length delimited identifier
+        // (#214). Only the lookup path reached this; the no-lookup path uses
+        // strip_port_prefixes, which never re-quotes.
+        //
+        // Placed after the single-quote handling above so a string literal
+        // containing a double quote is still copied through untouched.
+        if c == '"' {
+            if let Some((end, content)) = read_quoted_ident(expr, i) {
+                match content.split_once('.') {
+                    // `"main.col one"` is what the mapper UI emitted for a
+                    // spaced column. Resolve it the same way the no-lookup path
+                    // does, so both paths agree on the same input.
+                    Some((port, col)) if !col.is_empty() && aliases.contains_key(port) => {
+                        out.push_str(&aliases[port]);
+                        out.push('.');
+                        out.push_str(&quote_ident(col));
+                    }
+                    // Every other quoted identifier is copied verbatim.
+                    _ => out.push_str(&expr[i..end]),
+                }
+                i = end;
+                continue;
+            }
+            out.push(c);
+            i += 1;
+            continue;
+        }
         let prev_ident = i > 0 && {
             let p = bytes[i - 1] as char;
             p.is_alphanumeric() || p == '_'
@@ -4077,6 +4128,20 @@ pub(crate) fn qualify_port_refs(
             // A `<port>.<col>` reference: rewrite to alias + quoted column.
             if i < bytes.len() && bytes[i] == b'.' {
                 if let Some(alias) = aliases.get(ident) {
+                    // `main."col one"`: the user already delimited the column,
+                    // so copy their quoting verbatim rather than re-quoting it.
+                    // Previously the ASCII scan below found no identifier byte
+                    // after the dot, fell through, and left `main."col one"`
+                    // unqualified, so DuckDB reported an unknown table `main`.
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                        if let Some((end, _)) = read_quoted_ident(expr, i + 1) {
+                            out.push_str(alias);
+                            out.push('.');
+                            out.push_str(&expr[i + 1..end]);
+                            i = end;
+                            continue;
+                        }
+                    }
                     // Consume the dot + the following column identifier.
                     let mut j = i + 1;
                     let col_start = j;

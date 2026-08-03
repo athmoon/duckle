@@ -2442,6 +2442,18 @@ impl DuckdbEngine {
             .collect();
         mark(&format!("query open; {} columns; streaming rows", cols.len()));
 
+        // #221: when every column's Oracle type pins an Arrow type, stream
+        // Arrow batches into a temp parquet instead of NDJSON text. The old
+        // path formats every value to text and makes DuckDB parse it back,
+        // which measured ~10x the cost of a parquet intermediate on a wide
+        // fact table. Ambiguous schemas return None here and take the
+        // unchanged NDJSON path below.
+        if let Some(schema) = Self::oracle_arrow_schema(rs.column_info()) {
+            mark("arrow fast path: all column types pinned");
+            return self.oracle_rows_to_parquet(db, spec, rs, schema, &mark);
+        }
+        mark("arrow fast path unavailable (ambiguous column type); using NDJSON");
+
         // Stream rows straight to the NDJSON temp file. The previous
         // Vec<JsonValue> collector held the entire result set in RAM
         // before handing it to DuckDB - on a million-row x 37-col pull
@@ -2490,6 +2502,284 @@ impl DuckdbEngine {
     /// the String accessor so the cell is at worst visible as text
     /// rather than NULL.
     #[cfg(feature = "oracle")]
+    /// Stream an open Oracle result set into a temp parquet via Arrow, then
+    /// hand DuckDB `read_parquet` (#221). Mirrors `run_adbc_source`: the
+    /// parquet encode runs on its own thread so it overlaps the next OCI
+    /// fetch rather than running after it.
+    fn oracle_rows_to_parquet(
+        &self,
+        db: &Path,
+        spec: &OracleSourceSpec,
+        rs: oracle::ResultSet<'_, oracle::Row>,
+        schema: arrow_schema::Schema,
+        mark: &dyn Fn(&str),
+    ) -> Result<String, EngineError> {
+        use arrow_array::builder::*;
+        use arrow_schema::{DataType, TimeUnit};
+        use parquet::arrow::ArrowWriter;
+        use parquet::file::properties::{EnabledStatistics, WriterProperties};
+
+        const BATCH: usize = 65_536;
+        let schema = std::sync::Arc::new(schema);
+        let ncols = schema.fields().len();
+        let parquet_path = std::env::temp_dir()
+            .join(format!("duckle-{}-{}.oracle.parquet", spec.node_id, std::process::id()));
+        let file = std::fs::File::create(&parquet_path)
+            .map_err(|e| EngineError::Query(format!("oracle: temp parquet: {}", e)))?;
+        let props = WriterProperties::builder()
+            .set_statistics_enabled(EnabledStatistics::None)
+            .set_max_row_group_size(1_000_000)
+            .build();
+        let wschema = schema.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<arrow_array::RecordBatch>(4);
+        let writer = std::thread::spawn(move || -> Result<usize, String> {
+            let mut w = ArrowWriter::try_new(file, wschema, Some(props)).map_err(|e| e.to_string())?;
+            let mut n = 0usize;
+            for batch in rx {
+                n += batch.num_rows();
+                w.write(&batch).map_err(|e| e.to_string())?;
+            }
+            w.close().map_err(|e| e.to_string())?;
+            Ok(n)
+        });
+
+        // One builder per column, reused across batches.
+        let mut builders: Vec<Box<dyn ArrayBuilder>> = schema
+            .fields()
+            .iter()
+            .map(|f| match f.data_type() {
+                DataType::Int64 => Box::new(Int64Builder::new()) as Box<dyn ArrayBuilder>,
+                DataType::Float64 => Box::new(Float64Builder::new()),
+                DataType::Float32 => Box::new(Float32Builder::new()),
+                DataType::Utf8 => Box::new(StringBuilder::new()),
+                DataType::Binary => Box::new(BinaryBuilder::new()),
+                DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                    Box::new(TimestampMicrosecondBuilder::new())
+                }
+                DataType::Decimal128(p, s) => Box::new(
+                    Decimal128Builder::new().with_precision_and_scale(*p, *s).unwrap(),
+                ),
+                other => unreachable!("oracle_arrow_schema admitted {:?}", other),
+            })
+            .collect();
+
+        let mut in_batch = 0usize;
+        let mut total = 0usize;
+        let mut send_err: Option<String> = None;
+
+        for row_res in rs {
+            self.check_cancelled()?;
+            let row = row_res.map_err(|e| EngineError::Query(format!("oracle row: {}", e)))?;
+            for (i, field) in schema.fields().iter().enumerate() {
+                Self::oracle_push_cell(&row, i, field.data_type(), &mut builders[i])?;
+            }
+            in_batch += 1;
+            total += 1;
+            if in_batch >= BATCH {
+                let batch = Self::finish_batch(&schema, &mut builders)?;
+                in_batch = 0;
+                if tx.send(batch).is_err() {
+                    send_err = Some("parquet writer stopped early".into());
+                    break;
+                }
+                if total % (BATCH * 8) == 0 {
+                    mark(&format!("{} rows encoded", total));
+                }
+            }
+        }
+        if send_err.is_none() && in_batch > 0 {
+            let batch = Self::finish_batch(&schema, &mut builders)?;
+            let _ = tx.send(batch);
+        }
+        drop(tx);
+        let written = writer
+            .join()
+            .map_err(|_| EngineError::Query("oracle: parquet writer thread panicked".into()))?
+            .map_err(|e| EngineError::Query(format!("oracle: write parquet: {}", e)))?;
+        if let Some(e) = send_err {
+            return Err(EngineError::Query(format!("oracle: {}", e)));
+        }
+        mark(&format!("parquet written: {} rows, {} cols", written, ncols));
+
+        let ppath = parquet_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "''");
+        let create = format!(
+            "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_parquet('{}')",
+            plan::quote_ident(&spec.node_id),
+            ppath
+        );
+        self.run(Some(db), &create, false)?;
+        let _ = std::fs::remove_file(&parquet_path);
+        mark("materialized into duckdb");
+        Ok(format!("oracle: {} rows into {}", written, spec.node_id))
+    }
+
+    fn finish_batch(
+        schema: &std::sync::Arc<arrow_schema::Schema>,
+        builders: &mut [Box<dyn arrow_array::builder::ArrayBuilder>],
+    ) -> Result<arrow_array::RecordBatch, EngineError> {
+        let arrays: Vec<arrow_array::ArrayRef> =
+            builders.iter_mut().map(|b| b.finish()).collect();
+        arrow_array::RecordBatch::try_new(schema.clone(), arrays)
+            .map_err(|e| EngineError::Query(format!("oracle: build arrow batch: {}", e)))
+    }
+
+    /// Append one Oracle cell to its column builder. NULL is appended as null
+    /// rather than a sentinel, so a NULL never becomes 0 or an empty string.
+    fn oracle_push_cell(
+        row: &oracle::Row,
+        i: usize,
+        dt: &arrow_schema::DataType,
+        b: &mut Box<dyn arrow_array::builder::ArrayBuilder>,
+        ) -> Result<(), EngineError> {
+        use arrow_array::builder::*;
+        use arrow_schema::{DataType, TimeUnit};
+        let bad = |what: &str, e: String| {
+            EngineError::Query(format!("oracle: column {} as {}: {}", i + 1, what, e))
+        };
+        match dt {
+            DataType::Int64 => {
+                let v: Option<i64> = row.get(i).map_err(|e| bad("BIGINT", e.to_string()))?;
+                b.as_any_mut().downcast_mut::<Int64Builder>().unwrap().append_option(v);
+            }
+            DataType::Float64 => {
+                let v: Option<f64> = row.get(i).map_err(|e| bad("DOUBLE", e.to_string()))?;
+                b.as_any_mut().downcast_mut::<Float64Builder>().unwrap().append_option(v);
+            }
+            DataType::Float32 => {
+                let v: Option<f32> = row.get(i).map_err(|e| bad("FLOAT", e.to_string()))?;
+                b.as_any_mut().downcast_mut::<Float32Builder>().unwrap().append_option(v);
+            }
+            DataType::Utf8 => {
+                let v: Option<String> = row.get(i).map_err(|e| bad("VARCHAR", e.to_string()))?;
+                b.as_any_mut().downcast_mut::<StringBuilder>().unwrap().append_option(v);
+            }
+            DataType::Binary => {
+                let v: Option<Vec<u8>> = row.get(i).map_err(|e| bad("BLOB", e.to_string()))?;
+                b.as_any_mut().downcast_mut::<BinaryBuilder>().unwrap().append_option(v);
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                // The oracle crate's own Timestamp, not chrono: FromSql for
+                // chrono types needs a cargo feature this crate does not enable.
+                let v: Option<oracle::sql_type::Timestamp> =
+                    row.get(i).map_err(|e| bad("TIMESTAMP", e.to_string()))?;
+                let micros = v.and_then(|t| {
+                    chrono::NaiveDate::from_ymd_opt(t.year(), t.month(), t.day())
+                        .and_then(|d| {
+                            d.and_hms_nano_opt(t.hour(), t.minute(), t.second(), t.nanosecond())
+                        })
+                        .map(|dt| dt.and_utc().timestamp_micros())
+                });
+                b.as_any_mut()
+                    .downcast_mut::<TimestampMicrosecondBuilder>()
+                    .unwrap()
+                    .append_option(micros);
+            }
+            DataType::Decimal128(_, s) => {
+                // Read as text so no digit is lost on the way in; the exact
+                // value is then rescaled to the column's declared scale.
+                let v: Option<String> = row.get(i).map_err(|e| bad("DECIMAL", e.to_string()))?;
+                let bld = b.as_any_mut().downcast_mut::<Decimal128Builder>().unwrap();
+                match v {
+                    None => bld.append_null(),
+                    Some(text) => match Self::oracle_decimal_to_i128(&text, *s) {
+                        Some(n) => bld.append_value(n),
+                        None => {
+                            return Err(EngineError::Query(format!(
+                                "oracle: column {} value '{}' does not fit the declared \
+                                 DECIMAL scale {}",
+                                i + 1,
+                                text,
+                                s
+                            )))
+                        }
+                    },
+                }
+            }
+            other => unreachable!("oracle_push_cell got {:?}", other),
+        }
+        Ok(())
+    }
+
+    /// Map Oracle's declared column types to a fixed Arrow schema, or None if
+    /// ANY column is ambiguous (#221).
+    ///
+    /// Returning None is the safety valve. The NDJSON path types a column from
+    /// the VALUES it sees (a NUMBER becomes an integer, a double or a string
+    /// depending on precision), which is why it needs `sample_size=-1`. Arrow
+    /// must commit to one type per column up front, so this only claims the
+    /// columns whose Oracle declaration already pins the type. Everything else
+    /// - unconstrained NUMBER (reported as Number(0, -127), which is what
+    /// COUNT/SUM expressions produce), LOBs, TZ-carrying timestamps, object
+    /// types - falls back to the old path unchanged.
+    fn oracle_arrow_schema(infos: &[oracle::ColumnInfo]) -> Option<arrow_schema::Schema> {
+        use arrow_schema::{DataType, Field, TimeUnit};
+        use oracle::sql_type::OracleType;
+        let mut fields = Vec::with_capacity(infos.len());
+        for c in infos {
+            let dt = match c.oracle_type() {
+                // Fits i64 exactly: NUMBER(18) max is 999_999_999_999_999_999.
+                OracleType::Number(p, 0) if *p >= 1 && *p <= 18 => DataType::Int64,
+                // Wider integers and every scaled NUMBER become exact decimals.
+                // The old path degraded these to DOUBLE (losing digits beyond
+                // ~15, the bug behind #196) or to VARCHAR; DECIMAL is what the
+                // Oracle column actually is.
+                OracleType::Number(p, s) if *p >= 1 && *p <= 38 && *s >= 0 && (*s as u8) <= *p => {
+                    DataType::Decimal128(*p, *s as i8)
+                }
+                OracleType::Varchar2(_)
+                | OracleType::NVarchar2(_)
+                | OracleType::Char(_)
+                | OracleType::NChar(_) => DataType::Utf8,
+                // Oracle DATE carries a time component, so it is a timestamp.
+                OracleType::Date | OracleType::Timestamp(_) => {
+                    DataType::Timestamp(TimeUnit::Microsecond, None)
+                }
+                OracleType::BinaryDouble => DataType::Float64,
+                OracleType::BinaryFloat => DataType::Float32,
+                OracleType::Raw(_) => DataType::Binary,
+                _ => return None,
+            };
+            fields.push(Field::new(c.name(), dt, c.nullable()));
+        }
+        Some(arrow_schema::Schema::new(fields))
+    }
+
+    /// Parse Oracle's decimal text into the scaled i128 a Decimal128 column
+    /// stores. "123.45" at scale 2 is 12345. Returns None when the value does
+    /// not fit, so the caller can fail loudly rather than truncate silently.
+    fn oracle_decimal_to_i128(s: &str, scale: i8) -> Option<i128> {
+        let t = s.trim();
+        let (neg, t) = match t.strip_prefix('-') {
+            Some(r) => (true, r),
+            None => (false, t.strip_prefix('+').unwrap_or(t)),
+        };
+        let (int_part, frac_part) = match t.split_once('.') {
+            Some((a, b)) => (a, b),
+            None => (t, ""),
+        };
+        if !int_part.chars().all(|c| c.is_ascii_digit())
+            || !frac_part.chars().all(|c| c.is_ascii_digit())
+        {
+            return None; // scientific notation etc: let the caller fall back
+        }
+        let want = scale.max(0) as usize;
+        let mut digits = String::with_capacity(int_part.len() + want);
+        digits.push_str(int_part);
+        if frac_part.len() >= want {
+            digits.push_str(&frac_part[..want]);
+        } else {
+            digits.push_str(frac_part);
+            for _ in 0..(want - frac_part.len()) {
+                digits.push('0');
+            }
+        }
+        let v: i128 = digits.trim_start_matches('0').parse().unwrap_or(0);
+        Some(if neg { -v } else { v })
+    }
+
     pub(crate) fn oracle_cell_to_json(row: &oracle::Row, i: usize) -> JsonValue {
         use oracle::sql_type::OracleType;
         let infos = row.column_info();
@@ -11588,6 +11878,75 @@ mod xml_remote_tests {
              TRY_CAST(NULLIF(\"price\", '') AS DOUBLE) AS \"price\", \
              TRY_CAST(NULLIF(\"title\", '') AS VARCHAR) AS \"title\""
         );
+    }
+}
+
+#[cfg(all(test, feature = "oracle"))]
+mod oracle_arrow_tests {
+    use super::DuckdbEngine;
+
+    #[test]
+    fn decimal_text_is_rescaled_without_losing_digits() {
+        // The whole reason the Arrow path reads NUMBER as text: f64 only
+        // round-trips ~15 significant digits, and NUMBER carries up to 38.
+        // Rescaling from the exact text keeps every one (#196, #221).
+        let f = DuckdbEngine::oracle_decimal_to_i128;
+        assert_eq!(f("123.45", 2), Some(12345));
+        assert_eq!(f("-123.45", 2), Some(-12345));
+        assert_eq!(f("123", 2), Some(12300), "integer padded to scale");
+        assert_eq!(f("0.5", 4), Some(5000));
+        assert_eq!(f("-0.0001", 4), Some(-1));
+        assert_eq!(f("+7", 0), Some(7));
+        // 38 significant digits survive intact; an f64 would have mangled this.
+        assert_eq!(
+            f("123456.123456789012", 12),
+            Some(123_456_123_456_789_012_i128)
+        );
+        // More fraction digits than the column declares are truncated, not
+        // rounded, matching how Oracle stores into a narrower scale.
+        assert_eq!(f("1.999", 2), Some(199));
+        // Anything not plain decimal text is refused so the caller can fail
+        // loudly instead of writing a wrong number.
+        assert_eq!(f("1.2e5", 2), None);
+        assert_eq!(f("abc", 2), None);
+    }
+
+    #[test]
+    fn ambiguous_columns_fall_back_to_the_json_path() {
+        // oracle_arrow_schema returning None is the safety valve: the NDJSON
+        // path types a column from its VALUES, so anything whose Oracle
+        // declaration does not pin a type must keep using it. An
+        // unconstrained NUMBER is reported as Number(0, -127) and is exactly
+        // what COUNT/SUM expressions produce.
+        use oracle::sql_type::OracleType;
+        // Pure type-level check of the match arms; building a real ColumnInfo
+        // needs a live cursor, so this asserts the decision table directly.
+        fn admits(t: &OracleType) -> bool {
+            matches!(t,
+                OracleType::Number(p, 0) if *p >= 1 && *p <= 18)
+                || matches!(t, OracleType::Number(p, s)
+                    if *p >= 1 && *p <= 38 && *s >= 0 && (*s as u8) <= *p)
+                || matches!(t, OracleType::Varchar2(_) | OracleType::NVarchar2(_)
+                    | OracleType::Char(_) | OracleType::NChar(_))
+                || matches!(t, OracleType::Date | OracleType::Timestamp(_))
+                || matches!(t, OracleType::BinaryDouble | OracleType::BinaryFloat)
+                || matches!(t, OracleType::Raw(_))
+        }
+        assert!(admits(&OracleType::Number(12, 0)));
+        assert!(admits(&OracleType::Number(15, 2)));
+        assert!(admits(&OracleType::Varchar2(60)));
+        assert!(admits(&OracleType::Date));
+        assert!(admits(&OracleType::Timestamp(6)));
+        // The fallbacks that matter.
+        assert!(!admits(&OracleType::Number(0, -127)), "unconstrained NUMBER");
+        assert!(!admits(&OracleType::CLOB), "LOBs stay on the JSON path");
+        assert!(!admits(&OracleType::BLOB));
+        assert!(
+            !admits(&OracleType::TimestampTZ(6)),
+            "TZ-carrying timestamps are not plain micros"
+        );
+        // Precision wider than Decimal128 can hold.
+        assert!(!admits(&OracleType::Number(39, 2)));
     }
 }
 

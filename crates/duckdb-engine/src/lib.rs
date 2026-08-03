@@ -2325,7 +2325,7 @@ impl DuckdbEngine {
 /// Removes the temp run database (and its WAL) when dropped, plus any
 /// `<db>.*.parquet` temp files that single-consumer sources kept alive as lazy
 /// read_parquet VIEWs for the duration of the run (src.adbc -> `<db>.adbc-*`,
-/// network-DB sources -> `<db>.attsrc-*`).
+/// network-DB sources -> `<db>.attsrc-*`, src.oracle -> `<db>.oraarrow-*`).
 struct TempDbGuard(PathBuf);
 impl Drop for TempDbGuard {
     fn drop(&mut self) {

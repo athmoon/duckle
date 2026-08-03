@@ -162,6 +162,11 @@ pub struct OracleSourceSpec {
     pub user: String,
     pub password: String,
     pub query: String,
+    /// True when at most one downstream stage reads this source. The Arrow fast
+    /// path then exposes the temp parquet as a lazy read_parquet VIEW instead of
+    /// copying it into a table, which skips the whole decode-and-store pass and
+    /// lets the consumer push projection / predicate into the parquet scan.
+    pub single_consumer: bool,
 }
 
 /// src.adbc: read via a prebuilt ADBC (Arrow Database Connectivity) driver

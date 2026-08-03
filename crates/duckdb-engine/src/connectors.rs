@@ -2522,13 +2522,24 @@ impl DuckdbEngine {
         const BATCH: usize = 65_536;
         let schema = std::sync::Arc::new(schema);
         let ncols = schema.fields().len();
-        let parquet_path = std::env::temp_dir()
-            .join(format!("duckle-{}-{}.oracle.parquet", spec.node_id, std::process::id()));
+        // Sibling of the run's db file so TempDbGuard sweeps it at run end; the
+        // file has to outlive this stage when we hand back a lazy VIEW.
+        let db_name = db.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let safe_node: String = spec
+            .node_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let parquet_path = db.with_file_name(format!("{}.oraarrow-{}.parquet", db_name, safe_node));
         let file = std::fs::File::create(&parquet_path)
             .map_err(|e| EngineError::Query(format!("oracle: temp parquet: {}", e)))?;
+        // 128K-row groups, not one group for the whole pull: DuckDB reads a
+        // parquet row group per thread, so a single giant group pins the
+        // downstream scan to one core. Measured on 1M x 40: one 1M-row group
+        // made the read-back 1.9s, 128K groups 0.8s.
         let props = WriterProperties::builder()
             .set_statistics_enabled(EnabledStatistics::None)
-            .set_max_row_group_size(1_000_000)
+            .set_max_row_group_size(131_072)
             .build();
         let wschema = schema.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel::<arrow_array::RecordBatch>(4);
@@ -2543,21 +2554,26 @@ impl DuckdbEngine {
             Ok(n)
         });
 
-        // One builder per column, reused across batches.
-        let mut builders: Vec<Box<dyn ArrayBuilder>> = schema
+        // One builder per column, reused across batches. Concretely typed
+        // rather than Box<dyn ArrayBuilder>: the append path runs once per
+        // cell (40M times on a 1M-row x 40-col pull), and a downcast_mut per
+        // cell was pure overhead on top of a dispatch the column type already
+        // decides once.
+        let mut builders: Vec<OraCol> = schema
             .fields()
             .iter()
             .map(|f| match f.data_type() {
-                DataType::Int64 => Box::new(Int64Builder::new()) as Box<dyn ArrayBuilder>,
-                DataType::Float64 => Box::new(Float64Builder::new()),
-                DataType::Float32 => Box::new(Float32Builder::new()),
-                DataType::Utf8 => Box::new(StringBuilder::new()),
-                DataType::Binary => Box::new(BinaryBuilder::new()),
+                DataType::Int64 => OraCol::I64(Int64Builder::new()),
+                DataType::Float64 => OraCol::F64(Float64Builder::new()),
+                DataType::Float32 => OraCol::F32(Float32Builder::new()),
+                DataType::Utf8 => OraCol::Str(StringBuilder::new()),
+                DataType::Binary => OraCol::Bin(BinaryBuilder::new()),
                 DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                    Box::new(TimestampMicrosecondBuilder::new())
+                    OraCol::Ts(TimestampMicrosecondBuilder::new())
                 }
-                DataType::Decimal128(p, s) => Box::new(
+                DataType::Decimal128(p, s) => OraCol::Dec(
                     Decimal128Builder::new().with_precision_and_scale(*p, *s).unwrap(),
+                    *s,
                 ),
                 other => unreachable!("oracle_arrow_schema admitted {:?}", other),
             })
@@ -2570,8 +2586,8 @@ impl DuckdbEngine {
         for row_res in rs {
             self.check_cancelled()?;
             let row = row_res.map_err(|e| EngineError::Query(format!("oracle row: {}", e)))?;
-            for (i, field) in schema.fields().iter().enumerate() {
-                Self::oracle_push_cell(&row, i, field.data_type(), &mut builders[i])?;
+            for (i, b) in builders.iter_mut().enumerate() {
+                b.push(&row, i)?;
             }
             in_batch += 1;
             total += 1;
@@ -2605,102 +2621,36 @@ impl DuckdbEngine {
             .to_string_lossy()
             .replace('\\', "/")
             .replace('\'', "''");
+        // Single consumer: a lazy read_parquet VIEW. Copying the parquet into a
+        // table costs a full decode-and-store pass over every column (measured
+        // at ~3.2s of a 10.1s 1M-row x 40-col run) and throws away the pushdown
+        // the consumer would otherwise get. 2+ consumers: materialize once as a
+        // TABLE so the parquet is decoded a single time, then drop the temp.
+        let kw = if spec.single_consumer { "VIEW" } else { "TABLE" };
         let create = format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_parquet('{}')",
+            "CREATE OR REPLACE {} {} AS SELECT * FROM read_parquet('{}')",
+            kw,
             plan::quote_ident(&spec.node_id),
             ppath
         );
         self.run(Some(db), &create, false)?;
-        let _ = std::fs::remove_file(&parquet_path);
-        mark("materialized into duckdb");
+        if spec.single_consumer {
+            mark("exposed as lazy read_parquet view");
+        } else {
+            let _ = std::fs::remove_file(&parquet_path);
+            mark("materialized into duckdb");
+        }
         Ok(format!("oracle: {} rows into {}", written, spec.node_id))
     }
 
     fn finish_batch(
         schema: &std::sync::Arc<arrow_schema::Schema>,
-        builders: &mut [Box<dyn arrow_array::builder::ArrayBuilder>],
+        builders: &mut [OraCol],
     ) -> Result<arrow_array::RecordBatch, EngineError> {
         let arrays: Vec<arrow_array::ArrayRef> =
             builders.iter_mut().map(|b| b.finish()).collect();
         arrow_array::RecordBatch::try_new(schema.clone(), arrays)
             .map_err(|e| EngineError::Query(format!("oracle: build arrow batch: {}", e)))
-    }
-
-    /// Append one Oracle cell to its column builder. NULL is appended as null
-    /// rather than a sentinel, so a NULL never becomes 0 or an empty string.
-    fn oracle_push_cell(
-        row: &oracle::Row,
-        i: usize,
-        dt: &arrow_schema::DataType,
-        b: &mut Box<dyn arrow_array::builder::ArrayBuilder>,
-        ) -> Result<(), EngineError> {
-        use arrow_array::builder::*;
-        use arrow_schema::{DataType, TimeUnit};
-        let bad = |what: &str, e: String| {
-            EngineError::Query(format!("oracle: column {} as {}: {}", i + 1, what, e))
-        };
-        match dt {
-            DataType::Int64 => {
-                let v: Option<i64> = row.get(i).map_err(|e| bad("BIGINT", e.to_string()))?;
-                b.as_any_mut().downcast_mut::<Int64Builder>().unwrap().append_option(v);
-            }
-            DataType::Float64 => {
-                let v: Option<f64> = row.get(i).map_err(|e| bad("DOUBLE", e.to_string()))?;
-                b.as_any_mut().downcast_mut::<Float64Builder>().unwrap().append_option(v);
-            }
-            DataType::Float32 => {
-                let v: Option<f32> = row.get(i).map_err(|e| bad("FLOAT", e.to_string()))?;
-                b.as_any_mut().downcast_mut::<Float32Builder>().unwrap().append_option(v);
-            }
-            DataType::Utf8 => {
-                let v: Option<String> = row.get(i).map_err(|e| bad("VARCHAR", e.to_string()))?;
-                b.as_any_mut().downcast_mut::<StringBuilder>().unwrap().append_option(v);
-            }
-            DataType::Binary => {
-                let v: Option<Vec<u8>> = row.get(i).map_err(|e| bad("BLOB", e.to_string()))?;
-                b.as_any_mut().downcast_mut::<BinaryBuilder>().unwrap().append_option(v);
-            }
-            DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                // The oracle crate's own Timestamp, not chrono: FromSql for
-                // chrono types needs a cargo feature this crate does not enable.
-                let v: Option<oracle::sql_type::Timestamp> =
-                    row.get(i).map_err(|e| bad("TIMESTAMP", e.to_string()))?;
-                let micros = v.and_then(|t| {
-                    chrono::NaiveDate::from_ymd_opt(t.year(), t.month(), t.day())
-                        .and_then(|d| {
-                            d.and_hms_nano_opt(t.hour(), t.minute(), t.second(), t.nanosecond())
-                        })
-                        .map(|dt| dt.and_utc().timestamp_micros())
-                });
-                b.as_any_mut()
-                    .downcast_mut::<TimestampMicrosecondBuilder>()
-                    .unwrap()
-                    .append_option(micros);
-            }
-            DataType::Decimal128(_, s) => {
-                // Read as text so no digit is lost on the way in; the exact
-                // value is then rescaled to the column's declared scale.
-                let v: Option<String> = row.get(i).map_err(|e| bad("DECIMAL", e.to_string()))?;
-                let bld = b.as_any_mut().downcast_mut::<Decimal128Builder>().unwrap();
-                match v {
-                    None => bld.append_null(),
-                    Some(text) => match Self::oracle_decimal_to_i128(&text, *s) {
-                        Some(n) => bld.append_value(n),
-                        None => {
-                            return Err(EngineError::Query(format!(
-                                "oracle: column {} value '{}' does not fit the declared \
-                                 DECIMAL scale {}",
-                                i + 1,
-                                text,
-                                s
-                            )))
-                        }
-                    },
-                }
-            }
-            other => unreachable!("oracle_push_cell got {:?}", other),
-        }
-        Ok(())
     }
 
     /// Map Oracle's declared column types to a fixed Arrow schema, or None if
@@ -12839,5 +12789,186 @@ impl std::io::Read for SftpFileReader {
         // Plain sync context (the XML parser calls this), so block_on is legal;
         // returns 0 at EOF, matching std::io::Read.
         self.rt.block_on(self.file.read(buf))
+    }
+}
+
+/// One concretely-typed Arrow builder per Oracle column for the #221 fast path.
+///
+/// The alternative, `Vec<Box<dyn ArrayBuilder>>`, forces an `as_any_mut()` +
+/// `downcast_mut()` on every appended cell. The column's type is known once,
+/// when the schema is pinned, so this resolves it there instead: the per-cell
+/// work is a match on a small enum the compiler can lay out flat.
+///
+/// NULL is always appended as a null, never a sentinel, so a NULL never becomes
+/// 0 or an empty string.
+#[cfg(feature = "oracle")]
+enum OraCol {
+    I64(arrow_array::builder::Int64Builder),
+    F64(arrow_array::builder::Float64Builder),
+    F32(arrow_array::builder::Float32Builder),
+    Str(arrow_array::builder::StringBuilder),
+    Bin(arrow_array::builder::BinaryBuilder),
+    Ts(arrow_array::builder::TimestampMicrosecondBuilder),
+    /// Carries the declared scale so the text Oracle hands back can be rescaled.
+    Dec(arrow_array::builder::Decimal128Builder, i8),
+}
+
+#[cfg(feature = "oracle")]
+impl OraCol {
+    /// Append cell `i` of `row`.
+    ///
+    /// Fast path: read the value straight out of ODPI's array-fetch buffer via
+    /// `as_inner_value()`. `Char` and `Number` come back as borrowed `&[u8]` /
+    /// `&str` pointing into that buffer, so a VARCHAR2 or a scaled NUMBER costs
+    /// no allocation at all - the old `row.get::<Option<String>>()` allocated
+    /// and freed a String per cell, ~19M of them on a 1M-row pull of this
+    /// shape. The value is copied once, directly into the Arrow buffer.
+    ///
+    /// The buffer's native type is chosen by ODPI and is not always the one the
+    /// pinned Arrow schema expects (the schema is decided from the *declared*
+    /// Oracle type). Any mismatch falls through to `push_via_get`, which is the
+    /// original typed `FromSql` path, so a surprising native shape converts
+    /// correctly instead of being misread.
+    fn push(&mut self, row: &oracle::Row, i: usize) -> Result<(), EngineError> {
+        use oracle::sql_type::InnerValue;
+        let sv = match row.sql_values().get(i) {
+            Some(sv) => sv,
+            None => return self.push_via_get(row, i),
+        };
+        match sv.is_null() {
+            Ok(true) => {
+                self.append_null();
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(_) => return self.push_via_get(row, i),
+        }
+        let inner = match sv.as_inner_value() {
+            Ok(v) => v,
+            Err(_) => return self.push_via_get(row, i),
+        };
+        match (&mut *self, inner) {
+            (OraCol::I64(b), InnerValue::Int64(v)) => b.append_value(v),
+            (OraCol::F64(b), InnerValue::Double(v)) => b.append_value(v),
+            (OraCol::F32(b), InnerValue::Float(v)) => b.append_value(v),
+            (OraCol::Str(b), InnerValue::Char(bytes)) => match std::str::from_utf8(bytes) {
+                Ok(s) => b.append_value(s),
+                // Not valid UTF-8 in the session charset: let the driver's own
+                // conversion decide rather than corrupting the text here.
+                Err(_) => return self.push_via_get(row, i),
+            },
+            (OraCol::Bin(b), InnerValue::Raw(bytes)) => b.append_value(bytes),
+            (OraCol::Ts(b), InnerValue::Timestamp(t)) => {
+                let micros = chrono::NaiveDate::from_ymd_opt(
+                    t.year as i32,
+                    t.month as u32,
+                    t.day as u32,
+                )
+                .and_then(|d| {
+                    d.and_hms_nano_opt(
+                        t.hour as u32,
+                        t.minute as u32,
+                        t.second as u32,
+                        t.fsecond,
+                    )
+                })
+                .map(|dt| dt.and_utc().timestamp_micros());
+                b.append_option(micros)
+            }
+            (OraCol::Dec(b, scale), InnerValue::Number(text)) => {
+                match DuckdbEngine::oracle_decimal_to_i128(text, *scale) {
+                    Some(n) => b.append_value(n),
+                    None => {
+                        return Err(EngineError::Query(format!(
+                            "oracle: column {} value '{}' does not fit the declared \
+                             DECIMAL scale {}",
+                            i + 1,
+                            text,
+                            scale
+                        )))
+                    }
+                }
+            }
+            _ => return self.push_via_get(row, i),
+        }
+        Ok(())
+    }
+
+    fn append_null(&mut self) {
+        match self {
+            OraCol::I64(b) => b.append_null(),
+            OraCol::F64(b) => b.append_null(),
+            OraCol::F32(b) => b.append_null(),
+            OraCol::Str(b) => b.append_null(),
+            OraCol::Bin(b) => b.append_null(),
+            OraCol::Ts(b) => b.append_null(),
+            OraCol::Dec(b, _) => b.append_null(),
+        }
+    }
+
+    fn push_via_get(&mut self, row: &oracle::Row, i: usize) -> Result<(), EngineError> {
+        let bad = |what: &str, e: oracle::Error| {
+            EngineError::Query(format!("oracle: column {} as {}: {}", i + 1, what, e))
+        };
+        match self {
+            OraCol::I64(b) => b.append_option(row.get(i).map_err(|e| bad("BIGINT", e))?),
+            OraCol::F64(b) => b.append_option(row.get(i).map_err(|e| bad("DOUBLE", e))?),
+            OraCol::F32(b) => b.append_option(row.get(i).map_err(|e| bad("FLOAT", e))?),
+            OraCol::Str(b) => {
+                let v: Option<String> = row.get(i).map_err(|e| bad("VARCHAR", e))?;
+                b.append_option(v)
+            }
+            OraCol::Bin(b) => {
+                let v: Option<Vec<u8>> = row.get(i).map_err(|e| bad("BLOB", e))?;
+                b.append_option(v)
+            }
+            OraCol::Ts(b) => {
+                // The oracle crate's own Timestamp, not chrono: FromSql for
+                // chrono types needs a cargo feature this crate does not enable.
+                let v: Option<oracle::sql_type::Timestamp> =
+                    row.get(i).map_err(|e| bad("TIMESTAMP", e))?;
+                b.append_option(v.and_then(|t| {
+                    chrono::NaiveDate::from_ymd_opt(t.year(), t.month(), t.day())
+                        .and_then(|d| {
+                            d.and_hms_nano_opt(t.hour(), t.minute(), t.second(), t.nanosecond())
+                        })
+                        .map(|dt| dt.and_utc().timestamp_micros())
+                }))
+            }
+            OraCol::Dec(b, scale) => {
+                // Read as text so no digit is lost on the way in; the exact
+                // value is then rescaled to the column's declared scale.
+                let v: Option<String> = row.get(i).map_err(|e| bad("DECIMAL", e))?;
+                match v {
+                    None => b.append_null(),
+                    Some(text) => match DuckdbEngine::oracle_decimal_to_i128(&text, *scale) {
+                        Some(n) => b.append_value(n),
+                        None => {
+                            return Err(EngineError::Query(format!(
+                                "oracle: column {} value '{}' does not fit the declared \
+                                 DECIMAL scale {}",
+                                i + 1,
+                                text,
+                                scale
+                            )))
+                        }
+                    },
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> arrow_array::ArrayRef {
+        use arrow_array::builder::ArrayBuilder;
+        match self {
+            OraCol::I64(b) => ArrayBuilder::finish(b),
+            OraCol::F64(b) => ArrayBuilder::finish(b),
+            OraCol::F32(b) => ArrayBuilder::finish(b),
+            OraCol::Str(b) => ArrayBuilder::finish(b),
+            OraCol::Bin(b) => ArrayBuilder::finish(b),
+            OraCol::Ts(b) => ArrayBuilder::finish(b),
+            OraCol::Dec(b, _) => ArrayBuilder::finish(b),
+        }
     }
 }

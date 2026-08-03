@@ -2913,6 +2913,11 @@ fn build_stage(
             user,
             password: string_prop(&props, "password").unwrap_or_default(),
             query,
+            single_consumer: consumer_count
+                .get(&output_table_ref(&node.id, None))
+                .copied()
+                .unwrap_or(0)
+                <= 1,
         });
         (String::new(), StageKind::View, None)
     } else if component_id == "src.adbc" {

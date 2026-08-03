@@ -2449,17 +2449,30 @@ impl DuckdbEngine {
         // which measured ~10x the cost of a parquet intermediate on a wide
         // fact table. Ambiguous schemas return None here and take the
         // unchanged NDJSON path below.
-        if let Some(schema) = Self::oracle_arrow_schema(rs.column_info()) {
-            mark("arrow fast path: all column types pinned");
+        if let Some((schema, numeric_text)) = Self::oracle_arrow_schema(rs.column_info()) {
+            if numeric_text.is_empty() {
+                mark("arrow fast path: all column types pinned");
+            } else {
+                mark(&format!(
+                    "arrow fast path: {} column(s) carried as text and typed after the write",
+                    numeric_text.len()
+                ));
+            }
             // A single extract sits at the OCI driver's per-cell floor, so the
             // only way past it is more sessions. Taken only when the read can
             // be pinned to one SCN, so every session sees the same snapshot.
             if let Some(par) = self.oracle_parallel_plan(&conn, spec, &mark) {
                 drop(rs);
                 drop(stmt);
-                return self.oracle_parallel_to_parquet(db, spec, schema, par, &mark);
+                return self.oracle_parallel_to_parquet(db, spec, schema, &numeric_text, par, &mark);
             }
-            return self.oracle_rows_to_parquet(db, spec, rs, schema, direct, &mark);
+            // The file a direct write produces IS the user's output, so it must
+            // carry real types. A text column would have to be cast after the
+            // fact, which is exactly the second pass being skipped - so when any
+            // column needs typing, the normal path runs and the sink does it.
+            let direct = if numeric_text.is_empty() { direct } else { None };
+            return self
+                .oracle_rows_to_parquet(db, spec, rs, schema, &numeric_text, direct, &mark);
         }
         mark("arrow fast path unavailable (ambiguous column type); using NDJSON");
 
@@ -2521,6 +2534,7 @@ impl DuckdbEngine {
         spec: &OracleSourceSpec,
         rs: oracle::ResultSet<'_, oracle::Row>,
         schema: arrow_schema::Schema,
+        numeric_text: &[usize],
         direct: Option<&DirectSinkTarget>,
         mark: &dyn Fn(&str),
     ) -> Result<String, EngineError> {
@@ -2587,10 +2601,12 @@ impl DuckdbEngine {
         // the consumer would otherwise get. 2+ consumers: materialize once as a
         // TABLE so the parquet is decoded a single time, then drop the temp.
         let kw = if spec.single_consumer { "VIEW" } else { "TABLE" };
+        let projection = self.oracle_numeric_projection(db, &ppath, &schema, numeric_text, mark)?;
         let create = format!(
-            "CREATE OR REPLACE {} {} AS SELECT * FROM read_parquet('{}')",
+            "CREATE OR REPLACE {} {} AS SELECT {} FROM read_parquet('{}')",
             kw,
             plan::quote_ident(&spec.node_id),
+            projection,
             ppath
         );
         self.run(Some(db), &create, false)?;
@@ -2769,6 +2785,7 @@ impl DuckdbEngine {
         db: &Path,
         spec: &OracleSourceSpec,
         schema: arrow_schema::Schema,
+        numeric_text: &[usize],
         plan_: OracleParallelPlan,
         mark: &dyn Fn(&str),
     ) -> Result<String, EngineError> {
@@ -2880,10 +2897,13 @@ impl DuckdbEngine {
             .collect::<Vec<_>>()
             .join(", ");
         let kw = if spec.single_consumer { "VIEW" } else { "TABLE" };
+        let projection =
+            self.oracle_numeric_projection(db, &format!("[{}]", list), &schema, numeric_text, mark)?;
         let create = format!(
-            "CREATE OR REPLACE {} {} AS SELECT * FROM read_parquet([{}])",
+            "CREATE OR REPLACE {} {} AS SELECT {} FROM read_parquet([{}])",
             kw,
             plan::quote_ident(&spec.node_id),
+            projection,
             list
         );
         self.run(Some(db), &create, false)?;
@@ -2893,6 +2913,107 @@ impl DuckdbEngine {
             }
         }
         Ok(format!("oracle: {} rows into {}", total, spec.node_id))
+    }
+
+    /// Give the text-carried NUMBER columns their real type.
+    ///
+    /// Oracle will not say how wide an unconstrained NUMBER actually is without
+    /// reading every row, so the values travel as text and the question is
+    /// answered here instead - against the Parquet just written, locally and
+    /// columnar, where scanning a few columns costs milliseconds rather than a
+    /// second pass over the wire. This is the same answer `read_json_auto` used
+    /// to arrive at, reached without re-parsing every row.
+    ///
+    /// Returns the select list: `*` when there is nothing to do, otherwise
+    /// `* REPLACE (CAST(...) AS col, ...)`.
+    #[cfg(feature = "oracle")]
+    fn oracle_numeric_projection(
+        &self,
+        db: &Path,
+        parquet_ref: &str,
+        schema: &arrow_schema::Schema,
+        numeric_text: &[usize],
+        mark: &dyn Fn(&str),
+    ) -> Result<String, EngineError> {
+        if numeric_text.is_empty() {
+            return Ok("*".to_string());
+        }
+        let src = if parquet_ref.starts_with('[') {
+            format!("read_parquet({})", parquet_ref)
+        } else {
+            format!("read_parquet('{}')", parquet_ref)
+        };
+        // One pass, all columns at once. Per column: whether any value has a
+        // fraction or an exponent, the widest run of digits, and the deepest
+        // fraction seen.
+        let mut aggs = Vec::new();
+        for &i in numeric_text {
+            let c = plan::quote_ident(schema.field(i).name());
+            // Digits LEFT of the point and digits RIGHT of it, counted
+            // separately. Summing them is the only correct precision: a column
+            // holding -17.5 and -0.25 has 3 digits in every value but needs
+            // DECIMAL(4,2), and using the total would silently truncate it.
+            let bare = format!("replace({}, '-', '')", c);
+            aggs.push(format!(
+                "max(CASE WHEN {c} IS NULL THEN 0                    WHEN strpos({c}, '.') > 0 OR strpos(upper({c}), 'E') > 0 THEN 2                    ELSE 1 END),                  max(CASE WHEN strpos({b}, '.') > 0 THEN strpos({b}, '.') - 1                    ELSE length({b}) END),                  max(CASE WHEN strpos({c}, '.') > 0                    THEN length({c}) - strpos({c}, '.') ELSE 0 END),                  max(CASE WHEN strpos(upper({c}), 'E') > 0 THEN 1 ELSE 0 END)",
+                c = c,
+                b = bare
+            ));
+        }
+        let sql = format!("SELECT {} FROM {}", aggs.join(", "), src);
+        let out = self.run(Some(db), &sql, true)?;
+        let row: Vec<serde_json::Value> = serde_json::from_str::<Vec<JsonValue>>(&out)
+            .ok()
+            .and_then(|rows| rows.into_iter().next())
+            .and_then(|r| r.as_object().map(|o| o.values().cloned().collect()))
+            .unwrap_or_default();
+        if row.len() < numeric_text.len() * 4 {
+            // Could not read the probe back; leaving the columns as text is
+            // wrong but silent, so say so and let them through untyped rather
+            // than guessing a width.
+            mark("could not probe unconstrained NUMBER widths; leaving them as text");
+            return Ok("*".to_string());
+        }
+        let num = |v: &JsonValue| -> i64 {
+            v.as_i64()
+                .or_else(|| v.as_f64().map(|f| f as i64))
+                .or_else(|| v.as_str().and_then(|t| t.parse().ok()))
+                .unwrap_or(0)
+        };
+        let mut replaces = Vec::new();
+        for (n, &i) in numeric_text.iter().enumerate() {
+            let kind = num(&row[n * 4]);
+            let int_digits = num(&row[n * 4 + 1]);
+            let scale = num(&row[n * 4 + 2]);
+            let exponent = num(&row[n * 4 + 3]) == 1;
+            let digits = int_digits + scale;
+            let name = schema.field(i).name();
+            let c = plan::quote_ident(name);
+            // Scientific notation cannot be pinned to a decimal width, and a
+            // value past 38 digits does not fit one, so both take DOUBLE - the
+            // same answer the old path reached.
+            let ty = if kind == 0 {
+                "BIGINT".to_string()
+            } else if exponent || digits > 38 {
+                "DOUBLE".to_string()
+            } else if kind == 1 {
+                if int_digits <= 18 {
+                    "BIGINT".to_string()
+                } else {
+                    format!("DECIMAL({},0)", int_digits.max(1))
+                }
+            } else {
+                let p = digits.clamp(1, 38);
+                format!("DECIMAL({},{})", p, scale.clamp(0, p - 1).max(0))
+            };
+            // A strict CAST, not TRY_CAST. The width above was measured from
+            // every value in the column, so it cannot overflow; if it ever does,
+            // the run must stop and say so rather than turn the row into a NULL
+            // nobody notices.
+            replaces.push(format!("CAST({} AS {}) AS {}", c, ty, c));
+        }
+        mark(&format!("typed {} text-carried NUMBER column(s)", replaces.len()));
+        Ok(format!("* REPLACE ({})", replaces.join(", ")))
     }
 
     /// Drain one Oracle result set into one parquet file, converting through
@@ -3077,37 +3198,64 @@ impl DuckdbEngine {
     /// - unconstrained NUMBER (reported as Number(0, -127), which is what
     /// COUNT/SUM expressions produce), LOBs, TZ-carrying timestamps, object
     /// types - falls back to the old path unchanged.
-    fn oracle_arrow_schema(infos: &[oracle::ColumnInfo]) -> Option<arrow_schema::Schema> {
-        use arrow_schema::{DataType, Field, TimeUnit};
+    /// The Oracle-type to Arrow-type decision, in one place so a test can
+    /// exercise the real thing. `true` in the second slot means the column
+    /// travels as text and gets its real numeric type after the write.
+    #[cfg(feature = "oracle")]
+    fn oracle_arrow_type(t: &oracle::sql_type::OracleType) -> Option<(arrow_schema::DataType, bool)> {
+        use arrow_schema::{DataType, TimeUnit};
         use oracle::sql_type::OracleType;
+        Some(match t {
+            // A NUMBER with no precision - reported as Number(0, -127), and the
+            // single most common thing in an Oracle warehouse. Its real width is
+            // a property of the DATA, not the declaration, so it travels as text
+            // and is typed from the values afterwards. That reproduces what the
+            // NDJSON path got from read_json_auto without re-parsing every row.
+            OracleType::Number(0, _) | OracleType::Float(_) => (DataType::Utf8, true),
+            // A negative scale means Oracle rounds left of the point
+            // (NUMBER(5,-2) stores hundreds), which an Arrow decimal cannot
+            // express, so these travel as text too.
+            OracleType::Number(_, s) if *s < 0 => (DataType::Utf8, true),
+            // Fits i64 exactly: NUMBER(18) max is 999_999_999_999_999_999.
+            OracleType::Number(p, 0) if *p >= 1 && *p <= 18 => (DataType::Int64, false),
+            // Wider integers and every scaled NUMBER become exact decimals. The
+            // old path degraded these to DOUBLE (losing digits beyond ~15, the
+            // bug behind #196) or to VARCHAR; DECIMAL is what the column is.
+            OracleType::Number(p, s) if *p >= 1 && *p <= 38 && *s >= 0 && (*s as u8) <= *p => {
+                (DataType::Decimal128(*p, *s as i8), false)
+            }
+            OracleType::Varchar2(_)
+            | OracleType::NVarchar2(_)
+            | OracleType::Char(_)
+            | OracleType::NChar(_) => (DataType::Utf8, false),
+            // Oracle DATE carries a time component, so it is a timestamp.
+            OracleType::Date | OracleType::Timestamp(_) => {
+                (DataType::Timestamp(TimeUnit::Microsecond, None), false)
+            }
+            OracleType::BinaryDouble => (DataType::Float64, false),
+            OracleType::BinaryFloat => (DataType::Float32, false),
+            OracleType::Raw(_) => (DataType::Binary, false),
+            // LOBs and zoned timestamps still have no exact mapping.
+            _ => return None,
+        })
+    }
+
+    fn oracle_arrow_schema(
+        infos: &[oracle::ColumnInfo],
+    ) -> Option<(arrow_schema::Schema, Vec<usize>)> {
+        use arrow_schema::Field;
         let mut fields = Vec::with_capacity(infos.len());
-        for c in infos {
-            let dt = match c.oracle_type() {
-                // Fits i64 exactly: NUMBER(18) max is 999_999_999_999_999_999.
-                OracleType::Number(p, 0) if *p >= 1 && *p <= 18 => DataType::Int64,
-                // Wider integers and every scaled NUMBER become exact decimals.
-                // The old path degraded these to DOUBLE (losing digits beyond
-                // ~15, the bug behind #196) or to VARCHAR; DECIMAL is what the
-                // Oracle column actually is.
-                OracleType::Number(p, s) if *p >= 1 && *p <= 38 && *s >= 0 && (*s as u8) <= *p => {
-                    DataType::Decimal128(*p, *s as i8)
-                }
-                OracleType::Varchar2(_)
-                | OracleType::NVarchar2(_)
-                | OracleType::Char(_)
-                | OracleType::NChar(_) => DataType::Utf8,
-                // Oracle DATE carries a time component, so it is a timestamp.
-                OracleType::Date | OracleType::Timestamp(_) => {
-                    DataType::Timestamp(TimeUnit::Microsecond, None)
-                }
-                OracleType::BinaryDouble => DataType::Float64,
-                OracleType::BinaryFloat => DataType::Float32,
-                OracleType::Raw(_) => DataType::Binary,
-                _ => return None,
-            };
+        // Columns carried as text because Oracle's declaration does not pin a
+        // width. DuckDB gives them their real type after the write.
+        let mut numeric_text = Vec::new();
+        for (i, c) in infos.iter().enumerate() {
+            let (dt, as_text) = Self::oracle_arrow_type(c.oracle_type())?;
+            if as_text {
+                numeric_text.push(i);
+            }
             fields.push(Field::new(c.name(), dt, c.nullable()));
         }
-        Some(arrow_schema::Schema::new(fields))
+        Some((arrow_schema::Schema::new(fields), numeric_text))
     }
 
     /// Parse Oracle's decimal text into the scaled i128 a Decimal128 column
@@ -12275,41 +12423,32 @@ mod oracle_arrow_tests {
     }
 
     #[test]
-    fn ambiguous_columns_fall_back_to_the_json_path() {
-        // oracle_arrow_schema returning None is the safety valve: the NDJSON
-        // path types a column from its VALUES, so anything whose Oracle
-        // declaration does not pin a type must keep using it. An
-        // unconstrained NUMBER is reported as Number(0, -127) and is exactly
-        // what COUNT/SUM expressions produce.
+    fn the_arrow_type_table_is_what_ships() {
+        // This used to re-state the match arms, so it kept passing while the
+        // real decision changed underneath it. It now calls the function.
+        use arrow_schema::DataType;
         use oracle::sql_type::OracleType;
-        // Pure type-level check of the match arms; building a real ColumnInfo
-        // needs a live cursor, so this asserts the decision table directly.
-        fn admits(t: &OracleType) -> bool {
-            matches!(t,
-                OracleType::Number(p, 0) if *p >= 1 && *p <= 18)
-                || matches!(t, OracleType::Number(p, s)
-                    if *p >= 1 && *p <= 38 && *s >= 0 && (*s as u8) <= *p)
-                || matches!(t, OracleType::Varchar2(_) | OracleType::NVarchar2(_)
-                    | OracleType::Char(_) | OracleType::NChar(_))
-                || matches!(t, OracleType::Date | OracleType::Timestamp(_))
-                || matches!(t, OracleType::BinaryDouble | OracleType::BinaryFloat)
-                || matches!(t, OracleType::Raw(_))
-        }
-        assert!(admits(&OracleType::Number(12, 0)));
-        assert!(admits(&OracleType::Number(15, 2)));
-        assert!(admits(&OracleType::Varchar2(60)));
-        assert!(admits(&OracleType::Date));
-        assert!(admits(&OracleType::Timestamp(6)));
-        // The fallbacks that matter.
-        assert!(!admits(&OracleType::Number(0, -127)), "unconstrained NUMBER");
-        assert!(!admits(&OracleType::CLOB), "LOBs stay on the JSON path");
-        assert!(!admits(&OracleType::BLOB));
-        assert!(
-            !admits(&OracleType::TimestampTZ(6)),
-            "TZ-carrying timestamps are not plain micros"
+        let t = |o| DuckdbEngine::oracle_arrow_type(&o);
+
+        // Pinned by the declaration: exact types, no post-processing.
+        assert_eq!(t(OracleType::Number(12, 0)), Some((DataType::Int64, false)));
+        assert_eq!(
+            t(OracleType::Number(15, 2)),
+            Some((DataType::Decimal128(15, 2), false))
         );
-        // Precision wider than Decimal128 can hold.
-        assert!(!admits(&OracleType::Number(39, 2)));
+        assert_eq!(t(OracleType::Varchar2(60)), Some((DataType::Utf8, false)));
+        assert!(matches!(t(OracleType::Date), Some((DataType::Timestamp(..), false))));
+
+        // NOT pinned by the declaration: carried as text, typed from the values
+        // after the write. An unconstrained NUMBER is what COUNT/SUM produce and
+        // what most Oracle warehouse columns are declared as, so this is the
+        // difference between the fast path running and not running at all.
+        assert_eq!(t(OracleType::Number(0, -127)), Some((DataType::Utf8, true)));
+        assert_eq!(t(OracleType::Number(5, -2)), Some((DataType::Utf8, true)));
+
+        // Still no exact mapping: these keep the NDJSON path.
+        assert_eq!(t(OracleType::CLOB), None, "LOBs stay on the JSON path");
+        assert_eq!(t(OracleType::BLOB), None);
     }
 }
 

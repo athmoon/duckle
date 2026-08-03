@@ -167,6 +167,14 @@ pub struct OracleSourceSpec {
     /// copying it into a table, which skips the whole decode-and-store pass and
     /// lets the consumer push projection / predicate into the parquet scan.
     pub single_consumer: bool,
+    /// Numeric or date column to split the extract on, so several sessions can
+    /// fetch disjoint ranges at once. Empty means a single-session read.
+    /// Should be indexed and reasonably evenly distributed - ranges are cut at
+    /// equal width between MIN and MAX, so a heavily skewed column just makes
+    /// one session do most of the work.
+    pub parallel_column: Option<String>,
+    /// How many sessions to read with. 1 (the default) means no parallelism.
+    pub parallel_degree: usize,
 }
 
 /// src.adbc: read via a prebuilt ADBC (Arrow Database Connectivity) driver

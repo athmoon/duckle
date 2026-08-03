@@ -2450,6 +2450,14 @@ impl DuckdbEngine {
         // unchanged NDJSON path below.
         if let Some(schema) = Self::oracle_arrow_schema(rs.column_info()) {
             mark("arrow fast path: all column types pinned");
+            // A single extract sits at the OCI driver's per-cell floor, so the
+            // only way past it is more sessions. Taken only when the read can
+            // be pinned to one SCN, so every session sees the same snapshot.
+            if let Some(par) = self.oracle_parallel_plan(&conn, spec, &mark) {
+                drop(rs);
+                drop(stmt);
+                return self.oracle_parallel_to_parquet(db, spec, schema, par, &mark);
+            }
             return self.oracle_rows_to_parquet(db, spec, rs, schema, &mark);
         }
         mark("arrow fast path unavailable (ambiguous column type); using NDJSON");
@@ -2514,12 +2522,357 @@ impl DuckdbEngine {
         schema: arrow_schema::Schema,
         mark: &dyn Fn(&str),
     ) -> Result<String, EngineError> {
+        let schema = std::sync::Arc::new(schema);
+        let ncols = schema.fields().len().max(1);
+        // Sibling of the run's db file so TempDbGuard sweeps it at run end; the
+        // file has to outlive this stage when we hand back a lazy VIEW.
+        let db_name = db.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let safe_node: String = spec
+            .node_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let parquet_path = db.with_file_name(format!("{}.oraarrow-{}.parquet", db_name, safe_node));
+        let written =
+            Self::oracle_write_parquet_part(rs, &schema, &parquet_path, &self.cancel, Some(mark))?;
+        mark(&format!("parquet written: {} rows, {} cols", written, ncols));
+
+        let ppath = parquet_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "''");
+        // Single consumer: a lazy read_parquet VIEW. Copying the parquet into a
+        // table costs a full decode-and-store pass over every column (measured
+        // at ~3.2s of a 10.1s 1M-row x 40-col run) and throws away the pushdown
+        // the consumer would otherwise get. 2+ consumers: materialize once as a
+        // TABLE so the parquet is decoded a single time, then drop the temp.
+        let kw = if spec.single_consumer { "VIEW" } else { "TABLE" };
+        let create = format!(
+            "CREATE OR REPLACE {} {} AS SELECT * FROM read_parquet('{}')",
+            kw,
+            plan::quote_ident(&spec.node_id),
+            ppath
+        );
+        self.run(Some(db), &create, false)?;
+        if spec.single_consumer {
+            mark("exposed as lazy read_parquet view");
+        } else {
+            let _ = std::fs::remove_file(&parquet_path);
+            mark("materialized into duckdb");
+        }
+        Ok(format!("oracle: {} rows into {}", written, spec.node_id))
+    }
+
+    /// Decide whether this extract can be split across sessions, and how.
+    ///
+    /// Returns None - meaning read with one session - unless all of these hold,
+    /// because a parallel read that cannot satisfy them is either wrong or
+    /// pointless:
+    ///
+    /// - the user asked for it (a split column and a degree above 1);
+    /// - the whole read can be pinned to a single SCN. This is the correctness
+    ///   gate. Without it the sessions each get their own read-consistent view
+    ///   taken at slightly different times, so a table being written to while
+    ///   the extract runs could be torn across bands in a way a single session
+    ///   would never produce. We decline rather than quietly risk it;
+    /// - the split column has a usable range to cut into bands.
+    ///
+    /// Every refusal is reported through `mark`, so someone who configured
+    /// parallelism and did not get it can see exactly why.
+    #[cfg(feature = "oracle")]
+    fn oracle_parallel_plan(
+        &self,
+        conn: &oracle::Connection,
+        spec: &OracleSourceSpec,
+        mark: &dyn Fn(&str),
+    ) -> Option<OracleParallelPlan> {
+        let degree = spec.parallel_degree;
+        let column = spec.parallel_column.as_deref()?.trim().to_string();
+        if degree <= 1 || column.is_empty() {
+            return None;
+        }
+        // Refused rather than escaped: a split column is interpolated into SQL,
+        // and a pipeline file is not a trusted source of SQL fragments.
+        if column.is_empty()
+            || column.len() > 128
+            || !column
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '#')
+        {
+            mark(&format!(
+                "parallel read declined: {} is not a plain column name",
+                column
+            ));
+            return None;
+        }
+
+        // The correctness gate. DBMS_FLASHBACK.GET_SYSTEM_CHANGE_NUMBER needs
+        // only EXECUTE on the package; CURRENT_SCN is the fallback for accounts
+        // that have the view but not the package.
+        let scn: Option<u64> = [
+            "SELECT DBMS_FLASHBACK.GET_SYSTEM_CHANGE_NUMBER FROM DUAL",
+            "SELECT CURRENT_SCN FROM V$DATABASE",
+        ]
+        .iter()
+        .find_map(|sql| conn.query_row_as::<u64>(sql, &[]).ok());
+        let scn = match scn {
+            Some(s) => s,
+            None => {
+                mark(
+                    "parallel read declined: cannot pin a read SCN (needs EXECUTE on \
+                     DBMS_FLASHBACK or SELECT on V_$DATABASE); reading with one session \
+                     so the snapshot stays consistent",
+                );
+                return None;
+            }
+        };
+
+        let body = spec.query.trim().trim_end_matches(';').trim().to_string();
+        let quoted = format!("\"{}\"", column.to_ascii_uppercase());
+        // Bands are cut on a NUMBER, so a DATE or TIMESTAMP column has to become
+        // one first. Oracle date arithmetic yields days as a plain NUMBER, and a
+        // TIMESTAMP needs the explicit CAST because subtracting timestamps gives
+        // an INTERVAL instead. Describing the column against the user's own
+        // query rather than the data dictionary means this also works when the
+        // query is a join or a subquery, not just a bare table.
+        let probe = format!("SELECT {} FROM ({}) WHERE 1=0", quoted, body);
+        let is_datetime = match conn.statement(&probe).build().and_then(|mut st| {
+            st.query(&[]).map(|rs| {
+                matches!(
+                    rs.column_info().first().map(|c| c.oracle_type()),
+                    Some(oracle::sql_type::OracleType::Date)
+                        | Some(oracle::sql_type::OracleType::Timestamp(_))
+                )
+            })
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                mark(&format!(
+                    "parallel read declined: split column {} is not usable ({})",
+                    column, e
+                ));
+                return None;
+            }
+        };
+        // Bands are computed as numbers, but the PREDICATE has to be written
+        // against the bare column, comparing to a value of the column's own
+        // type. Wrapping the column in an expression is what stops Oracle
+        // pruning partitions or using an index on it, which is the difference
+        // between each session scanning its own slice and each session scanning
+        // the whole table. So the arithmetic form is used only to find the
+        // range; the bands are emitted as `col >= <literal>`.
+        let bounds_expr = if is_datetime {
+            format!("(CAST({} AS DATE) - DATE '1970-01-01')", quoted)
+        } else {
+            quoted.clone()
+        };
+
+        // MIN/MAX over an indexed column is an index scan, not a table scan.
+        let bounds_sql = format!("SELECT MIN({0}), MAX({0}) FROM ({1})", bounds_expr, body);
+        let (lo, hi) = match conn.query_row_as::<(Option<f64>, Option<f64>)>(&bounds_sql, &[]) {
+            Ok((Some(lo), Some(hi))) => (lo, hi),
+            Ok(_) => {
+                mark("parallel read declined: split column is entirely NULL");
+                return None;
+            }
+            Err(e) => {
+                mark(&format!(
+                    "parallel read declined: could not read the range of {} ({})",
+                    column, e
+                ));
+                return None;
+            }
+        };
+        if !(hi > lo) {
+            mark("parallel read declined: split column holds a single value");
+            return None;
+        }
+
+        mark(&format!(
+            "parallel read: {} sessions split on {} at SCN {}",
+            degree, column, scn
+        ));
+        Some(OracleParallelPlan {
+            column: quoted,
+            is_datetime,
+            degree,
+            scn,
+            lo,
+            hi,
+            body,
+        })
+    }
+
+    /// A band boundary, written as a literal of the split column's own type so
+    /// the comparison stays sargable (see `oracle_parallel_plan`). Dates are
+    /// carried as days since the epoch, so they convert back exactly.
+    #[cfg(feature = "oracle")]
+    fn oracle_band_literal(v: f64, is_datetime: bool) -> String {
+        if is_datetime {
+            format!("(DATE '1970-01-01' + {})", v)
+        } else {
+            format!("{}", v)
+        }
+    }
+
+    /// Run the extract on `plan.degree` sessions, each fetching one band of the
+    /// split column into its own parquet part, then expose the parts as one
+    /// relation.
+    ///
+    /// The bands are disjoint and total by construction: band 0 also takes NULLs
+    /// and anything below the observed minimum, and the last band is open-ended
+    /// upward, so no row can be dropped or double-counted even if the data moved
+    /// between the range probe and the read.
+    #[cfg(feature = "oracle")]
+    fn oracle_parallel_to_parquet(
+        &self,
+        db: &Path,
+        spec: &OracleSourceSpec,
+        schema: arrow_schema::Schema,
+        plan_: OracleParallelPlan,
+        mark: &dyn Fn(&str),
+    ) -> Result<String, EngineError> {
+        let db_name = db.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let safe_node: String = spec
+            .node_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let schema = std::sync::Arc::new(schema);
+        let width = (plan_.hi - plan_.lo) / plan_.degree as f64;
+
+        let mut handles = Vec::with_capacity(plan_.degree);
+        for i in 0..plan_.degree {
+            let lit = |v: f64| Self::oracle_band_literal(v, plan_.is_datetime);
+            let predicate = if i == 0 {
+                format!(
+                    "{c} < {b} OR {c} IS NULL",
+                    c = plan_.column,
+                    b = lit(plan_.lo + width)
+                )
+            } else if i == plan_.degree - 1 {
+                format!(
+                    "{c} >= {b}",
+                    c = plan_.column,
+                    b = lit(plan_.lo + width * i as f64)
+                )
+            } else {
+                format!(
+                    "{c} >= {l} AND {c} < {h}",
+                    c = plan_.column,
+                    l = lit(plan_.lo + width * i as f64),
+                    h = lit(plan_.lo + width * (i + 1) as f64)
+                )
+            };
+            let sql = format!("SELECT * FROM ({}) WHERE {}", plan_.body, predicate);
+            let part = db.with_file_name(format!(
+                "{}.oraarrow-{}-p{:02}.parquet",
+                db_name, safe_node, i
+            ));
+            let user = spec.user.clone();
+            let password = spec.password.clone();
+            let connect = spec.connect.clone();
+            let schema = schema.clone();
+            let scn = plan_.scn;
+            let cancel = self.cancel.clone();
+            handles.push(std::thread::spawn(move || -> Result<(usize, PathBuf), String> {
+                let conn = oracle::Connection::connect(&user, &password, &connect)
+                    .map_err(|e| format!("connect: {}", e))?;
+                for nls in [
+                    "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS'",
+                    "ALTER SESSION SET NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF6'",
+                ] {
+                    let _ = conn.execute(nls, &[]);
+                }
+                // Every session must read the same snapshot. If this fails the
+                // session would silently read "now" instead, which is the exact
+                // inconsistency the pin exists to prevent, so it is fatal.
+                conn.execute(
+                    "BEGIN DBMS_FLASHBACK.ENABLE_AT_SYSTEM_CHANGE_NUMBER(:1); END;",
+                    &[&scn],
+                )
+                .map_err(|e| format!("could not pin session to SCN {}: {}", scn, e))?;
+                let mut stmt = conn
+                    .statement(&sql)
+                    .prefetch_rows(5000)
+                    .fetch_array_size(5000)
+                    .build()
+                    .map_err(|e| format!("prepare: {}", e))?;
+                let rs = stmt.query(&[]).map_err(|e| format!("query: {}", e))?;
+                let n = Self::oracle_write_parquet_part(rs, &schema, &part, &cancel, None)
+                    .map_err(|e| format!("band {}: {}", i, e))?;
+                Ok((n, part))
+            }));
+        }
+
+        let mut total = 0usize;
+        let mut parts: Vec<PathBuf> = Vec::new();
+        let mut failure: Option<String> = None;
+        for h in handles {
+            match h.join() {
+                Ok(Ok((n, p))) => {
+                    total += n;
+                    parts.push(p);
+                }
+                Ok(Err(e)) => {
+                    failure.get_or_insert(e);
+                }
+                Err(_) => {
+                    failure.get_or_insert_with(|| "reader thread panicked".to_string());
+                }
+            }
+        }
+        if let Some(e) = failure {
+            for p in &parts {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(EngineError::Query(format!("oracle parallel read: {}", e)));
+        }
+        mark(&format!(
+            "parallel read done: {} rows across {} bands",
+            total,
+            parts.len()
+        ));
+
+        let list = parts
+            .iter()
+            .map(|p| format!("'{}'", p.to_string_lossy().replace('\\', "/").replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let kw = if spec.single_consumer { "VIEW" } else { "TABLE" };
+        let create = format!(
+            "CREATE OR REPLACE {} {} AS SELECT * FROM read_parquet([{}])",
+            kw,
+            plan::quote_ident(&spec.node_id),
+            list
+        );
+        self.run(Some(db), &create, false)?;
+        if !spec.single_consumer {
+            for p in &parts {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        Ok(format!("oracle: {} rows into {}", total, spec.node_id))
+    }
+
+    /// Drain one Oracle result set into one parquet file, converting through
+    /// Arrow. Shared by the single-session read and by every band of a parallel
+    /// read, so both produce the same output for the same rows and there is
+    /// exactly one place the type conversion can be wrong.
+    #[cfg(feature = "oracle")]
+    fn oracle_write_parquet_part(
+        rs: oracle::ResultSet<'_, oracle::Row>,
+        schema: &std::sync::Arc<arrow_schema::Schema>,
+        path: &Path,
+        cancel: &std::sync::atomic::AtomicBool,
+        mark: Option<&dyn Fn(&str)>,
+    ) -> Result<usize, EngineError> {
+        use std::sync::atomic::Ordering;
         use arrow_array::builder::*;
         use arrow_schema::{DataType, TimeUnit};
         use parquet::arrow::ArrowWriter;
         use parquet::file::properties::{EnabledStatistics, WriterProperties};
 
-        let schema = std::sync::Arc::new(schema);
         let ncols = schema.fields().len().max(1);
         // Size the batch and the row group by CELLS, not rows. A fixed row
         // count silently scales the buffered working set with table width: at
@@ -2533,16 +2886,7 @@ impl DuckdbEngine {
         // to one core. Measured on 1M x 40, one 1M-row group made the read-back
         // 1.9s and 128K groups 0.8s.
         let row_group = (16_000_000 / ncols).clamp(8192, 131_072);
-        // Sibling of the run's db file so TempDbGuard sweeps it at run end; the
-        // file has to outlive this stage when we hand back a lazy VIEW.
-        let db_name = db.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let safe_node: String = spec
-            .node_id
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        let parquet_path = db.with_file_name(format!("{}.oraarrow-{}.parquet", db_name, safe_node));
-        let file = std::fs::File::create(&parquet_path)
+        let file = std::fs::File::create(path)
             .map_err(|e| EngineError::Query(format!("oracle: temp parquet: {}", e)))?;
         // Left uncompressed on purpose: this file is written once and read
         // once, by DuckDB, on the same machine. Measured at 232 columns,
@@ -2605,7 +2949,11 @@ impl DuckdbEngine {
         let mut send_err: Option<String> = None;
 
         for row_res in rs {
-            self.check_cancelled()?;
+            if cancel.load(Ordering::Relaxed) {
+                drop(tx);
+                let _ = writer.join();
+                return Err(EngineError::Cancelled);
+            }
             let row = row_res.map_err(|e| EngineError::Query(format!("oracle row: {}", e)))?;
             for (i, b) in builders.iter_mut().enumerate() {
                 b.push(&row, i)?;
@@ -2613,19 +2961,21 @@ impl DuckdbEngine {
             in_batch += 1;
             total += 1;
             if in_batch >= batch_rows {
-                let batch = Self::finish_batch(&schema, &mut builders)?;
+                let batch = Self::finish_batch(schema, &mut builders)?;
                 in_batch = 0;
                 if tx.send(batch).is_err() {
                     send_err = Some("parquet writer stopped early".into());
                     break;
                 }
-                if total % (batch_rows * 8) == 0 {
-                    mark(&format!("{} rows encoded", total));
+                if let Some(m) = mark {
+                    if total % (batch_rows * 8) == 0 {
+                        m(&format!("{} rows encoded", total));
+                    }
                 }
             }
         }
         if send_err.is_none() && in_batch > 0 {
-            let batch = Self::finish_batch(&schema, &mut builders)?;
+            let batch = Self::finish_batch(schema, &mut builders)?;
             let _ = tx.send(batch);
         }
         drop(tx);
@@ -2636,32 +2986,7 @@ impl DuckdbEngine {
         if let Some(e) = send_err {
             return Err(EngineError::Query(format!("oracle: {}", e)));
         }
-        mark(&format!("parquet written: {} rows, {} cols", written, ncols));
-
-        let ppath = parquet_path
-            .to_string_lossy()
-            .replace('\\', "/")
-            .replace('\'', "''");
-        // Single consumer: a lazy read_parquet VIEW. Copying the parquet into a
-        // table costs a full decode-and-store pass over every column (measured
-        // at ~3.2s of a 10.1s 1M-row x 40-col run) and throws away the pushdown
-        // the consumer would otherwise get. 2+ consumers: materialize once as a
-        // TABLE so the parquet is decoded a single time, then drop the temp.
-        let kw = if spec.single_consumer { "VIEW" } else { "TABLE" };
-        let create = format!(
-            "CREATE OR REPLACE {} {} AS SELECT * FROM read_parquet('{}')",
-            kw,
-            plan::quote_ident(&spec.node_id),
-            ppath
-        );
-        self.run(Some(db), &create, false)?;
-        if spec.single_consumer {
-            mark("exposed as lazy read_parquet view");
-        } else {
-            let _ = std::fs::remove_file(&parquet_path);
-            mark("materialized into duckdb");
-        }
-        Ok(format!("oracle: {} rows into {}", written, spec.node_id))
+        Ok(written)
     }
 
     fn finish_batch(
@@ -12811,6 +13136,25 @@ impl std::io::Read for SftpFileReader {
         // returns 0 at EOF, matching std::io::Read.
         self.rt.block_on(self.file.read(buf))
     }
+}
+
+/// How a parallel Oracle read is split. Only ever built when the read could be
+/// pinned to one SCN, so every session in it observes the same snapshot.
+#[cfg(feature = "oracle")]
+struct OracleParallelPlan {
+    /// The bare, quoted split column. Bands compare against it directly so
+    /// Oracle can prune partitions and use an index on it.
+    column: String,
+    /// True when the column is a DATE / TIMESTAMP, so band boundaries are
+    /// emitted as date literals rather than plain numbers.
+    is_datetime: bool,
+    degree: usize,
+    /// The system change number every session reads as of.
+    scn: u64,
+    lo: f64,
+    hi: f64,
+    /// The user's query, ready to wrap as a subquery.
+    body: String,
 }
 
 /// One concretely-typed Arrow builder per Oracle column for the #221 fast path.

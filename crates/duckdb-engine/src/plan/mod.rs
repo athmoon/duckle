@@ -2918,6 +2918,17 @@ fn build_stage(
                 .copied()
                 .unwrap_or(0)
                 <= 1,
+            parallel_column: string_prop(&props, "parallelColumn")
+                .or_else(|| string_prop(&props, "partitionColumn"))
+                .filter(|s| !s.trim().is_empty()),
+            parallel_degree: props
+                .get("parallelDegree")
+                .and_then(|v| v.as_u64())
+                .or_else(|| {
+                    string_prop(&props, "parallelDegree").and_then(|s| s.trim().parse().ok())
+                })
+                .unwrap_or(1)
+                .clamp(1, 32) as usize,
         });
         (String::new(), StageKind::View, None)
     } else if component_id == "src.adbc" {

@@ -1536,6 +1536,27 @@ function synthDbSource(comp: ComponentDef): ComponentManifest {
                 ],
             },
             {
+                label: 'Parallel read',
+                fields: [
+                    {
+                        key: 'parallelColumn',
+                        label: 'Split on column',
+                        kind: 'text',
+                        placeholder: 'DATE_KEY',
+                        description:
+                            'Read the extract with several sessions at once, each taking one range of this column. Use an indexed numeric or date column that spreads rows fairly evenly. Leave empty to read with a single session.',
+                    },
+                    {
+                        key: 'parallelDegree',
+                        label: 'Sessions',
+                        kind: 'number',
+                        placeholder: '4',
+                        description:
+                            'How many sessions read at once (1 = off). Every session is pinned to the same read SCN so they all see one consistent snapshot; if the account cannot pin an SCN (needs EXECUTE on DBMS_FLASHBACK or SELECT on V_$DATABASE) the read falls back to a single session and says so in the log.',
+                    },
+                ],
+            },
+            {
                 label: 'Runtime requirement',
                 fields: [
                     {

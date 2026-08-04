@@ -3439,6 +3439,14 @@ impl DuckdbEngine {
         let driver_path = Path::new(&spec.driver);
         if let Some(parent) = driver_path.parent() {
             if !parent.as_os_str().is_empty() {
+                // Read PATH, decide, and write it back under one lock. The
+                // check and the set are a read-modify-write, so two runs
+                // starting together with different drivers could both read the
+                // old PATH and the second write would drop the first driver's
+                // directory - which surfaces much later as a driver that fails
+                // to load. Only matters now that runs can overlap.
+                static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                let _held = PATH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
                 let cur = std::env::var("PATH").unwrap_or_default();
                 let sep = if cfg!(windows) { ';' } else { ':' };
                 // Only prepend the driver dir if it isn't already on PATH:

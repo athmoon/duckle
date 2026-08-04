@@ -2434,7 +2434,7 @@ impl DuckdbEngine {
             .build()
             .map_err(|e| EngineError::Query(format!("oracle prepare: {}", e)))?;
         let rs = stmt
-            .query(&[])
+            .query_as::<EncodeRow>(&[])
             .map_err(|e| EngineError::Query(format!("oracle query: {}", e)))?;
         let cols: Vec<String> = rs
             .column_info()
@@ -2484,12 +2484,12 @@ impl DuckdbEngine {
         let mut writer = JsonLinesWriter::open(&spec.node_id)?;
         let mut count = 0_usize;
         for row_res in rs {
+            // The row was turned into JSON inside `RowValue::get`, off the
+            // borrowed row, so no owned `Row` was ever built for it.
             let row = row_res.map_err(|e| EngineError::Query(format!("oracle row: {}", e)))?;
-            let mut obj = serde_json::Map::new();
-            for (i, name) in cols.iter().enumerate() {
-                obj.insert(name.clone(), Self::oracle_cell_to_json(&row, i));
+            if let Some(obj) = row.0 {
+                writer.write_row(&obj)?;
             }
-            writer.write_row(&JsonValue::Object(obj))?;
             count += 1;
             if count % 25_000 == 0 {
                 mark(&format!("fetched {} rows", count));
@@ -2532,7 +2532,7 @@ impl DuckdbEngine {
         &self,
         db: &Path,
         spec: &OracleSourceSpec,
-        rs: oracle::ResultSet<'_, oracle::Row>,
+        rs: oracle::ResultSet<'_, EncodeRow>,
         schema: arrow_schema::Schema,
         numeric_text: &[usize],
         direct: Option<&DirectSinkTarget>,
@@ -2873,7 +2873,9 @@ impl DuckdbEngine {
                     .fetch_array_size(5000)
                     .build()
                     .map_err(|e| format!("prepare: {}", e))?;
-                let rs = stmt.query(&[]).map_err(|e| format!("query: {}", e))?;
+                let rs = stmt
+                    .query_as::<EncodeRow>(&[])
+                    .map_err(|e| format!("query: {}", e))?;
                 let n = Self::oracle_write_parquet_part(rs, &schema, &part, None, &cancel, None)
                     .map_err(|e| format!("band {}: {}", i, e))?;
                 Ok((n, part))
@@ -3040,7 +3042,7 @@ impl DuckdbEngine {
     /// exactly one place the type conversion can be wrong.
     #[cfg(feature = "oracle")]
     fn oracle_write_parquet_part(
-        rs: oracle::ResultSet<'_, oracle::Row>,
+        rs: oracle::ResultSet<'_, EncodeRow>,
         schema: &std::sync::Arc<arrow_schema::Schema>,
         path: &Path,
         compression: Option<&str>,
@@ -3162,35 +3164,26 @@ impl DuckdbEngine {
         let trace_timing = std::env::var("DUCKLE_ORACLE_TRACE_TIMING")
             .map(|v| !v.is_empty() && v != "0")
             .unwrap_or(false);
-        let mut fetch_nanos: u128 = 0;
-        let mut encode_nanos: u128 = 0;
-        let mut rs = rs;
-        loop {
-            let t_fetch = if trace_timing { Some(std::time::Instant::now()) } else { None };
-            let row_res = match rs.next() {
-                Some(r) => r,
-                None => break,
-            };
-            if let Some(t) = t_fetch {
-                fetch_nanos += t.elapsed().as_nanos();
-            }
+        // From here the builders live in the thread-local sink, so each row can
+        // be encoded inside `RowValue::get` while it is still borrowed.
+        let guard = EncodeGuard::install(builders, trace_timing);
+        let loop_start = std::time::Instant::now();
+        for row_res in rs {
             if cancel.load(Ordering::Relaxed) {
                 drop(tx);
                 let _ = writer.join();
                 return Err(EngineError::Cancelled);
             }
-            let row = row_res.map_err(|e| EngineError::Query(format!("oracle row: {}", e)))?;
-            let t_enc = if trace_timing { Some(std::time::Instant::now()) } else { None };
-            for (i, b) in builders.iter_mut().enumerate() {
-                b.push(&row, i)?;
-            }
-            if let Some(t) = t_enc {
-                encode_nanos += t.elapsed().as_nanos();
+            // The row was already encoded as a side effect of `get`; this only
+            // surfaces a driver-level failure.
+            row_res.map_err(|e| EngineError::Query(format!("oracle row: {}", e)))?;
+            if let Some(e) = guard.with(|s| s.err.take()) {
+                return Err(e);
             }
             in_batch += 1;
             total += 1;
             if in_batch >= batch_rows {
-                let batch = Self::finish_batch(schema, &mut builders)?;
+                let batch = guard.with(|s| Self::finish_batch(schema, &mut s.builders))?;
                 in_batch = 0;
                 if tx.send(batch).is_err() {
                     send_err = Some("parquet writer stopped early".into());
@@ -3204,19 +3197,24 @@ impl DuckdbEngine {
             }
         }
         if send_err.is_none() && in_batch > 0 {
-            let batch = Self::finish_batch(schema, &mut builders)?;
+            let batch = guard.with(|s| Self::finish_batch(schema, &mut s.builders))?;
             let _ = tx.send(batch);
         }
         if trace_timing {
             if let Some(m) = mark {
+                // Encode is timed inside `get`; whatever the loop spent beyond
+                // that it spent waiting on the driver.
+                let encode_ms = guard.with(|s| s.encode_nanos) / 1_000_000;
+                let loop_ms = loop_start.elapsed().as_millis();
                 m(&format!(
                     "timing: oracle fetch {}ms, arrow encode {}ms over {} rows",
-                    fetch_nanos / 1_000_000,
-                    encode_nanos / 1_000_000,
+                    loop_ms.saturating_sub(encode_ms),
+                    encode_ms,
                     total
                 ));
             }
         }
+        drop(guard);
         drop(tx);
         let written = writer
             .join()
@@ -13489,6 +13487,127 @@ struct OracleParallelPlan {
     hi: f64,
     /// The user's query, ready to wrap as a subquery.
     body: String,
+}
+
+// Per-thread landing zone for the Arrow builders while one result set encodes.
+//
+// `ResultSet<Row>` rebuilds every `SqlValue` for every row: measured at 11.5s
+// of a 42.7s fetch on a 236-column, 1.47M-row table, against a 31.2s floor for
+// the same query with no clone at all. The borrowed row that would avoid it is
+// only reachable through `Stmt`, which the crate keeps `pub(crate)`.
+//
+// What is reachable is `query_as::<T>`, which hands `RowValue::get` the
+// borrowed row and never builds an owned `Row` unless `T` is `Row`. So the
+// encode moves into a `RowValue` impl - and since `get` is handed nothing but
+// the row, the builders have to reach it through here.
+//
+// Single-threaded by construction: one result set encodes at a time, on the
+// thread that installed the builders, and `get` is called synchronously from
+// that same thread's iteration.
+#[cfg(feature = "oracle")]
+thread_local! {
+    static ENCODE_SINK: std::cell::RefCell<Option<EncodeSink>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(feature = "oracle")]
+struct EncodeSink {
+    builders: Vec<OraCol>,
+    /// The first encode failure. `RowValue::get` can only return the driver's
+    /// error type, so ours is parked here and the driving loop checks it after
+    /// every row - which is why later rows are skipped once it is set.
+    err: Option<EngineError>,
+    encode_nanos: u128,
+    trace: bool,
+}
+
+/// What one row turns into, without ever materialising an owned `Row`.
+///
+/// Empty on the Arrow path, where the row was consumed for its side effect on
+/// the builders. Carries the row as JSON on the NDJSON fallback, which needs
+/// the same borrowed row and so may as well skip the clone too. One result set
+/// serves both paths, so the query is only ever executed once.
+#[cfg(feature = "oracle")]
+struct EncodeRow(Option<JsonValue>);
+
+#[cfg(feature = "oracle")]
+impl oracle::RowValue for EncodeRow {
+    fn get(row: &oracle::Row) -> oracle::Result<Self> {
+        let encoded = ENCODE_SINK.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(sink) = slot.as_mut() else {
+                return false;
+            };
+            if sink.err.is_none() {
+                let t = if sink.trace {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
+                for (i, b) in sink.builders.iter_mut().enumerate() {
+                    if let Err(e) = b.push(row, i) {
+                        sink.err = Some(e);
+                        break;
+                    }
+                }
+                if let Some(t) = t {
+                    sink.encode_nanos += t.elapsed().as_nanos();
+                }
+            }
+            true
+        });
+        if encoded {
+            return Ok(EncodeRow(None));
+        }
+        // No builders installed: this is the NDJSON fallback.
+        let mut obj = serde_json::Map::new();
+        for (i, info) in row.column_info().iter().enumerate() {
+            obj.insert(
+                info.name().to_string(),
+                DuckdbEngine::oracle_cell_to_json(row, i),
+            );
+        }
+        Ok(EncodeRow(Some(JsonValue::Object(obj))))
+    }
+}
+
+/// Installs the builders for one result set and clears them on the way out,
+/// including on an early return or a panic.
+#[cfg(feature = "oracle")]
+struct EncodeGuard;
+
+#[cfg(feature = "oracle")]
+impl EncodeGuard {
+    fn install(builders: Vec<OraCol>, trace: bool) -> Self {
+        ENCODE_SINK.with(|c| {
+            *c.borrow_mut() = Some(EncodeSink {
+                builders,
+                err: None,
+                encode_nanos: 0,
+                trace,
+            });
+        });
+        EncodeGuard
+    }
+
+    /// Reach the builders from the driving loop. Never call this from inside
+    /// `RowValue::get`; that would re-borrow the same RefCell.
+    fn with<R>(&self, f: impl FnOnce(&mut EncodeSink) -> R) -> R {
+        ENCODE_SINK.with(|c| {
+            f(c.borrow_mut()
+                .as_mut()
+                .expect("encode sink is installed for the whole result set"))
+        })
+    }
+}
+
+#[cfg(feature = "oracle")]
+impl Drop for EncodeGuard {
+    fn drop(&mut self) {
+        ENCODE_SINK.with(|c| {
+            *c.borrow_mut() = None;
+        });
+    }
 }
 
 /// One concretely-typed Arrow builder per Oracle column for the #221 fast path.

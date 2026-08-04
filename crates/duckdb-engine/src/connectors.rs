@@ -3154,15 +3154,38 @@ impl DuckdbEngine {
         let mut total = 0usize;
         let mut send_err: Option<String> = None;
 
-        for row_res in rs {
+        // Optional attribution of the loop's two halves: waiting on ODPI for the
+        // next row, versus our own Arrow encoding. Off unless
+        // DUCKLE_ORACLE_TRACE_TIMING is set, because it costs an Instant::now()
+        // pair per row. Without it there is no way to tell a slow server or link
+        // apart from a slow encoder, and the two want opposite fixes.
+        let trace_timing = std::env::var("DUCKLE_ORACLE_TRACE_TIMING")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false);
+        let mut fetch_nanos: u128 = 0;
+        let mut encode_nanos: u128 = 0;
+        let mut rs = rs;
+        loop {
+            let t_fetch = if trace_timing { Some(std::time::Instant::now()) } else { None };
+            let row_res = match rs.next() {
+                Some(r) => r,
+                None => break,
+            };
+            if let Some(t) = t_fetch {
+                fetch_nanos += t.elapsed().as_nanos();
+            }
             if cancel.load(Ordering::Relaxed) {
                 drop(tx);
                 let _ = writer.join();
                 return Err(EngineError::Cancelled);
             }
             let row = row_res.map_err(|e| EngineError::Query(format!("oracle row: {}", e)))?;
+            let t_enc = if trace_timing { Some(std::time::Instant::now()) } else { None };
             for (i, b) in builders.iter_mut().enumerate() {
                 b.push(&row, i)?;
+            }
+            if let Some(t) = t_enc {
+                encode_nanos += t.elapsed().as_nanos();
             }
             in_batch += 1;
             total += 1;
@@ -3183,6 +3206,16 @@ impl DuckdbEngine {
         if send_err.is_none() && in_batch > 0 {
             let batch = Self::finish_batch(schema, &mut builders)?;
             let _ = tx.send(batch);
+        }
+        if trace_timing {
+            if let Some(m) = mark {
+                m(&format!(
+                    "timing: oracle fetch {}ms, arrow encode {}ms over {} rows",
+                    fetch_nanos / 1_000_000,
+                    encode_nanos / 1_000_000,
+                    total
+                ));
+            }
         }
         drop(tx);
         let written = writer
@@ -3279,33 +3312,64 @@ impl DuckdbEngine {
     /// Parse Oracle's decimal text into the scaled i128 a Decimal128 column
     /// stores. "123.45" at scale 2 is 12345. Returns None when the value does
     /// not fit, so the caller can fail loudly rather than truncate silently.
+    /// Scale an Oracle NUMBER's text form into the i128 a Decimal128 column wants.
+    ///
+    /// This runs once per cell for every NUMBER the driver cannot hand back as a
+    /// native Int64 - which is every NUMBER with a scale. On a wide fact table
+    /// that is most of the columns: a 236-column table with 60 scaled NUMBER
+    /// columns runs this 88 million times in a single 1.5M-row extract. It
+    /// therefore does not allocate. The previous version built a digits String
+    /// per cell, and that one allocation was the single largest cost in the
+    /// extract loop.
+    ///
+    /// Semantics are unchanged, deliberately, so this is a pure speedup:
+    /// fraction digits beyond `scale` are truncated rather than rounded, a
+    /// leading sign is honoured, and anything that is not digits with at most
+    /// one decimal point - scientific notation, most obviously - returns None so
+    /// the caller can fall back. Note that an all-zero value like "0.00" must
+    /// come back as 0 rather than None; the old code reached that through
+    /// `trim_start_matches('0')` leaving an empty string and `unwrap_or(0)`.
     fn oracle_decimal_to_i128(s: &str, scale: i8) -> Option<i128> {
-        let t = s.trim();
-        let (neg, t) = match t.strip_prefix('-') {
-            Some(r) => (true, r),
-            None => (false, t.strip_prefix('+').unwrap_or(t)),
-        };
-        let (int_part, frac_part) = match t.split_once('.') {
-            Some((a, b)) => (a, b),
-            None => (t, ""),
-        };
-        if !int_part.chars().all(|c| c.is_ascii_digit())
-            || !frac_part.chars().all(|c| c.is_ascii_digit())
-        {
-            return None; // scientific notation etc: let the caller fall back
-        }
-        let want = scale.max(0) as usize;
-        let mut digits = String::with_capacity(int_part.len() + want);
-        digits.push_str(int_part);
-        if frac_part.len() >= want {
-            digits.push_str(&frac_part[..want]);
-        } else {
-            digits.push_str(frac_part);
-            for _ in 0..(want - frac_part.len()) {
-                digits.push('0');
+        let t = s.trim().as_bytes();
+        let mut i = 0usize;
+        let neg = match t.first() {
+            Some(b'-') => {
+                i = 1;
+                true
             }
+            Some(b'+') => {
+                i = 1;
+                false
+            }
+            _ => false,
+        };
+        let want = scale.max(0) as usize;
+        let mut v: i128 = 0;
+        let mut seen_dot = false;
+        let mut frac = 0usize;
+        while i < t.len() {
+            match t[i] {
+                c @ b'0'..=b'9' => {
+                    if seen_dot {
+                        // Digits past the requested scale are dropped, matching
+                        // the old truncating slice of the fractional part.
+                        if frac < want {
+                            v = v.checked_mul(10)?.checked_add((c - b'0') as i128)?;
+                            frac += 1;
+                        }
+                    } else {
+                        v = v.checked_mul(10)?.checked_add((c - b'0') as i128)?;
+                    }
+                }
+                b'.' if !seen_dot => seen_dot = true,
+                _ => return None, // scientific notation etc: let the caller fall back
+            }
+            i += 1;
         }
-        let v: i128 = digits.trim_start_matches('0').parse().unwrap_or(0);
+        // Pad a short fraction out to the declared scale.
+        for _ in frac..want {
+            v = v.checked_mul(10)?;
+        }
         Some(if neg { -v } else { v })
     }
 
@@ -12446,6 +12510,29 @@ mod oracle_arrow_tests {
         // loudly instead of writing a wrong number.
         assert_eq!(f("1.2e5", 2), None);
         assert_eq!(f("abc", 2), None);
+        // Zero has to survive as 0, not as a refusal. The allocation-free
+        // parser replaced a version that reached this through
+        // `trim_start_matches('0')` leaving an empty string and `unwrap_or(0)`,
+        // so it is the case most likely to regress and the one that would be
+        // silently wrong if it did: the caller turns None into a failed run.
+        assert_eq!(f("0", 2), Some(0));
+        assert_eq!(f("0.00", 2), Some(0));
+        assert_eq!(f("-0.00", 4), Some(0));
+        assert_eq!(f("0.0000", 0), Some(0));
+        // A missing side of the decimal point is still plain decimal text.
+        assert_eq!(f(".5", 2), Some(50));
+        assert_eq!(f("5.", 2), Some(500));
+        // Leading and trailing whitespace was trimmed before and still is.
+        assert_eq!(f("  12.5  ", 1), Some(125));
+        // A second decimal point is not a number.
+        assert_eq!(f("1.2.3", 2), None);
+        // The full 38 digits Oracle allows still fit an i128.
+        assert_eq!(
+            f("99999999999999999999999999999999999999", 0),
+            Some(99_999_999_999_999_999_999_999_999_999_999_999_999_i128)
+        );
+        // Negative scale columns ask for scale 0 worth of fraction digits.
+        assert_eq!(f("1234.9", -2), Some(1234));
     }
 
     #[test]

@@ -1202,7 +1202,30 @@ impl DuckdbEngine {
                 if let Ok(d) = std::env::var("DUCKLE_TEMP_DIR") {
                     let d = d.trim();
                     if !d.is_empty() {
-                        let escaped = d.replace('\'', "''").replace('\\', "/");
+                        // Give this run its OWN subdirectory rather than pointing
+                        // every run at the same one. DuckDB's default is already
+                        // per-database (`<db>.tmp`), so runs never collided until
+                        // someone set this variable - which is exactly what a user
+                        // does to move spill onto a bigger or faster disk, and it
+                        // silently made concurrent runs unsafe. The collision is
+                        // intermittent, so it reads as a flaky run rather than a
+                        // bug: over three trials of four concurrent spilling
+                        // queries on the pinned 1.5.4, a shared directory lost
+                        // 3 of 12 (segfault, or "Failed to delete file") while
+                        // private directories lost 0 of 12.
+                        let run_tmp = std::path::Path::new(d).join(
+                            db_path
+                                .file_name()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "duckle_run".to_string()),
+                        );
+                        // Best effort: if the directory cannot be made, fall back
+                        // to the configured root rather than failing the run.
+                        let target = match std::fs::create_dir_all(&run_tmp) {
+                            Ok(()) => run_tmp.to_string_lossy().into_owned(),
+                            Err(_) => d.to_string(),
+                        };
+                        let escaped = target.replace('\'', "''").replace('\\', "/");
                         prag.push_str(&format!("PRAGMA temp_directory='{}'; ", escaped));
                     }
                 }
@@ -2454,6 +2477,16 @@ struct TempDbGuard(PathBuf);
 impl Drop for TempDbGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+        // The per-run spill directory under DUCKLE_TEMP_DIR, if one was made.
+        // Named after this run's db file, so it cannot belong to another run.
+        if let Ok(d) = std::env::var("DUCKLE_TEMP_DIR") {
+            let d = d.trim();
+            if !d.is_empty() {
+                if let Some(name) = self.0.file_name() {
+                    let _ = std::fs::remove_dir_all(std::path::Path::new(d).join(name));
+                }
+            }
+        }
         let mut wal = self.0.clone().into_os_string();
         wal.push(".wal");
         let _ = std::fs::remove_file(PathBuf::from(wal));

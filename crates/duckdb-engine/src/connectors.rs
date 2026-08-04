@@ -2551,6 +2551,24 @@ impl DuckdbEngine {
         // When the only consumer is a plain Parquet sink, write ITS file and
         // skip the encode-decode-encode round trip entirely. The sink is told
         // to stand down only after the write succeeds.
+        // A column carried as text has no type until it has been written and
+        // measured, and that typing happens on exactly the pass this option
+        // exists to skip. Writing the sink's own file straight from the source
+        // would leave those columns as VARCHAR in the user's Parquet, with
+        // nothing anywhere to say so - a bare NUMBER would arrive as a string.
+        // Decline the shortcut and take the normal path rather than hand back
+        // the wrong types faster.
+        let direct = match direct {
+            Some(_) if !numeric_text.is_empty() => {
+                mark(&format!(
+                    "direct write declined: {} column(s) travel as text and are typed after \
+                     the write, which is the pass a direct write skips",
+                    numeric_text.len()
+                ));
+                None
+            }
+            other => other,
+        };
         let parquet_path = match direct {
             Some(t) => PathBuf::from(t.path),
             None => db.with_file_name(format!("{}.oraarrow-{}.parquet", db_name, safe_node)),

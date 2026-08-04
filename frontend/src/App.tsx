@@ -20,7 +20,7 @@ import { EngineUpgradeBanner } from './EngineUpgradeBanner';
 import { ReviewPrompt } from './ReviewPrompt';
 import EditorTabs from './workflow-ui/EditorTabs';
 import EditorHeader, { type Job } from './workflow-ui/EditorHeader';
-import EngineSelector, { type EngineId } from './workflow-ui/EngineSelector';
+import EngineSelector, { normalizeEngineId, type EngineId } from './workflow-ui/EngineSelector';
 import { useTheme } from './theme';
 import { loadPersisted, savePersisted } from './persistence';
 import { resolveOutputSchema } from './schema-resolve';
@@ -333,7 +333,7 @@ export default function App() {
     const { theme, toggle: toggleTheme } = useTheme();
     const [runtime, setRuntime] = useState<RuntimeState>('connecting');
     const [engine, setEngine] = useState<EngineId>(() =>
-        loadPersisted<EngineId>('engine', 'duckdb'),
+        normalizeEngineId(loadPersisted<EngineId>('engine', 'duckdb')),
     );
     const [pipelineData, setPipelineData] = useState<Record<string, PipelineState>>(() =>
         loadPersisted('pipelines', INITIAL_PIPELINE_DATA),
@@ -504,7 +504,7 @@ export default function App() {
                     return;
                 }
                 if (state) {
-                    if (state.engine) setEngine(state.engine as EngineId);
+                    if (state.engine) setEngine(normalizeEngineId(state.engine));
                     if (state.pipelineData)
                         setPipelineData(state.pipelineData as Record<string, PipelineState>);
                     if (state.repo) setRepo(state.repo as RepoItem[]);

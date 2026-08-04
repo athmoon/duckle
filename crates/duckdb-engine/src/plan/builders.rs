@@ -5410,9 +5410,13 @@ pub(crate) fn build_relational_source(component_id: &str, props: &JsonValue) -> 
 /// scanner extensions, which do not push a MERGE, so they keep the
 /// DELETE + INSERT "upsert" mode.
 pub(crate) fn supports_merge(component_id: &str) -> bool {
+    // snk.quack is deliberately absent: a Quack-attached table is a streaming
+    // remote scan, and MERGE INTO against one fails with "Can only merge into
+    // base tables!" (verified on the pinned DuckDB 1.5.4 against a live
+    // quack_serve). Listing it here advertised a mode that could never run.
     matches!(
         component_id,
-        "snk.duckdb" | "snk.sqlite" | "snk.motherduck" | "snk.ducklake" | "snk.quack"
+        "snk.duckdb" | "snk.sqlite" | "snk.motherduck" | "snk.ducklake"
     )
 }
 
@@ -5534,6 +5538,22 @@ pub(crate) fn build_relational_sink(
         .filter(|s| !s.is_empty());
     let mode = string_prop(props, "mode").unwrap_or_else(|| "overwrite".into());
     let qual = relational_qualified("duckle_dst", component_id, schema.as_deref(), &table);
+    // A Quack-attached table is a streaming remote scan, not a base table, and
+    // DuckDB's binder refuses to rewrite one. Verified against the pinned 1.5.4
+    // with a live quack_serve: SELECT / INSERT / CTAS work, but TRUNCATE and
+    // DELETE give "Can only delete from base table", UPDATE gives "Can only
+    // update base table" and MERGE gives "Can only merge into base tables!".
+    // Those errors surface mid-run with no hint of the cause, so refuse the
+    // mode while the pipeline is still being compiled and name the alternative.
+    if component_id == "snk.quack" && matches!(mode.as_str(), "truncate" | "upsert" | "merge") {
+        return Err(EngineError::Config(format!(
+            "{}: write mode '{}' is not supported over the Quack protocol - DuckDB cannot \
+             UPDATE, DELETE or MERGE a remote Quack table (it is a streaming scan, not a base \
+             table). Use 'append' or 'overwrite', or run the pipeline against the remote \
+             database directly instead of through Quack.",
+            component_id, mode
+        )));
+    }
     match mode.as_str() {
         "overwrite" => Ok(format!(
             "DROP TABLE IF EXISTS {q}; CREATE TABLE {q} AS (SELECT * FROM {from})",
@@ -5768,15 +5788,25 @@ pub(crate) fn md_attach(props: &JsonValue, read_only: bool) -> String {
     }
 }
 
-/// Quack remote protocol (DuckDB 2.0+, May 2026). The remote DuckDB
-/// instance runs `quack_serve(...)` on port 9494 by default and exposes
-/// its database to multiple concurrent clients over HTTP using a
-/// custom `application/duckdb` MIME type. Client side: a SECRET
-/// carries the auth token, then ATTACH names the URL.
+/// Quack remote protocol. The remote DuckDB instance runs `quack_serve(...)`
+/// on port 9494 by default and exposes its database to multiple concurrent
+/// clients over HTTP using a custom `application/duckdb` MIME type. Client
+/// side: a SECRET carries the auth token, then ATTACH names the URL.
 ///
-/// Requires DuckDB built with quack support; older builds will surface
-/// a clear error at runtime ("Unknown ATTACH option 'TYPE'" or
-/// similar) without any Duckle-side breakage.
+/// Quack has been a CORE extension since DuckDB 1.5.3, so the pinned 1.5.4
+/// autoloads it - no INSTALL step. (This comment previously said "DuckDB
+/// 2.0+", which was wrong: v2.0.0 is the planned STABLE date, not when it
+/// became available.) It is still officially BETA until then, and breaking
+/// protocol changes are expected.
+///
+/// What it is NOT: a way to distribute one query across machines. DuckDB's
+/// own FAQ states Quack "does not support distributed query processing". In
+/// ATTACH mode the shipped scan pushes down projection only - the filter
+/// block is commented out in quack_scan.cpp - and count(*) binds to an empty
+/// virtual column, so every row still crosses the wire and the CLIENT does
+/// all the filtering and aggregation. Published measurements put ATTACH at
+/// 2.6x/4.7x/9.5x slower than in-process at 100K/1M/10M rows. Treat it as
+/// "reach a remote database", never as a scale-out lever.
 pub(crate) fn quack_attach(props: &JsonValue, read_only: bool) -> String {
     let host = match string_prop(props, "host").filter(|s| !s.is_empty()) {
         Some(h) => h,

@@ -7,7 +7,6 @@ const DISCORD_INVITE = 'https://discord.com/invite/rUeAStJbWb';
 
 const ENGINE_LABEL: Record<EngineId, string> = {
     duckdb: 'DuckDB',
-    slothdb: 'SlothDB',
     native: 'Native',
 };
 

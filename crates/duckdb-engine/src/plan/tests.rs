@@ -4340,3 +4340,57 @@
         // No host / dsn / connectionString is a config error.
         assert!(teradata_conn_string(&json!({"user": "dbc"})).is_err());
     }
+
+    #[test]
+    fn quack_refuses_write_modes_duckdb_cannot_execute() {
+        use serde_json::json;
+        // A Quack-attached table is a streaming remote scan, not a base table.
+        // Verified on the pinned DuckDB 1.5.4 against a live quack_serve:
+        //   TRUNCATE / DELETE -> "Can only delete from base table"
+        //   UPDATE            -> "Can only update base table"
+        //   MERGE INTO        -> "Can only merge into base tables!"
+        // These used to compile fine and blow up mid-run with a binder error
+        // that named nothing the user had written, so they are refused here.
+        let props = json!({
+            "tableName": "t",
+            "conflictColumns": ["id"],
+            "mode": "upsert"
+        });
+        for mode in ["truncate", "upsert", "merge"] {
+            let mut p = props.clone();
+            p["mode"] = json!(mode);
+            let err = build_relational_sink("snk.quack", &p, "up", &["id".into()])
+                .expect_err(&format!("snk.quack must refuse '{}'", mode));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("not supported over the Quack protocol"),
+                "{} should name Quack as the reason, got: {}",
+                mode,
+                msg
+            );
+            assert!(
+                msg.contains("append") && msg.contains("overwrite"),
+                "{} should name the modes that DO work, got: {}",
+                mode,
+                msg
+            );
+        }
+
+        // The two that genuinely work must keep working.
+        for mode in ["append", "overwrite"] {
+            let mut p = props.clone();
+            p["mode"] = json!(mode);
+            assert!(
+                build_relational_sink("snk.quack", &p, "up", &["id".into()]).is_ok(),
+                "snk.quack must still allow '{}'",
+                mode
+            );
+        }
+
+        // MERGE is advertised through supports_merge; Quack must not be in it,
+        // while the real DuckDB-native targets stay.
+        assert!(!supports_merge("snk.quack"));
+        for ok in ["snk.duckdb", "snk.sqlite", "snk.motherduck", "snk.ducklake"] {
+            assert!(supports_merge(ok), "{} should still support MERGE", ok);
+        }
+    }

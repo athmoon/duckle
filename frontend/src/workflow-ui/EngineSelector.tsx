@@ -3,7 +3,19 @@ import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 
-export type EngineId = 'duckdb' | 'slothdb' | 'native';
+export type EngineId = 'duckdb' | 'native';
+
+/**
+ * Coerce a persisted engine id to one that still exists.
+ *
+ * A workspace saved before SlothDB was withdrawn still carries `engine:
+ * "slothdb"`, and restoring that verbatim would put the app on an engine with
+ * no entry in the picker - the trigger would silently fall back to DuckDB's
+ * label while the stored id stayed wrong. Read it through here instead.
+ */
+export function normalizeEngineId(value: unknown): EngineId {
+    return value === 'native' ? 'native' : 'duckdb';
+}
 
 type EngineMeta = {
     id: EngineId;
@@ -20,12 +32,6 @@ const ENGINES: EngineMeta[] = [
         label: 'DuckDB',
         description: 'Default. Local analytics, files, SQL pushdown.',
         dot: '#ff7a45',
-    },
-    {
-        id: 'slothdb',
-        label: 'SlothDB',
-        description: 'Optional embedded analytics engine.',
-        dot: '#3d8bff',
     },
     {
         id: 'native',

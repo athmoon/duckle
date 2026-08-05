@@ -43,6 +43,11 @@ struct RepoItem {
 struct ContextPayload {
     #[serde(default)]
     variables: Vec<ContextVariable>,
+    /// Layer this context sits on when several are active (#204). Higher wins;
+    /// absent is the base layer. Mirrors ContextPayload.priority in the TS so
+    /// a headless run resolves exactly what the canvas resolved.
+    #[serde(default)]
+    priority: i64,
 }
 
 #[derive(Deserialize)]
@@ -473,6 +478,11 @@ fn build_context_vars(
         vars.insert("projectroot".to_string(), ws_root);
     }
 
+    // Read every context first, then merge lowest layer upward, so a context
+    // that declares a higher priority overrides the base regardless of the
+    // order the repo lists them in (#204). Loading before merging is what
+    // makes that possible: the layer is inside the payload.
+    let mut loaded: Vec<(&RepoItem, ContextPayload)> = Vec::new();
     for item in repo {
         if item.kind != "context" {
             continue;
@@ -494,7 +504,13 @@ fn build_context_vars(
         };
         let payload: ContextPayload = serde_json::from_str(&text)
             .map_err(|e| format!("parse {}: {}", path.display(), e))?;
+        loaded.push((item, payload));
+    }
+    // Stable, so contexts sharing a layer keep repo order and a workspace that
+    // sets no priorities merges exactly as it did before layers existed.
+    loaded.sort_by_key(|(_, p)| p.priority);
 
+    for (item, payload) in &loaded {
         for v in &payload.variables {
             // Both the bare key and a context-namespaced key resolve;
             // in-array-order insert gives last-write-wins like JS `out[k]=`.
@@ -737,6 +753,70 @@ mod tests {
         let vars = super::context_file_vars(ws);
         assert_eq!(vars.get("A").map(String::as_str), Some("1"));
         assert_eq!(vars.get("B").map(String::as_str), Some("two"));
+    }
+
+    #[test]
+    fn higher_priority_context_layers_over_the_base() {
+        // #204: a shared base plus a per-environment override. The base is
+        // listed LAST in the repo, so without layers its values would win and
+        // the environment override would be silently discarded.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        write(
+            &ws.join("repository.json"),
+            r#"[{"id":"env","name":"Prod","type":"context"},
+                {"id":"base","name":"Base","type":"context"}]"#,
+        );
+        write(
+            &ws.join("contexts/base.json"),
+            r#"{"priority":0,"variables":[
+                {"key":"DB_HOST","value":"localhost"},
+                {"key":"RETRIES","value":"3"}]}"#,
+        );
+        write(
+            &ws.join("contexts/env.json"),
+            r#"{"priority":10,"variables":[{"key":"DB_HOST","value":"prod.internal"}]}"#,
+        );
+        write(
+            &ws.join("pipelines/p1.json"),
+            r#"{"nodes":[{"id":"o","position":{"x":0,"y":0},"data":{"label":"S","componentId":"src.oracle","properties":{"host":"${DB_HOST}","tries":"${RETRIES}"}}}],"edges":[]}"#,
+        );
+
+        let resolved = resolve_workspace(ws, "p1", None).unwrap();
+        let props = resolved.doc.nodes[0].data.properties.as_ref().unwrap();
+        assert_eq!(
+            props["host"],
+            serde_json::json!("prod.internal"),
+            "the higher layer must win regardless of repo order"
+        );
+        assert_eq!(
+            props["tries"],
+            serde_json::json!("3"),
+            "keys the higher layer does not define still come from the base"
+        );
+    }
+
+    #[test]
+    fn contexts_without_priorities_keep_repo_order() {
+        // Back-compat: every existing workspace has no priorities, so all
+        // contexts share layer 0 and the last one listed still wins.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        write(
+            &ws.join("repository.json"),
+            r#"[{"id":"a","name":"A","type":"context"},
+                {"id":"b","name":"B","type":"context"}]"#,
+        );
+        write(&ws.join("contexts/a.json"), r#"{"variables":[{"key":"K","value":"first"}]}"#);
+        write(&ws.join("contexts/b.json"), r#"{"variables":[{"key":"K","value":"second"}]}"#);
+        write(
+            &ws.join("pipelines/p1.json"),
+            r#"{"nodes":[{"id":"o","position":{"x":0,"y":0},"data":{"label":"S","componentId":"src.oracle","properties":{"host":"${K}"}}}],"edges":[]}"#,
+        );
+
+        let resolved = resolve_workspace(ws, "p1", None).unwrap();
+        let props = resolved.doc.nodes[0].data.properties.as_ref().unwrap();
+        assert_eq!(props["host"], serde_json::json!("second"));
     }
 
     #[test]

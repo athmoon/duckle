@@ -370,13 +370,42 @@ impl Scheduler {
         };
         for id in due {
             let me = self.clone();
+            let permit = run_permits().clone();
             tokio::spawn(async move {
+                // Hold a permit for the whole run. Every schedule that comes due
+                // in the same tick used to fire at once, so ten due at midnight
+                // meant ten pipelines each sized for the whole machine. The
+                // permit bounds that; the run still happens, it just queues.
+                let _slot = permit.acquire_owned().await;
                 if let Err(e) = me.run_now(&id).await {
                     warn!("Scheduled run {} failed: {}", id, e);
                 }
             });
         }
     }
+}
+
+/// How many scheduled pipelines may execute at once.
+///
+/// Set by power mode via DUCKLE_MAX_CONCURRENT_RUNS. Read once, because the
+/// bound has to be a single shared semaphore for it to mean anything.
+///
+/// The default is deliberately generous rather than 1: firing due schedules
+/// concurrently is long-standing behaviour here and some workspaces rely on
+/// it. What it was missing was any ceiling at all. Each concurrent run gets
+/// its own memory limit and its own DuckDB child, so the honest ceiling is a
+/// function of RAM, which is why power mode asks rather than assumes.
+fn run_permits() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    static PERMITS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| {
+        let n = std::env::var("DUCKLE_MAX_CONCURRENT_RUNS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(8);
+        std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+    })
 }
 
 /// Advance next_run_at to the next occurrence strictly after `now`.

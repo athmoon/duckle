@@ -83,6 +83,18 @@ export type ContextVariable = {
 export type ContextPayload = {
     variables: ContextVariable[];
     description?: string;
+    /**
+     * Layer this context sits on when several are active (#204). Higher wins.
+     * Absent or 0 is the base layer.
+     *
+     * Contexts used to merge flat in repo order, so a shared base plus a
+     * per-environment override could only be expressed by having one silently
+     * outrank the other, and every intended override looked like a collision.
+     * Give the base 0 and the environment a higher number and the override is
+     * declared rather than incidental: it applies quietly, and only two
+     * contexts on the SAME layer are still reported as ambiguous.
+     */
+    priority?: number;
 };
 
 export type DocumentPayload = {

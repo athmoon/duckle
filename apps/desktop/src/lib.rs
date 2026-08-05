@@ -216,6 +216,8 @@ pub fn run() {
             app_settings::settings_set_memory_limit,
             app_settings::settings_get_allow_unsigned,
             app_settings::settings_set_allow_unsigned,
+            app_settings::settings_get_power,
+            app_settings::settings_set_power,
             app_settings::settings_get_context_file,
             app_settings::settings_set_context_file,
             app_settings::settings_load_context_vars,

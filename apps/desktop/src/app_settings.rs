@@ -36,6 +36,32 @@ struct AppSettings {
     /// `quack` build). Applied as DUCKLE_ALLOW_UNSIGNED_EXTENSIONS, which makes the
     /// engine pass `-unsigned` to the DuckDB CLI. None/false = signed-only (default).
     allow_unsigned_extensions: Option<bool>,
+    /// Power mode: how many pipelines may execute at once. Applied as
+    /// DUCKLE_MAX_CONCURRENT_RUNS, which both the desktop scheduler and
+    /// `duckle serve` honour. None leaves each host on its own default.
+    ///
+    /// This is the throughput lever with a measured number behind it:
+    /// independent DuckDB queries scaled about 3.8x across 8 concurrent
+    /// processes on a 20-core box. Splitting ONE query across processes was
+    /// measured slower, which is why no such option exists.
+    max_concurrent_runs: Option<u32>,
+    /// Power mode: directory for DuckDB's spill files, applied as
+    /// DUCKLE_TEMP_DIR. Points spilling work at a bigger or faster disk than
+    /// the default (which sits beside the run's own database file). Each run
+    /// gets a private subdirectory beneath it, so concurrent runs cannot
+    /// collide over spill cleanup.
+    spill_dir: Option<String>,
+}
+
+/// The power-mode settings returned to the UI. camelCase for JS.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PowerConfig {
+    pub max_concurrent_runs: Option<u32>,
+    pub memory_limit_mb: Option<u32>,
+    pub spill_dir: Option<String>,
+    /// Logical cores, so the UI can suggest a ceiling instead of guessing.
+    pub cpu_count: u32,
 }
 
 /// The external-AI config returned to the Settings UI. camelCase for JS.
@@ -90,6 +116,73 @@ pub fn apply_for_workspace(workspace: &str) {
     if s.allow_unsigned_extensions == Some(true) {
         std::env::set_var("DUCKLE_ALLOW_UNSIGNED_EXTENSIONS", "1");
     }
+    apply_power(&s);
+}
+
+/// Publish the power-mode settings as the env vars the scheduler and engine
+/// read. Unset means "leave the host on its own default", so switching to a
+/// workspace that has never configured power mode does not silently inherit
+/// the last one's settings.
+fn apply_power(s: &AppSettings) {
+    match s.max_concurrent_runs.filter(|n| *n > 0) {
+        Some(n) => std::env::set_var("DUCKLE_MAX_CONCURRENT_RUNS", n.to_string()),
+        None => std::env::remove_var("DUCKLE_MAX_CONCURRENT_RUNS"),
+    }
+    match s.spill_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => std::env::set_var("DUCKLE_TEMP_DIR", d),
+        None => std::env::remove_var("DUCKLE_TEMP_DIR"),
+    }
+}
+
+#[tauri::command]
+pub fn settings_get_power(workspace: String) -> PowerConfig {
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
+    if workspace.is_empty() {
+        return PowerConfig { cpu_count, ..Default::default() };
+    }
+    let s = load(Path::new(&workspace));
+    PowerConfig {
+        max_concurrent_runs: s.max_concurrent_runs.filter(|n| *n > 0),
+        memory_limit_mb: s.memory_limit_mb.filter(|m| *m > 0),
+        spill_dir: s
+            .spill_dir
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty()),
+        cpu_count,
+    }
+}
+
+#[tauri::command]
+pub fn settings_set_power(
+    workspace: String,
+    max_concurrent_runs: Option<u32>,
+    memory_limit_mb: Option<u32>,
+    spill_dir: Option<String>,
+) -> Result<(), String> {
+    if workspace.is_empty() {
+        return Err("no workspace is open".into());
+    }
+    let spill = spill_dir
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty());
+    // Fail before saving rather than at the first run that tries to spill.
+    if let Some(d) = spill.as_deref() {
+        std::fs::create_dir_all(d).map_err(|e| format!("spill folder {}: {e}", d))?;
+    }
+    let mut s = load(Path::new(&workspace));
+    s.max_concurrent_runs = max_concurrent_runs.filter(|n| *n > 0);
+    s.memory_limit_mb = memory_limit_mb.filter(|m| *m > 0);
+    s.spill_dir = spill;
+    store(Path::new(&workspace), &s)?;
+    // Apply immediately so the current session picks it up without a relaunch.
+    apply_power(&s);
+    match s.memory_limit_mb {
+        Some(m) => std::env::set_var("DUCKLE_MEMORY_LIMIT", format!("{}MB", m)),
+        None => std::env::remove_var("DUCKLE_MEMORY_LIMIT"),
+    }
+    Ok(())
 }
 
 #[tauri::command]

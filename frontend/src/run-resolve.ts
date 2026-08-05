@@ -30,12 +30,27 @@ function joinPath(dir: string, ...parts: string[]): string {
     return [dir.replace(/[/\\]+$/, ''), ...parts].join(sep);
 }
 
+/**
+ * Contexts in the order they should be merged: lowest layer first, and repo
+ * order within a layer (#204).
+ *
+ * `sort` is required to be stable by the language, so contexts sharing a
+ * priority keep the order the repo lists them in - which is what the flat
+ * merge did before priorities existed, so a workspace that sets none behaves
+ * exactly as it used to.
+ */
+function contextsByLayer(repo: RepoItem[]): { item: RepoItem; payload: ContextPayload }[] {
+    return repo
+        .filter(item => item.type === 'context')
+        .map(item => ({ item, payload: item.payload as ContextPayload | undefined }))
+        .filter((c): c is { item: RepoItem; payload: ContextPayload } => !!c.payload?.variables)
+        .sort((a, b) => (a.payload.priority ?? 0) - (b.payload.priority ?? 0));
+}
+
 export function buildContextVars(repo: RepoItem[]): Record<string, string> {
     const out: Record<string, string> = {};
-    for (const item of repo) {
-        if (item.type !== 'context') continue;
-        const payload = item.payload as ContextPayload | undefined;
-        if (!payload?.variables) continue;
+    // Ascending layer, so a higher-priority context lands last and wins.
+    for (const { item, payload } of contextsByLayer(repo)) {
         for (const v of payload.variables) {
             // Both the bare key and a context-namespaced key resolve.
             out[v.key] = v.value;
@@ -46,33 +61,49 @@ export function buildContextVars(repo: RepoItem[]): Record<string, string> {
 }
 
 /**
- * Bare context-variable keys defined by more than one context (#204). In
- * buildContextVars these share a single slot in the flat map, so a `${KEY}`
- * reference silently resolves to whichever context is last in repo order;
- * only `${context.KEY}` is unambiguous. Returns one entry per colliding key
- * with the names of the contexts that define it, so the validator can warn.
- * A single context can never collide, so existing single-context workspaces
- * never trigger this.
+ * Bare context-variable keys that are genuinely ambiguous (#204).
+ *
+ * Two contexts defining the same key only compete when they sit on the SAME
+ * layer, because nothing then says which should win and `${KEY}` resolves to
+ * whichever the repo happens to list last. A key defined on different layers
+ * is a declared override - a base plus an environment on top - and reporting
+ * that was the complaint: every intended override looked like a mistake and
+ * had to be resolved by hand.
+ *
+ * Returns one entry per ambiguous key with the contexts that define it, so the
+ * validator can warn. A single context can never collide, so existing
+ * single-context workspaces never trigger this.
  */
 export function contextKeyCollisions(repo: RepoItem[]): { key: string; contexts: string[] }[] {
-    const byKey = new Map<string, string[]>();
+    // key -> layer -> contexts defining it on that layer
+    const byKey = new Map<string, Map<number, string[]>>();
     for (const item of repo) {
         if (item.type !== 'context') continue;
         const payload = item.payload as ContextPayload | undefined;
         if (!payload?.variables) continue;
+        const layer = payload.priority ?? 0;
         // A key repeated inside ONE context is not a cross-context collision.
         const seen = new Set<string>();
         for (const v of payload.variables) {
             if (seen.has(v.key)) continue;
             seen.add(v.key);
-            const list = byKey.get(v.key);
+            let layers = byKey.get(v.key);
+            if (!layers) {
+                layers = new Map();
+                byKey.set(v.key, layers);
+            }
+            const list = layers.get(layer);
             if (list) list.push(item.name);
-            else byKey.set(v.key, [item.name]);
+            else layers.set(layer, [item.name]);
         }
     }
-    return [...byKey.entries()]
-        .filter(([, contexts]) => contexts.length > 1)
-        .map(([key, contexts]) => ({ key, contexts }));
+    const out: { key: string; contexts: string[] }[] = [];
+    for (const [key, layers] of byKey) {
+        for (const contexts of layers.values()) {
+            if (contexts.length > 1) out.push({ key, contexts });
+        }
+    }
+    return out;
 }
 
 function pad(n: number): string {

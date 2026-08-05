@@ -7,8 +7,9 @@ import {
     settingsGetAi,
     settingsSetAi,
     settingsGetMemoryLimit,
-    settingsSetMemoryLimit,
     settingsGetAllowUnsigned,
+    settingsGetPower,
+    settingsSetPower,
     settingsSetAllowUnsigned,
     settingsGetContextFile,
     settingsSetContextFile,
@@ -45,6 +46,11 @@ export function SettingsModal({
     const [memLimit, setMemLimit] = useState('');
     // #143: allow loading unsigned / community DuckDB extensions (off by default).
     const [allowUnsigned, setAllowUnsigned] = useState(false);
+    // Power mode: throughput settings. Empty concurrency = leave the host on
+    // its own default, so a workspace that never opts in behaves as before.
+    const [maxRuns, setMaxRuns] = useState('');
+    const [spillDir, setSpillDir] = useState('');
+    const [cpuCount, setCpuCount] = useState(1);
     // Global context file: a key/value file auto-merged into the global context.
     const [contextFile, setContextFile] = useState('');
     // Local UI pref: show/hide the top-bar Dives button.
@@ -72,8 +78,9 @@ export function SettingsModal({
             settingsGetMemoryLimit(workspace),
             settingsGetContextFile(workspace),
             settingsGetAllowUnsigned(workspace),
+            settingsGetPower(workspace),
         ])
-            .then(([p, ai, mem, ic, unsigned]) => {
+            .then(([p, ai, mem, ic, unsigned, power]) => {
                 if (!alive) return;
                 setProxy(p ?? '');
                 setAiBaseUrl(ai.baseUrl ?? '');
@@ -82,6 +89,9 @@ export function SettingsModal({
                 setMemLimit(mem != null ? String(mem) : '');
                 setContextFile(ic ?? '');
                 setAllowUnsigned(unsigned ?? false);
+                setMaxRuns(power.maxConcurrentRuns != null ? String(power.maxConcurrentRuns) : '');
+                setSpillDir(power.spillDir ?? '');
+                setCpuCount(power.cpuCount || 1);
                 setLoaded(true);
             })
             .catch(e => {
@@ -108,7 +118,13 @@ export function SettingsModal({
                 apiKey: aiKey.trim() || null,
             });
             const mb = parseInt(memLimit.trim(), 10);
-            await settingsSetMemoryLimit(workspace, Number.isFinite(mb) && mb > 0 ? mb : null);
+            const memMb = Number.isFinite(mb) && mb > 0 ? mb : null;
+            const runs = parseInt(maxRuns.trim(), 10);
+            await settingsSetPower(workspace, {
+                maxConcurrentRuns: Number.isFinite(runs) && runs > 0 ? runs : null,
+                memoryLimitMb: memMb,
+                spillDir: spillDir.trim() || null,
+            });
             await settingsSetAllowUnsigned(workspace, allowUnsigned);
             await settingsSetContextFile(workspace, contextFile.trim() || null);
             setSaved(true);
@@ -297,6 +313,51 @@ export function SettingsModal({
                             disabled={!loaded || !workspace}
                             style={aiInput}
                         />
+                    </Section>
+
+                    <Section id="power" title="Power mode">
+                        <p style={help}>
+                            Throughput settings for this workspace. Independent pipelines scale well
+                            across cores, so running several at once is the lever that pays; splitting a
+                            single pipeline across processes was measured slower and is deliberately not
+                            offered.
+                        </p>
+                        <label htmlFor="settings-max-runs" style={{ fontSize: '0.9231rem', opacity: 0.8 }}>
+                            Pipelines at once
+                        </label>
+                        <input
+                            id="settings-max-runs"
+                            type="number"
+                            min={1}
+                            max={64}
+                            value={maxRuns}
+                            onChange={e => setMaxRuns(e.target.value)}
+                            placeholder={`empty = default  (this machine has ${cpuCount} cores)`}
+                            disabled={!loaded || !workspace}
+                            style={aiInput}
+                        />
+                        <p style={help}>
+                            Caps how many scheduled pipelines execute together. Each one gets its own
+                            memory limit and its own DuckDB process, so N at once needs roughly N times
+                            the memory above. Raise it only with the RAM to match.
+                        </p>
+                        <label htmlFor="settings-spill" style={{ fontSize: '0.9231rem', opacity: 0.8 }}>
+                            Spill folder
+                        </label>
+                        <input
+                            id="settings-spill"
+                            type="text"
+                            value={spillDir}
+                            onChange={e => setSpillDir(e.target.value)}
+                            placeholder="empty = beside the run's own database"
+                            disabled={!loaded || !workspace}
+                            style={aiInput}
+                        />
+                        <p style={help}>
+                            Where DuckDB writes when a query outgrows memory. Point it at a bigger or
+                            faster disk. Every run gets a private subfolder, so concurrent runs cannot
+                            collide here.
+                        </p>
                     </Section>
 
                     <Section id="unsigned" title="Unsigned extensions">

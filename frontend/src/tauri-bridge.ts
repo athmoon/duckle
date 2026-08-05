@@ -910,6 +910,46 @@ export async function settingsSetMemoryLimit(workspace: string, mb: number | nul
     await invoke('settings_set_memory_limit', { workspace, mb });
 }
 
+// ---- Power mode ---------------------------------------------------------
+
+/** Throughput settings for a workspace. `cpuCount` is reported, not settable. */
+export type PowerConfig = {
+    maxConcurrentRuns: number | null;
+    memoryLimitMb: number | null;
+    spillDir: string | null;
+    cpuCount: number;
+};
+
+/** Read this workspace's power-mode settings. */
+export async function settingsGetPower(workspace: string): Promise<PowerConfig> {
+    const empty: PowerConfig = {
+        maxConcurrentRuns: null,
+        memoryLimitMb: null,
+        spillDir: null,
+        cpuCount: 1,
+    };
+    if (!workspace) return empty;
+    try {
+        return (await invoke<PowerConfig>('settings_get_power', { workspace })) ?? empty;
+    } catch {
+        return empty;
+    }
+}
+
+/**
+ * Persist and immediately apply the power-mode settings. Rejects if the spill
+ * folder cannot be created, so a bad path fails here rather than at the first
+ * run that tries to spill.
+ */
+export async function settingsSetPower(workspace: string, cfg: Omit<PowerConfig, 'cpuCount'>): Promise<void> {
+    await invoke('settings_set_power', {
+        workspace,
+        maxConcurrentRuns: cfg.maxConcurrentRuns,
+        memoryLimitMb: cfg.memoryLimitMb,
+        spillDir: cfg.spillDir,
+    });
+}
+
 /** #143: read whether this workspace allows loading unsigned DuckDB extensions. */
 export async function settingsGetAllowUnsigned(workspace: string): Promise<boolean> {
     if (!workspace) return false;

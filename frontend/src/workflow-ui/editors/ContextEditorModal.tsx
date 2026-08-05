@@ -14,6 +14,10 @@ export default function ContextEditorModal({ item, onSave, onCancel }: Props) {
     const [name, setName] = useState(item?.name ?? '');
     const [variables, setVariables] = useState<ContextVariable[]>(initial?.variables ?? []);
     const [description, setDescription] = useState(initial?.description ?? '');
+    // #204: which layer this context sits on. Higher wins.
+    const [priority, setPriority] = useState(
+        initial?.priority != null ? String(initial.priority) : '',
+    );
     const nameRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -34,9 +38,13 @@ export default function ContextEditorModal({ item, onSave, onCancel }: Props) {
 
     const handleSave = () => {
         if (!canSave) return;
+        const layer = parseInt(priority.trim(), 10);
         onSave(name.trim(), {
             variables: variables.filter(v => v.key.trim()),
             description: description.trim() || undefined,
+            // Omit the base layer so contexts that never use layering keep the
+            // payload they had before this existed.
+            priority: Number.isFinite(layer) && layer !== 0 ? layer : undefined,
         });
     };
 
@@ -94,6 +102,25 @@ export default function ContextEditorModal({ item, onSave, onCancel }: Props) {
                             onChange={e => setDescription(e.target.value)}
                             spellCheck={false}
                         />
+                    </div>
+
+                    <div className="modal-field">
+                        <label className="modal-field-label">Layer (optional)</label>
+                        <input
+                            type="number"
+                            className="modal-input"
+                            value={priority}
+                            placeholder="0 = base. Higher layers override lower ones."
+                            onChange={e => setPriority(e.target.value)}
+                            spellCheck={false}
+                        />
+                        <div className="modal-field-hint">
+                            Leave empty for a shared base context. Give an environment context a
+                            higher number and its variables override the base wherever the names
+                            match, without being reported as a conflict. Two contexts on the same
+                            layer that define the same name are still flagged, because nothing says
+                            which of them should win.
+                        </div>
                     </div>
 
                     <div className="modal-field">

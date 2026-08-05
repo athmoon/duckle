@@ -46,6 +46,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
+- [What's new in v0.5.10](#whats-new-in-v0510)
 - [What's new in v0.5.9](#whats-new-in-v059)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
@@ -125,6 +126,27 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 <div align="center">
 <img src="docs/assets/flow.svg" alt="Sources flow through 50+ transforms into files, databases, object storage, vector stores, and AI" width="100%"/>
 </div>
+
+---
+
+## What's new in v0.5.10
+
+Power mode, context layering, and an Oracle extract that is now faster than
+python-oracledb with pyarrow on the same table.
+
+- **Power mode (Settings -> Power mode).** Two throughput settings per workspace. **Pipelines at once** caps how many run together; the placeholder shows the machine's core count. **Spill folder** points DuckDB's spill files at a bigger or faster disk. Only the lever with a measurement behind it is offered: independent pipelines scaled about 3.8x across 8 concurrent processes on a 20-core box, while splitting a single pipeline across processes measured *slower* (72ms to 123ms at 8-way), so there is deliberately no option for it. Each concurrent run gets its own memory limit and its own DuckDB process, so N at once needs roughly N times the memory, and the panel says so.
+- **Scheduled runs have a ceiling.** Every schedule that came due in the same tick fired at once, so ten due at midnight meant ten pipelines each sized for the whole machine. They are now bounded, by power mode where it is set and by a sane default otherwise. The headless `duckle serve` honours the same setting, so desktop and server agree.
+- **Contexts can be layered (#204).** A context can declare a **Layer**; higher layers override lower ones. A shared base plus a per-environment override is now expressible directly: give the base layer 0 and the environment a higher number, and the override applies quietly. Previously all contexts merged flat in repo order, so every intended override looked like a collision and had to be resolved by hand. Only two contexts on the *same* layer defining the same name are still reported, because nothing there says which should win. Workspaces that set no layers merge exactly as before.
+- **Oracle extracts beat python-oracledb (#221).** Three changes, each measured on a 1,466,723-row x 236-column table with the same query and SNAPPY on both sides:
+  - Unconstrained `NUMBER` columns are now **measured before the write instead of typed after it**. Those columns have no declared width, so they used to travel as text and be typed by a pass over the finished Parquet - which is exactly the pass a direct write skips, meaning one such column forced a whole second pass over every column. The ambiguous columns are now read on their own first (about 2s for 4 of 236), their real widths pin the schema, and the file is written once. Both reads share one snapshot via a read-only transaction, so they cannot disagree.
+  - The driver no longer rebuilds an owned row per fetch. `ResultSet<Row>` reconstructs every value in the row; on this table that was 346 million reconstructions, measured at 11.5s of a 42.7s fetch against a 31.2s floor.
+  - Scaled `NUMBER` values no longer allocate a string per cell while being rescaled - 88 million allocations per run on this shape.
+
+  Together: **100.7s to 65.0s** in the shape reported on #221, against **68.6s** for python-oracledb with pyarrow doing the same job on the same machine. With column types already pinned it is about 56.7s. Output was verified against pyarrow's: identical row counts, and equal sums, hashes, ranges and null counts across every column type. Worth noting that python-oracledb maps an unconstrained `NUMBER` to `DOUBLE`, which cannot hold the 24 significant digits one test column carries; Duckle types it exactly, so the comparison is not quite like for like and not in our favour.
+- **A direct Parquet write no longer produces string columns (#221).** With **Write directly from the source** enabled on a table containing any bare `NUMBER`, those columns were written as text while the run reported success. The source now declines the shortcut when a column cannot be typed before the write, and says so in the run log. Anyone who enabled that toggle on v0.5.9 against such a table should re-check the output.
+- **Concurrent runs no longer fight over spill files.** DuckDB's default spill location is already per-run, but setting a shared spill folder made every run share one - which reads as a flaky run rather than a bug: across three trials of four concurrent spilling queries, a shared folder lost 3 of 12 runs to a segfault or a delete failure, private folders lost 0 of 12. Each run now spills into its own subfolder.
+
+Full notes: see the [v0.5.10 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.10).
 
 ---
 
@@ -489,7 +511,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.9):
+Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.10):
 
 | OS | Asset | How to run |
 |---|---|---|

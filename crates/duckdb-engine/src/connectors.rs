@@ -2418,6 +2418,20 @@ impl DuckdbEngine {
                 mark(&format!("NLS set skipped: {}", e));
             }
         }
+        // A read-only transaction so that, if a column has to be measured before
+        // it can be typed, the measuring query and the extract see one snapshot
+        // rather than two. Without it Oracle takes a fresh snapshot per
+        // statement, and a row deleted in between could let the measurement
+        // miss a value the extract then hits. Unlike DBMS_FLASHBACK this needs
+        // no grant. Best effort: if it is refused we simply do not measure, and
+        // the older carry-as-text path still applies.
+        let snapshot_pinned = match conn.execute("SET TRANSACTION READ ONLY", &[]) {
+            Ok(_) => true,
+            Err(e) => {
+                mark(&format!("read-only transaction unavailable: {}", e));
+                false
+            }
+        };
         mark("preparing query");
 
         // Issue #4: the default Oracle prefetch is tiny (often 1-2 rows
@@ -2449,7 +2463,23 @@ impl DuckdbEngine {
         // which measured ~10x the cost of a parquet intermediate on a wide
         // fact table. Ambiguous schemas return None here and take the
         // unchanged NDJSON path below.
-        if let Some((schema, numeric_text)) = Self::oracle_arrow_schema(rs.column_info()) {
+        if let Some((mut schema, mut numeric_text)) = Self::oracle_arrow_schema(rs.column_info()) {
+            // Worth measuring only when a direct write is on the table: that is
+            // the case where typing these columns up front removes a whole pass
+            // rather than just moving where the work happens.
+            if !numeric_text.is_empty() && direct.is_some() && snapshot_pinned {
+                if let Some(pinned) = Self::oracle_probe_text_widths(
+                    &conn,
+                    &spec.query,
+                    rs.column_info(),
+                    &schema,
+                    &numeric_text,
+                    &mark,
+                ) {
+                    schema = pinned;
+                    numeric_text = Vec::new();
+                }
+            }
             if numeric_text.is_empty() {
                 mark("arrow fast path: all column types pinned");
             } else {
@@ -2581,6 +2611,13 @@ impl DuckdbEngine {
         // A temp file wants no compression; the sink's own file must match what
         // the sink would have written, and the Parquet sink's default is ZSTD -
         // so an unset compression means ZSTD here, NOT uncompressed.
+        //
+        // Compressing the temp was tried and measured a net loss. It does make
+        // the sink's read cheaper - 3579 MB and 22.0s uncompressed against
+        // 1501 MB and 17.9s with SNAPPY - but this writer pays 5.3s to compress
+        // it, so the run went 75.9s to 76.9s. (A DuckDB-to-DuckDB simulation
+        // predicted a win; it was wrong because DuckDB, not this writer, did the
+        // writing in that test.)
         let written = Self::oracle_write_parquet_part(
             rs,
             &schema,
@@ -3122,7 +3159,7 @@ impl DuckdbEngine {
         // cell (40M times on a 1M-row x 40-col pull), and a downcast_mut per
         // cell was pure overhead on top of a dispatch the column type already
         // decides once.
-        let mut builders: Vec<OraCol> = schema
+        let builders: Vec<OraCol> = schema
             .fields()
             .iter()
             .map(|f| match f.data_type() {
@@ -3287,6 +3324,155 @@ impl DuckdbEngine {
             // LOBs and zoned timestamps still have no exact mapping.
             _ => return None,
         })
+    }
+
+    /// Integer digits and fraction digits of an Oracle NUMBER's text form.
+    ///
+    /// Returns None for anything that is not plain decimal text, which is the
+    /// signal to carry the column as text instead. Leading zeros do not count
+    /// as integer digits, so "0.5" is (0, 1) and needs DECIMAL(1,1), while
+    /// "-17.5" is (2, 1) and needs DECIMAL(3,1). Counting total characters
+    /// instead is exactly the bug that once turned -17.5 into NULL.
+    #[cfg(feature = "oracle")]
+    fn oracle_number_width(s: &str) -> Option<(u32, u32)> {
+        let t = s.trim().as_bytes();
+        let mut i = 0usize;
+        if matches!(t.first(), Some(b'-') | Some(b'+')) {
+            i = 1;
+        }
+        let (mut int_digits, mut scale) = (0u32, 0u32);
+        let mut seen_dot = false;
+        let mut leading = true;
+        let mut any = false;
+        while i < t.len() {
+            match t[i] {
+                c @ b'0'..=b'9' => {
+                    any = true;
+                    if seen_dot {
+                        scale += 1;
+                    } else if !(leading && c == b'0') {
+                        leading = false;
+                        int_digits += 1;
+                    }
+                }
+                b'.' if !seen_dot => seen_dot = true,
+                _ => return None, // scientific notation, or not a number at all
+            }
+            i += 1;
+        }
+        if !any {
+            return None;
+        }
+        Some((int_digits, scale))
+    }
+
+    /// Measure the columns Oracle would not pin a width for, so they can be
+    /// typed before the write instead of after it.
+    ///
+    /// A bare `NUMBER` has no declared width, so its real one is a property of
+    /// the values. Reading it as text and typing it afterwards is correct but
+    /// costs a whole second pass over the parquet, because that is the pass a
+    /// direct write skips. Reading just those columns first is far cheaper:
+    /// measured on a 236-column, 1.47M-row table, the four ambiguous columns
+    /// take 2.9s to fetch on their own against ~22s for the second pass.
+    ///
+    /// Returns the schema with those columns given real DECIMAL types, or None
+    /// to leave them as text - which happens if any value is not plain decimal
+    /// text, if a column is entirely NULL, or if the width exceeds DECIMAL's 38
+    /// digits. Correctness rests on the caller having pinned a snapshot, so the
+    /// measurement and the extract cannot see different rows.
+    #[cfg(feature = "oracle")]
+    fn oracle_probe_text_widths(
+        conn: &oracle::Connection,
+        query: &str,
+        infos: &[oracle::ColumnInfo],
+        schema: &arrow_schema::Schema,
+        numeric_text: &[usize],
+        mark: &dyn Fn(&str),
+    ) -> Option<arrow_schema::Schema> {
+        use arrow_schema::{DataType, Field};
+
+        let names: Vec<&str> = numeric_text
+            .iter()
+            .map(|&i| infos.get(i).map(|c| c.name()).unwrap_or_default())
+            .collect();
+        if names.iter().any(|n| n.is_empty()) {
+            return None;
+        }
+        let select = names
+            .iter()
+            .map(|n| format!("\"{}\"", n.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let probe_sql = format!("SELECT {} FROM ({})", select, query);
+
+        PROBE_WIDTHS.with(|c| {
+            *c.borrow_mut() = vec![ProbeWidth::default(); numeric_text.len()];
+        });
+        let started = Instant::now();
+        let mut stmt = conn
+            .statement(&probe_sql)
+            .prefetch_rows(5000)
+            .fetch_array_size(5000)
+            .build()
+            .ok()?;
+        let rs = stmt.query_as::<ProbeRow>(&[]).ok()?;
+        for row in rs {
+            if row.is_err() {
+                return None;
+            }
+        }
+        let widths = PROBE_WIDTHS.with(|c| c.borrow().clone());
+
+        let mut fields: Vec<Field> = schema.fields().iter().map(|f| (**f).clone()).collect();
+        for (slot, &col) in widths.iter().zip(numeric_text.iter()) {
+            if slot.unusable {
+                mark(&format!(
+                    "column {} stays text: a value is not plain decimal",
+                    col + 1
+                ));
+                return None;
+            }
+            // Every value NULL means there is nothing to lose whatever width we
+            // pick, so the column is typeable rather than a reason to give up.
+            // Falling back here would cost the whole second pass over one empty
+            // column.
+            // Precision is integer digits plus scale. Deriving it from the
+            // total digit count is what once gave -17.5 a DECIMAL(3,2) and
+            // turned it into NULL, so it is spelled out here.
+            let precision = slot.int_digits.max(1) + slot.scale;
+            if precision > 38 {
+                mark(&format!(
+                    "column {} stays text: needs {} digits, DECIMAL holds 38",
+                    col + 1,
+                    precision
+                ));
+                return None;
+            }
+            let f = fields.get(col)?;
+            // A whole number that fits an i64 becomes one, matching what a
+            // declared NUMBER(p,0) already maps to. Otherwise downstream would
+            // see the same integers as DECIMAL(6,0) purely because Oracle
+            // happened not to declare a width.
+            let ty = if slot.scale == 0 && precision <= 18 {
+                DataType::Int64
+            } else {
+                DataType::Decimal128(precision as u8, slot.scale as i8)
+            };
+            fields[col] = Field::new(f.name(), ty, f.is_nullable());
+        }
+        let all_null = widths.iter().filter(|w| !w.seen).count();
+        mark(&format!(
+            "measured {} ambiguous column(s) in {:?}; typed before the write{}",
+            numeric_text.len(),
+            started.elapsed(),
+            if all_null > 0 {
+                format!(" ({} held only NULLs)", all_null)
+            } else {
+                String::new()
+            }
+        ));
+        Some(arrow_schema::Schema::new(fields))
     }
 
     fn oracle_arrow_schema(
@@ -13519,6 +13705,70 @@ struct EncodeSink {
     err: Option<EngineError>,
     encode_nanos: u128,
     trace: bool,
+}
+
+/// Widest value seen so far in one column being measured before it is typed.
+///
+/// `unusable` latches: one value we cannot map - scientific notation, a
+/// non-NUMBER, or something wider than DECIMAL's 38 digits - and the column
+/// goes back to being carried as text. Refusing is always available and always
+/// correct, so nothing here ever has to guess a width.
+#[cfg(feature = "oracle")]
+#[derive(Clone, Copy, Default)]
+struct ProbeWidth {
+    int_digits: u32,
+    scale: u32,
+    seen: bool,
+    unusable: bool,
+}
+
+// Columns being measured by `ProbeRow`, in the probe query's column order.
+#[cfg(feature = "oracle")]
+thread_local! {
+    static PROBE_WIDTHS: std::cell::RefCell<Vec<ProbeWidth>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Measures rather than stores: same borrowed-row trick as [`EncodeRow`].
+#[cfg(feature = "oracle")]
+struct ProbeRow;
+
+#[cfg(feature = "oracle")]
+impl oracle::RowValue for ProbeRow {
+    fn get(row: &oracle::Row) -> oracle::Result<Self> {
+        use oracle::sql_type::InnerValue;
+        PROBE_WIDTHS.with(|cell| {
+            let mut widths = cell.borrow_mut();
+            for (i, w) in widths.iter_mut().enumerate() {
+                if w.unusable {
+                    continue;
+                }
+                let Some(sv) = row.sql_values().get(i) else {
+                    w.unusable = true;
+                    continue;
+                };
+                // A NULL tells us nothing about the width, which is fine: a
+                // column that is entirely NULL is left to the text path.
+                if matches!(sv.is_null(), Ok(true)) {
+                    continue;
+                }
+                match sv.as_inner_value() {
+                    Ok(InnerValue::Number(text)) => {
+                        match DuckdbEngine::oracle_number_width(text) {
+                            Some((int_digits, scale)) => {
+                                w.seen = true;
+                                w.int_digits = w.int_digits.max(int_digits);
+                                w.scale = w.scale.max(scale);
+                            }
+                            None => w.unusable = true,
+                        }
+                    }
+                    _ => w.unusable = true,
+                }
+            }
+        });
+        Ok(ProbeRow)
+    }
 }
 
 /// What one row turns into, without ever materialising an owned `Row`.

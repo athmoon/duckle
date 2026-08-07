@@ -1,0 +1,53 @@
+# Duckle pipeline validation for GitHub Actions.
+#
+# Copy this to .github/workflows/duckle.yml in the repository that holds your
+# pipelines (not this repository). It compiles every pipeline under ./pipelines
+# to SQL on each push and pull request.
+#
+# Validation opens no source, writes no sink, and needs no DuckDB binary, no
+# credentials and no network. It is safe to run on every commit, including from
+# forks, because it never touches your data.
+#
+# Why this matters on a trunk-based team: if one commit renames a column in a
+# Mapper and another adds a filter still referencing the old name, the two
+# merge cleanly with no conflict. Nothing git can see is wrong, and no file
+# lock would have prevented it. This job is what catches it.
+
+name: Duckle
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The headless runner is a static musl binary with no shared-library
+      # dependencies, so it needs no apt packages and runs on any image. Do not
+      # substitute the desktop asset here: Duckle-linux-x64 is a Tauri binary
+      # that requires libwebkit2gtk and the GTK stack at load time and cannot
+      # start on a runner with no GUI libraries installed.
+      #
+      # Swap `latest` for a tag (e.g. v0.5.10) if you want reproducible CI.
+      - name: Fetch duckle-runner
+        run: |
+          curl -fsSL -o duckle-runner \
+            https://github.com/slothflowlabs/duckle/releases/latest/download/duckle-runner-linux-x64
+          chmod +x duckle-runner
+
+      # Exit codes are stable: 0 clean, 1 a pipeline did not compile, 2 bad
+      # usage or an unreadable file. Any non-zero value fails the job.
+      #
+      # With no path it checks every .json under ./pipelines. Pass paths
+      # explicitly if your layout differs, and add --sql to print the compiled
+      # SQL for each stage in the job log.
+      - name: Validate pipelines
+        run: ./duckle-runner validate
+
+      # A clean validate is not proof a run will succeed: it catches malformed
+      # JSON, unknown components, missing wiring and anything that fails to
+      # compile, but not every missing property value. Treat it as a fast gate,
+      # not a full test suite.

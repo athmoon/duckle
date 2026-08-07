@@ -1,0 +1,42 @@
+# Duckle pipeline validation for GitLab CI.
+#
+# Copy this into .gitlab-ci.yml in the repository that holds your pipelines
+# (not this repository), or `include:` it from your existing config.
+#
+# Validation opens no source, writes no sink, and needs no DuckDB binary, no
+# credentials and no network, so it is safe on every commit.
+#
+# Why this matters on a trunk-based team: if one commit renames a column in a
+# Mapper and another adds a filter still referencing the old name, the two
+# merge cleanly with no conflict. Nothing git can see is wrong, and no file
+# lock would have prevented it. This job is what catches it.
+
+stages:
+  - validate
+
+duckle-validate:
+  stage: validate
+  # The headless runner is a static musl binary with no shared-library
+  # dependencies, so alpine is enough. Do not substitute the desktop asset:
+  # Duckle-linux-x64 is a Tauri binary requiring libwebkit2gtk and the GTK
+  # stack at load time, and cannot start on an image with no GUI libraries.
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache curl
+    # Swap `latest` for a tag (e.g. v0.5.10) if you want reproducible CI.
+    - |
+      curl -fsSL -o duckle-runner \
+        https://github.com/slothflowlabs/duckle/releases/latest/download/duckle-runner-linux-x64
+    - chmod +x duckle-runner
+  # Exit codes are stable: 0 clean, 1 a pipeline did not compile, 2 bad usage
+  # or an unreadable file. Any non-zero value fails the job.
+  #
+  # With no path it checks every .json under ./pipelines. Pass paths explicitly
+  # if your layout differs, and add --sql to print the compiled SQL per stage.
+  script:
+    - ./duckle-runner validate
+
+  # A clean validate is not proof a run will succeed: it catches malformed
+  # JSON, unknown components, missing wiring and anything that fails to
+  # compile, but not every missing property value. Treat it as a fast gate,
+  # not a full test suite.

@@ -1344,15 +1344,22 @@ struct WebPanel {
 
 static WEB_PANEL: std::sync::Mutex<Option<WebPanel>> = std::sync::Mutex::new(None);
 
-/// `duckle serve [...]` or `duckle run [...]` - delegate to the embedded
-/// headless runner without launching the GUI. Returns false when argv[1] is
-/// neither subcommand; on a headless path this never returns.
+/// `duckle serve [...]`, `duckle run [...]` or `duckle validate [...]` -
+/// delegate to the embedded headless runner without launching the GUI. Returns
+/// false when argv[1] is none of those; on a headless path this never returns.
+///
+/// `validate` is here so a local pre-commit check can use the installed app.
+/// It needs no DuckDB, no credentials and no network, and its exit codes
+/// (0 ok / 1 finding / 2 usage) are stable. Note this only works where the GUI
+/// libraries are present: on Linux the binary links WebKitGTK at load time, so
+/// CI should use the standalone `duckle-runner` instead.
 pub fn run_headless_cli() -> bool {
     let mut it = std::env::args();
     let _exe = it.next();
     let (label, temp_dir, runner_subcommand) = match it.next().as_deref() {
         Some("serve") => ("duckle serve", "duckle-serve", Some("serve")),
         Some("run") => ("duckle run", "duckle-run", None),
+        Some("validate") => ("duckle validate", "duckle-validate", Some("validate")),
         _ => return false,
     };
     let rest: Vec<String> = it.collect();

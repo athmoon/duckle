@@ -45,25 +45,45 @@ jobs:
             gh release create "$tag" --draft --title "Duckle $tag"
           fi
 
-  # Build the static Linux runner ONCE and hand it to the per-OS build jobs as a
-  # workflow artifact (NOT a release asset). Each desktop build embeds it so the
-  # shipped binary can cross-build a Linux pipeline file from any OS. No separate
-  # runner is published anywhere; the release page still carries only the desktop
-  # apps. The job fails loudly if the runner is not produced, so a release can
-  # never ship with the Linux target silently disabled.
+  # Build the static Linux runner ONCE. It serves two purposes:
+  #   1. a workflow artifact the per-OS build jobs embed, so a shipped desktop
+  #      binary can cross-build a Linux pipeline file from any OS;
+  #   2. a published release asset, so a pipeline repo's CI can gate on
+  #      `duckle-runner validate`.
+  # (2) cannot be served by the desktop asset. Duckle-linux-x64 is a Tauri
+  # binary with libwebkit2gtk-4.1, libgtk-3, libsoup-3, libjavascriptcoregtk,
+  # libgdk-3, libgdk_pixbuf and libcairo in DT_NEEDED. Those resolve at load
+  # time, before main() and before the headless-CLI branch, so on a runner with
+  # no GUI stack it cannot start at all. This runner is static musl with no
+  # shared-library deps, so it runs on alpine or in a scratch container.
+  # The job fails loudly if the runner is not produced, so a release can never
+  # ship with the Linux target silently disabled.
   build-linux-runner:
     needs: prepare-release
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Build the static Linux duckle-runner (musl, in Docker)
         run: bash scripts/build-runner-linux.sh
-      - name: Upload as a workflow artifact (not a release asset)
+      - name: Upload as a workflow artifact (embedded by the desktop builds)
         uses: actions/upload-artifact@v4
         with:
           name: duckle-runner-linux-x64
           path: apps/desktop/bin/duckle-runner-linux-x64
           if-no-files-found: error
+      # Runs before the `build` matrix, which runs before `checksums`, so the
+      # asset is always present by the time SHA256SUMS is computed.
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          REL_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+        run: |
+          set -e
+          gh release upload "$REL_TAG" \
+            apps/desktop/bin/duckle-runner-linux-x64 --clobber
 
   # Compute the build matrix so a workflow_dispatch can re-roll a single OS
   # family (os_filter=linux) without rebuilding/clobbering the other assets. A
@@ -324,12 +344,15 @@ jobs:
           mkdir -p _sums && cd _sums
           gh release download "$REL_TAG" --clobber
           # Checksum the published binaries (not any prior SHA file): the 6
-          # desktop apps. The in-app self-updater verifies a downloaded build
-          # against this file before swapping it in.
+          # desktop apps plus the headless runner, which CI downloads. The
+          # in-app self-updater verifies a downloaded build against this file
+          # before swapping it in, and looks its own asset up by name, so the
+          # extra line is safe.
           sha256sum \
             Duckle-linux-x64 Duckle-linux-arm64 \
             Duckle-macos-x64 Duckle-macos-arm64 \
             Duckle-windows-x64.exe Duckle-windows-arm64.exe \
+            duckle-runner-linux-x64 \
             > SHA256SUMS.txt
           cat SHA256SUMS.txt
           gh release upload "$REL_TAG" SHA256SUMS.txt --clobber

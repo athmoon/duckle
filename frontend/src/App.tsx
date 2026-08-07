@@ -1889,7 +1889,7 @@ export default function App() {
 
     const handleNewFolderInRepo = useCallback(
         (parentId: string) => {
-            const id = 'f_' + Date.now().toString(36);
+            const id = freshId('f');
             const count = repo.filter(i => i.type === 'folder' && i.parentId === parentId).length;
             const name = 'new_folder' + (count > 0 ? '_' + (count + 1) : '');
             const realParent = repo.find(
@@ -1930,7 +1930,7 @@ export default function App() {
         (id: string) => {
             const item = repo.find(i => i.id === id);
             if (!item) return;
-            const newId = item.type[0] + '_' + Date.now().toString(36);
+            const newId = freshId(item.type[0]);
             setRepo(r => [...r, { ...item, id: newId, name: item.name + '_copy' }]);
             if (item.type === 'pipeline') {
                 setPipelineData(d => ({ ...d, [newId]: d[id] ?? EMPTY_PIPELINE }));

@@ -376,13 +376,45 @@ export async function engineStatus(): Promise<EngineStatus[]> {
     }
 }
 
+/** One GGUF chat model offered at install time. */
+export interface LlamaModel {
+    id: string;
+    label: string;
+    repo: string;
+    file: string;
+    /** Real download size, from the Hugging Face file listing. */
+    size_mb: number;
+    /** What this choice costs and buys, in plain terms. */
+    note: string;
+}
+
+/** Chat models the assistant can be installed with, smallest first. */
+export async function llamaModels(): Promise<LlamaModel[]> {
+    try {
+        return await invoke<LlamaModel[]>('llama_models');
+    } catch (err) {
+        console.warn('llamaModels failed', err);
+        return [];
+    }
+}
+
+/** The model id installed when the user does not pick one. */
+export async function llamaDefaultModel(): Promise<string> {
+    return await invoke<string>('llama_default_model');
+}
+
+/**
+ * `modelId` only applies to the `llamacpp` engine; omitting it installs the
+ * default model, which is what every non-assistant install does.
+ */
 export async function engineInstall(
     engine: string,
     onProgress?: (p: InstallProgress) => void,
+    modelId?: string,
 ): Promise<string> {
     const channel = new Channel<InstallProgress>();
     if (onProgress) channel.onmessage = onProgress;
-    return await invoke<string>('engine_install', { engine, onProgress: channel });
+    return await invoke<string>('engine_install', { engine, modelId, onProgress: channel });
 }
 
 /** Whether the free dbt engine (dbt Fusion, or dbt-core fallback) is provisioned. */

@@ -190,6 +190,8 @@ pub fn run() {
             schedule_run_now,
             engine_status,
             engine_install,
+            llama_models,
+            llama_default_model,
             dbt_status,
             dbt_install,
             seed_sample_workspace,
@@ -667,17 +669,36 @@ fn engine_status(app: tauri::AppHandle) -> Result<Vec<EngineStatus>, String> {
     Ok(engine_manager::status(&dir))
 }
 
+/// The chat models offered at install time, smallest first, for the setup
+/// picker. Curated and size-checked rather than a live Hugging Face search, so
+/// the list can never offer a file that 404s partway through the download.
+#[tauri::command]
+fn llama_models() -> Vec<engine_manager::LlamaModel> {
+    engine_manager::LLAMA_MODELS.to_vec()
+}
+
+/// The id installed by default when the user does not choose.
+#[tauri::command]
+fn llama_default_model() -> &'static str {
+    engine_manager::DEFAULT_LLAMA_MODEL_ID
+}
+
 /// Download + install an engine (duckdb / slothdb / llamacpp) into
 /// app-data, streaming progress.
+///
+/// `model_id` selects which GGUF the chat assistant downloads (see
+/// `engine_manager::LLAMA_MODELS`). Other engines ignore it, and omitting it
+/// installs the default model.
 #[tauri::command]
 async fn engine_install(
     app: tauri::AppHandle,
     engine: String,
+    model_id: Option<String>,
     on_progress: Channel<InstallProgress>,
 ) -> Result<String, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let result = tokio::task::spawn_blocking(move || {
-        engine_manager::install(&dir, &engine, |p| {
+        engine_manager::install(&dir, &engine, model_id.as_deref(), |p| {
             let _ = on_progress.send(p);
         })
     })

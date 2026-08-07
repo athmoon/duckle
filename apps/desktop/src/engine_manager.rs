@@ -18,11 +18,162 @@ pub const SLOTHDB_VERSION: &str = "0.2.7";
 /// flavors) - keep this on a recent build that ships the `*-cpu-*`
 /// universal variant.
 pub const LLAMACPP_BUILD: &str = "b9305";
-/// HuggingFace model artifact for the AI chat assistant. Qwen2.5
-/// Coder 1.5B Instruct Q4_K_M - ~1.1 GB, runs on CPU on typical
-/// laptops, tuned for code / structured-JSON generation.
-pub const LLAMA_MODEL_REPO: &str = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF";
-pub const LLAMA_MODEL_FILE: &str = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
+/// A GGUF chat model the assistant can be installed with.
+///
+/// The catalogue is curated rather than a live Hugging Face search: every
+/// entry is a repo + filename that has been checked to resolve, so the picker
+/// cannot offer something that 404s halfway through a multi-gigabyte download.
+/// All are Q4_K_M quantisations, which is the size/quality knee for local use.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct LlamaModel {
+    /// Stable id stored in settings. Never reuse one for a different file.
+    pub id: &'static str,
+    pub label: &'static str,
+    pub repo: &'static str,
+    pub file: &'static str,
+    /// Real download size, from the Hugging Face file listing.
+    pub size_mb: u32,
+    /// What this choice costs and buys, in the user's terms.
+    pub note: &'static str,
+}
+
+/// Models offered at install time, smallest first.
+///
+/// Bigger is not automatically better here: the assistant runs on the user's
+/// own machine, so a 14B model on a laptop with no GPU offload is slower than
+/// it is useful. The notes say so rather than leaving it to be discovered
+/// after an 8.5 GB download.
+pub const LLAMA_MODELS: &[LlamaModel] = &[
+    LlamaModel {
+        id: "qwen2.5-coder-0.5b",
+        label: "Qwen2.5 Coder 0.5B",
+        repo: "Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF",
+        file: "qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
+        size_mb: 469,
+        note: "Smallest option. For low-RAM or older machines; expect rough answers.",
+    },
+    LlamaModel {
+        id: "llama-3.2-1b",
+        label: "Llama 3.2 1B Instruct",
+        repo: "bartowski/Llama-3.2-1B-Instruct-GGUF",
+        file: "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        size_mb: 770,
+        note: "Very fast and light. Better at plain English than at pipeline JSON.",
+    },
+    LlamaModel {
+        id: "qwen2.5-coder-1.5b",
+        label: "Qwen2.5 Coder 1.5B",
+        repo: "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+        file: "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+        size_mb: 1066,
+        note: "Default. Runs on any modern laptop CPU. Best choice if you are unsure.",
+    },
+    LlamaModel {
+        id: "llama-3.2-3b",
+        label: "Llama 3.2 3B Instruct",
+        repo: "bartowski/Llama-3.2-3B-Instruct-GGUF",
+        file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+        size_mb: 1926,
+        note: "Stronger at plain English, weaker at code than the Qwen models.",
+    },
+    LlamaModel {
+        id: "qwen2.5-coder-3b",
+        label: "Qwen2.5 Coder 3B",
+        repo: "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+        file: "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+        size_mb: 2007,
+        note: "Noticeably better pipeline generation. Comfortable on 16 GB of RAM.",
+    },
+    LlamaModel {
+        id: "phi-3.5-mini",
+        label: "Phi-3.5 Mini",
+        repo: "bartowski/Phi-3.5-mini-instruct-GGUF",
+        file: "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        size_mb: 2282,
+        note: "Strong reasoning for its size. Good all-rounder on a mid-range laptop.",
+    },
+    LlamaModel {
+        id: "qwen3-4b",
+        label: "Qwen3 4B Instruct",
+        repo: "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        size_mb: 2382,
+        note: "Newer generation. Best quality per gigabyte in the mid sizes.",
+    },
+    LlamaModel {
+        id: "mistral-7b",
+        label: "Mistral 7B Instruct v0.3",
+        repo: "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+        file: "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+        size_mb: 4170,
+        note: "Well-rounded general model. Wants 16 GB of RAM or GPU offload.",
+    },
+    LlamaModel {
+        id: "qwen2.5-coder-7b",
+        label: "Qwen2.5 Coder 7B",
+        repo: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+        file: "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+        size_mb: 4466,
+        note: "The best code model here that still fits a 8 GB GPU. Slow on CPU alone.",
+    },
+    LlamaModel {
+        id: "qwen2.5-7b",
+        label: "Qwen2.5 7B Instruct",
+        repo: "bartowski/Qwen2.5-7B-Instruct-GGUF",
+        file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        size_mb: 4466,
+        note: "General-purpose sibling of the 7B coder. Better prose, weaker code.",
+    },
+    LlamaModel {
+        id: "qwen3-8b",
+        label: "Qwen3 8B",
+        repo: "unsloth/Qwen3-8B-GGUF",
+        file: "Qwen3-8B-Q4_K_M.gguf",
+        size_mb: 4795,
+        note: "Newer generation at 8B. Wants a GPU with 8 GB or more.",
+    },
+    LlamaModel {
+        id: "gemma-2-9b",
+        label: "Gemma 2 9B",
+        repo: "bartowski/gemma-2-9b-it-GGUF",
+        file: "gemma-2-9b-it-Q4_K_M.gguf",
+        size_mb: 5494,
+        note: "Google's 9B. Strong general answers; needs real GPU memory.",
+    },
+    LlamaModel {
+        id: "qwen2.5-coder-14b",
+        label: "Qwen2.5 Coder 14B",
+        repo: "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+        file: "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+        size_mb: 8572,
+        note: "Only worth it with a GPU that has 10 GB or more of memory.",
+    },
+    LlamaModel {
+        id: "deepseek-coder-v2-lite",
+        label: "DeepSeek Coder V2 Lite",
+        repo: "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+        file: "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+        size_mb: 9884,
+        note: "Largest option. A mixture-of-experts coder; needs 12 GB of GPU memory.",
+    },
+];
+
+/// The model used when the user has not chosen one.
+pub const DEFAULT_LLAMA_MODEL_ID: &str = "qwen2.5-coder-1.5b";
+
+/// Look a model up by id, falling back to the default.
+///
+/// An unknown id resolves to the default rather than failing: a settings file
+/// written by a newer build, or a catalogue entry we later retire, should not
+/// leave the assistant uninstallable.
+pub fn llama_model(id: Option<&str>) -> &'static LlamaModel {
+    let want = id.unwrap_or(DEFAULT_LLAMA_MODEL_ID);
+    LLAMA_MODELS
+        .iter()
+        .find(|m| m.id == want)
+        .or_else(|| LLAMA_MODELS.iter().find(|m| m.id == DEFAULT_LLAMA_MODEL_ID))
+        .unwrap_or(&LLAMA_MODELS[0])
+}
 
 /// Static description of an installable engine.
 struct EngineSpec {
@@ -122,9 +273,31 @@ pub fn llamacpp_path(app_data: &Path) -> PathBuf {
     binary_path(app_data, &LLAMACPP)
 }
 
-/// Path the Qwen GGUF model file lands at (sibling of the binary).
+/// Path the GGUF model file lands at (sibling of the binary).
+///
+/// Resolved by looking for whichever `.gguf` is actually in the engine
+/// directory rather than by name, so the chat server starts against whatever
+/// the user chose at install time. Falls back to the default model's filename
+/// when nothing is installed yet, which is the path the installer writes to.
 pub fn llama_model_path(app_data: &Path) -> PathBuf {
-    engine_dir(app_data, &LLAMACPP).join(LLAMA_MODEL_FILE)
+    let dir = engine_dir(app_data, &LLAMACPP);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut found: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("gguf"))
+            .collect();
+        // Deterministic when a previous model was left behind: the newest wins,
+        // and ties break by name so the choice never flips between launches.
+        found.sort();
+        if let Some(newest) = found
+            .iter()
+            .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        {
+            return newest.clone();
+        }
+    }
+    dir.join(llama_model(None).file)
 }
 
 /// Release asset name for this OS/arch, or None if unsupported.
@@ -443,13 +616,16 @@ pub fn status(app_data: &Path) -> Vec<EngineStatus> {
 }
 
 /// Download + install any engine by id. Streams progress.
+/// `model_id` picks the GGUF for the chat assistant; it is ignored by every
+/// other engine, and None means the default model.
 pub fn install<F: FnMut(InstallProgress)>(
     app_data: &Path,
     engine_id: &str,
+    model_id: Option<&str>,
     on_progress: F,
 ) -> Result<String, String> {
     let s = spec(engine_id).ok_or_else(|| format!("Unknown engine '{}'", engine_id))?;
-    install_spec(app_data, s, on_progress)
+    install_spec(app_data, s, model_id, on_progress)
 }
 
 /// macOS (#89): make a freshly downloaded engine dir launchable. Downloaded
@@ -622,6 +798,7 @@ fn extract_tar_gz(
 fn install_spec<F: FnMut(InstallProgress)>(
     app_data: &Path,
     s: &EngineSpec,
+    model_id: Option<&str>,
     mut on_progress: F,
 ) -> Result<String, String> {
     let asset = asset_for(s).ok_or_else(|| {
@@ -815,10 +992,10 @@ fn install_spec<F: FnMut(InstallProgress)>(
         install_duckdb_extensions(&target, &mut on_progress);
     }
 
-    // llama.cpp's binary alone is useless without a model. Fetch the
-    // pinned Qwen GGUF from HuggingFace right after the binary lands.
+    // llama.cpp's binary alone is useless without a model. Fetch the chosen
+    // GGUF from HuggingFace right after the binary lands.
     if s.id == "llamacpp" {
-        install_llama_model(app_data, &mut on_progress)?;
+        install_llama_model(app_data, model_id, &mut on_progress)?;
     }
 
     let path = target.to_string_lossy().to_string();
@@ -878,17 +1055,23 @@ fn copy_atomic(reader: &mut impl std::io::Read, target: &Path) -> Result<(), Str
     finalize_download(&tmp, target)
 }
 
-/// Download the Qwen GGUF model file into the llamacpp engine dir.
+/// Download the chosen GGUF model file into the llamacpp engine dir.
 /// Separate phase from the binary download so the UI can show "stage
 /// 2 of 2" instead of one big progress bar for both. HuggingFace
 /// supports range requests; we just stream sequentially for simplicity.
+///
+/// `model_id` is the id the user picked at install time; an unknown or absent
+/// one falls back to the default rather than failing.
 fn install_llama_model<F: FnMut(InstallProgress)>(
     app_data: &Path,
+    model_id: Option<&str>,
     on_progress: &mut F,
 ) -> Result<(), String> {
-    let target = llama_model_path(app_data);
-    // Idempotent: if the model file is already there and non-empty,
-    // skip the download.
+    let model = llama_model(model_id);
+    // Target by exact filename, not by whatever .gguf happens to be present:
+    // picking a different model must download it, not silently keep the old one.
+    let target = engine_dir(app_data, &LLAMACPP).join(model.file);
+    // Idempotent: if this model is already there and non-empty, skip.
     if let Ok(meta) = std::fs::metadata(&target) {
         if meta.len() > 1_000_000 {
             return Ok(());
@@ -896,7 +1079,7 @@ fn install_llama_model<F: FnMut(InstallProgress)>(
     }
     let url = format!(
         "https://huggingface.co/{}/resolve/main/{}",
-        LLAMA_MODEL_REPO, LLAMA_MODEL_FILE
+        model.repo, model.file
     );
     let client = reqwest::blocking::Client::builder()
         .user_agent("duckle")

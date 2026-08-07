@@ -407,6 +407,337 @@ impl Gpu {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Device-resident operator chain
+// ---------------------------------------------------------------------------
+//
+// The single-kernel path above loses to the CPU, and the reason is granularity
+// rather than hardware: it pays a PCIe round trip to do a handful of arithmetic
+// ops per byte. Engines that win on GPU (Sirius and friends) upload once, run
+// the whole plan while the data stays resident, and bring back only the result.
+//
+// This is that shape, in Vulkan rather than CUDA so it runs natively on Windows
+// and Linux across NVIDIA, AMD and Intel. Three operators - filter, project,
+// grouped sum - share device buffers across three dispatches. Only the group
+// totals come back, which for a realistic grouping is kilobytes against
+// hundreds of megabytes uploaded.
+
+/// Filter, project and grouped-sum in one WGSL module.
+///
+/// Three entry points over one shared set of bindings, so a single bind group
+/// serves all three dispatches and the intermediates (`mask`, `proj`) never
+/// leave the device.
+const CHAIN_SHADER: &str = r#"
+struct Params {
+    n_rows: u32,
+    threshold: u32,
+    n_groups: u32,
+    pad: u32,
+};
+
+@group(0) @binding(0) var<storage, read> keys: array<u32>;
+@group(0) @binding(1) var<storage, read> values: array<u32>;
+@group(0) @binding(2) var<storage, read_write> mask: array<u32>;
+@group(0) @binding(3) var<storage, read_write> proj: array<u32>;
+@group(0) @binding(4) var<storage, read_write> sums: array<atomic<u32>>;
+@group(0) @binding(5) var<uniform> params: Params;
+
+@compute @workgroup_size(64)
+fn op_filter(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= params.n_rows) { return; }
+    mask[i] = select(0u, 1u, values[i] > params.threshold);
+}
+
+@compute @workgroup_size(64)
+fn op_project(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= params.n_rows) { return; }
+    proj[i] = mask[i] * (values[i] * 2u + 1u);
+}
+
+@compute @workgroup_size(64)
+fn op_aggregate(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= params.n_rows) { return; }
+    if (mask[i] == 0u) { return; }
+    let g = keys[i] % params.n_groups;
+    atomicAdd(&sums[g], proj[i]);
+}
+"#;
+
+/// Byte-exact CPU reference for [`Gpu::filter_project_aggregate`].
+///
+/// Uses wrapping arithmetic throughout because WGSL's `u32` wraps, so the two
+/// must agree on overflow rather than only on well-behaved inputs.
+pub fn filter_project_aggregate_cpu(
+    keys: &[u32],
+    values: &[u32],
+    threshold: u32,
+    n_groups: usize,
+) -> Vec<u32> {
+    let mut sums = vec![0u32; n_groups];
+    for (k, v) in keys.iter().zip(values.iter()) {
+        if *v > threshold {
+            let p = v.wrapping_mul(2).wrapping_add(1);
+            let g = (*k as usize) % n_groups;
+            sums[g] = sums[g].wrapping_add(p);
+        }
+    }
+    sums
+}
+
+/// Where the time actually went, so a win or a loss can be attributed rather
+/// than guessed at.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChainTiming {
+    pub upload_ms: f64,
+    pub compute_ms: f64,
+    pub download_ms: f64,
+}
+
+impl Gpu {
+    /// Run filter -> project -> grouped sum with the data resident on the
+    /// device for the whole chain.
+    ///
+    /// Only `n_groups` totals are read back, so the return leg is negligible
+    /// no matter how many rows went in. That asymmetry is the entire argument
+    /// for doing this on a GPU.
+    pub fn filter_project_aggregate(
+        &self,
+        keys: &[u32],
+        values: &[u32],
+        threshold: u32,
+        n_groups: usize,
+    ) -> Result<(Vec<u32>, ChainTiming), String> {
+        if keys.len() != values.len() {
+            return Err("keys and values must be the same length".into());
+        }
+        if n_groups == 0 {
+            return Err("n_groups must be non-zero".into());
+        }
+        if keys.is_empty() {
+            return Ok((vec![0; n_groups], ChainTiming::default()));
+        }
+        let cap = self.max_records(4);
+        if keys.len() > cap {
+            return Err(format!(
+                "{} rows exceeds this device's per-dispatch limit of {cap}; chunk the batch",
+                keys.len()
+            ));
+        }
+        pollster::block_on(self.chain_async(keys, values, threshold, n_groups))
+    }
+
+    async fn chain_async(
+        &self,
+        keys: &[u32],
+        values: &[u32],
+        threshold: u32,
+        n_groups: usize,
+    ) -> Result<(Vec<u32>, ChainTiming), String> {
+        use std::time::Instant;
+        use wgpu::util::DeviceExt;
+
+        let n_rows = keys.len();
+        let row_bytes = (n_rows * 4) as u64;
+        let mut timing = ChainTiming::default();
+
+        // ---- upload: the only large host-to-device transfer in the chain ----
+        let t = Instant::now();
+        let keys_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("keys"),
+                contents: bytemuck::cast_slice(keys),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let values_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("values"),
+                contents: bytemuck::cast_slice(values),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        // Intermediates are allocated on the device and never read back.
+        let mask = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mask"),
+            size: row_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let proj = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("proj"),
+            size: row_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        // Zeroed explicitly: atomicAdd accumulates, so a reused or dirty buffer
+        // would silently add to whatever was there.
+        let sums = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("sums"),
+                contents: bytemuck::cast_slice(&vec![0u32; n_groups]),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
+        let params: [u32; 4] = [n_rows as u32, threshold, n_groups as u32, 0];
+        let params_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("params"),
+                contents: bytemuck::cast_slice(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| format!("gpu poll failed: {e:?}"))?;
+        timing.upload_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        // ---- compute: three dispatches, nothing crosses the bus ----
+        let t = Instant::now();
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("chain"),
+                source: wgpu::ShaderSource::Wgsl(CHAIN_SHADER.into()),
+            });
+
+        // One explicit layout so a single bind group drives all three passes.
+        let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("chain"),
+                entries: &[
+                    storage(0, true),
+                    storage(1, true),
+                    storage(2, false),
+                    storage(3, false),
+                    storage(4, false),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("chain"),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+        let make = |entry: &str| {
+            self.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
+                    layout: Some(&pipeline_layout),
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+        };
+        let p_filter = make("op_filter");
+        let p_project = make("op_project");
+        let p_aggregate = make("op_aggregate");
+
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: keys_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: values_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: mask.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: proj.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: sums.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: params_buf.as_entire_binding() },
+            ],
+        });
+
+        let sums_bytes = (n_groups * 4) as u64;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sums-readback"),
+            size: sums_bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let groups = n_rows.div_ceil(WORKGROUP) as u32;
+        {
+            // All three passes in one encoder: consecutive compute passes on the
+            // same queue see each other's writes, so the intermediates stay on
+            // the device and there is no host synchronisation between operators.
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("chain"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, &bind, &[]);
+            for p in [&p_filter, &p_project, &p_aggregate] {
+                pass.set_pipeline(p);
+                pass.dispatch_workgroups(groups, 1, 1);
+            }
+        }
+        encoder.copy_buffer_to_buffer(&sums, 0, &readback, 0, sums_bytes);
+        self.queue.submit(Some(encoder.finish()));
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| format!("gpu poll failed: {e:?}"))?;
+        timing.compute_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        // ---- download: only the group totals ----
+        let t = Instant::now();
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| format!("gpu poll failed: {e:?}"))?;
+        rx.recv()
+            .map_err(|e| format!("gpu readback channel closed: {e}"))?
+            .map_err(|e| format!("gpu readback failed: {e:?}"))?;
+        let view = slice
+            .get_mapped_range()
+            .map_err(|e| format!("gpu buffer map failed: {e:?}"))?;
+        let out = bytemuck::cast_slice::<u8, u32>(&view).to_vec();
+        drop(view);
+        readback.unmap();
+        timing.download_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        Ok((out, timing))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +758,34 @@ mod tests {
         assert_eq!(a[0], a[1]);
         let b = hash_records_cpu(&[1, 2, 3, 5], 4);
         assert_ne!(a[0], b[0]);
+    }
+
+    #[test]
+    fn the_chain_cpu_reference_filters_projects_and_groups() {
+        // value > 10 keeps 20 and 30; proj = v*2+1; group = key % 2.
+        let keys = [0u32, 1, 0, 1];
+        let values = [5u32, 20, 30, 7];
+        let got = filter_project_aggregate_cpu(&keys, &values, 10, 2);
+        assert_eq!(got, vec![61, 41]); // group0: 30*2+1, group1: 20*2+1
+    }
+
+    #[test]
+    #[ignore = "needs a GPU; set DUCKLE_GPU_TEST=1"]
+    fn gpu_chain_matches_the_cpu_reference_exactly() {
+        if std::env::var("DUCKLE_GPU_TEST").is_err() {
+            return;
+        }
+        let gpu = Gpu::detect().expect("no GPU adapter available");
+        for n in [1usize, 64, 65, 10_000, 500_000] {
+            let keys: Vec<u32> = (0..n as u32).map(|i| i.wrapping_mul(2654435761)).collect();
+            let values: Vec<u32> = (0..n as u32).map(|i| i.wrapping_mul(40503) % 1000).collect();
+            let (got, _) = gpu
+                .filter_project_aggregate(&keys, &values, 500, 16)
+                .expect("gpu chain");
+            let want = filter_project_aggregate_cpu(&keys, &values, 500, 16);
+            assert_eq!(got, want, "chain mismatch at {n} rows");
+        }
+        println!("  gpu chain matches cpu across all sizes");
     }
 
     #[test]

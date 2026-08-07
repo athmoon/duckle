@@ -1306,7 +1306,7 @@ mod tests {
     #[ignore = "downloads the DuckDB CLI from GitHub releases (network)"]
     fn installs_duckdb() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = install(tmp.path(), "duckdb", |_| {}).expect("install");
+        let path = install(tmp.path(), "duckdb", None, |_| {}).expect("install");
         assert!(std::path::Path::new(&path).exists());
         assert!(status(tmp.path())
             .iter()
@@ -1317,7 +1317,7 @@ mod tests {
     #[ignore = "downloads the SlothDB raw binary from GitHub releases (network)"]
     fn installs_slothdb() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = install(tmp.path(), "slothdb", |_| {}).expect("install");
+        let path = install(tmp.path(), "slothdb", None, |_| {}).expect("install");
         let p = std::path::Path::new(&path);
         assert!(p.exists(), "binary should exist");
         assert!(

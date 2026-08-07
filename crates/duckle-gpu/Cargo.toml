@@ -1,0 +1,30 @@
+[package]
+name = "duckle-gpu"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Optional GPU compute for Duckle pipeline stages, via wgpu (Vulkan / DX12 / Metal)."
+
+[dependencies]
+# wgpu targets Vulkan and DX12 on Windows, Vulkan on Linux, Metal on macOS, and
+# works on NVIDIA, AMD and Intel from one binary. That breadth is the whole
+# reason for choosing it over CUDA, which would be NVIDIA-only and would drag a
+# toolkit install along with it.
+#
+# DX12 is deliberately NOT enabled. Vulkan already covers Windows and Linux on
+# NVIDIA, AMD and Intel, so DX12 would add a second Windows-only path for no
+# extra reach - and wgpu-hal 30's DX12 backend currently fails to build against
+# the windows-core version gpu-allocator pins. Compute has no reason to prefer
+# it, so one backend per platform keeps this honest and buildable.
+wgpu = { version = "30", default-features = false, features = [
+    "vulkan",
+    "metal",
+    "wgsl",
+] }
+# wgpu's API is async, but pipeline execution is a blocking worker thread. A
+# tiny executor is the honest fit: pulling in tokio here would put an async
+# runtime inside the engine's hot path for no benefit.
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]

@@ -11,6 +11,7 @@ members = [
     "crates/duckle-runner",
     "crates/duckle-mcp",
     "crates/duckle-lance",
+    "crates/duckle-gpu",
     "crates/slothdb-engine",
     "crates/execution-core",
     "crates/plugin-sdk",

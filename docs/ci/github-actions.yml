@@ -31,7 +31,7 @@ jobs:
       # that requires libwebkit2gtk and the GTK stack at load time and cannot
       # start on a runner with no GUI libraries installed.
       #
-      # Swap `latest` for a tag (e.g. v0.5.10) if you want reproducible CI.
+      # Swap `latest` for a tag (e.g. v0.6.0) if you want reproducible CI.
       - name: Fetch duckle-runner
         run: |
           curl -fsSL -o duckle-runner \

@@ -46,7 +46,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
-- [What's new in v0.5.10](#whats-new-in-v0510)
+- [What's new in v0.6.0](#whats-new-in-v060)
 - [What's new in v0.5.9](#whats-new-in-v059)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
@@ -120,12 +120,29 @@ In short: a free, open-source, single-engine alternative to hosted, per-row-pric
 Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 1. **An AI assistant that ships in the box.** Describe the pipeline you want in English; Duckie writes the JSON and drops it onto the canvas. The model runs locally - no API key, no telemetry, no cloud round-trip.
-2. **364 components ready at install time.** Files, lakehouses, SQL databases, warehouses, NoSQL, vector DBs, streaming brokers, SaaS REST/GraphQL APIs, even FTP and IMAP - working today, not coming-soon.
+2. **366 components ready at install time.** Files, lakehouses, SQL databases, warehouses, NoSQL, vector DBs, streaming brokers, SaaS REST/GraphQL APIs, even FTP and IMAP - working today, not coming-soon.
 3. **A self-contained binary you can audit.** ~65 MB download. Engines install on first launch. Workspaces are plain files in a folder you choose. Diff them, branch them, ship them.
 
 <div align="center">
 <img src="docs/assets/flow.svg" alt="Sources flow through 50+ transforms into files, databases, object storage, vector stores, and AI" width="100%"/>
 </div>
+
+---
+
+## What's new in v0.6.0
+
+A multimodal AI data store, an importer for legacy visual ETL jobs, a chat
+model you choose, and two geometry transforms that finally have the second
+input they always needed.
+
+- **Pixeltable, read and write (#223).** `src.pixeltable` reads a table, optionally filtered by a Pixeltable expression, a column subset and a limit; `snk.pixeltable` inserts into an existing table or creates one from the incoming rows. Versioned reads work by passing `myapp.media:3`. The exchange runs over Parquet on both legs - Pixeltable exports, Duckle ingests with `read_parquet`, and on the way back Duckle writes Parquet that `Table.insert` takes directly - so no rows are serialised one at a time. Pixeltable is a Python library, so the desktop app provisions a private Python for it with uv on first use; nothing is installed into your own environment.
+- **Clip and Erase can now be wired up (#217, #218).** Both shipped in v0.5.9 as two-layer overlays, and the engine required the second layer, but the palette declared only one input - so the node could be placed and configured and never run. Both now offer a second input labelled **clip layer** / **erase layer**, like Spatial Join. Behaviour is unchanged: the second layer is still dissolved with `ST_Union_Agg` before the operation, attributes of the input layer are preserved, and features left with nothing are dropped. Thanks to @OmarMustaafa for reporting it twice with screenshots. A test now pins this contract for every component whose builder needs a second input, checked by removing a port and confirming it fails.
+- **Choose the assistant's model, from 14 (#223 adjacent).** The setup step installed one hardcoded 1.5B model, which is right on a laptop and wrong on a workstation with a GPU. The catalogue now spans 469 MB to 9.9 GB - Qwen2.5 Coder 0.5B through 14B, Qwen3, Llama 3.2, Phi-3.5 Mini, Mistral 7B, Gemma 2 9B and DeepSeek Coder V2 Lite - each with its real download size and an honest note on what it needs. Every entry was checked to resolve before being offered, so the picker cannot hand you a file that 404s halfway through a multi-gigabyte download.
+- **Import jobs from legacy visual ETL tools.** Reads the XML those jobs are stored as and produces a Duckle pipeline. Measured on a real 44-job corpus: all 44 parse and 211 of 216 nodes map, the only refusal being a site-specific custom component. Encrypted passwords become `${ENV:...}` placeholders rather than guesses, connections that live outside the job file are reported rather than silently half-imported, and anything with no equivalent is imported as a labelled placeholder so the shape of the job survives instead of quietly losing a step.
+- **CI for your pipeline repo.** `duckle-runner` is now published as a release asset, and there are ready workflows for GitHub Actions and GitLab CI under `docs/ci/`. They gate every push on `duckle-runner validate`, which compiles pipelines to SQL without opening a source, writing a sink, or needing credentials or a network. This is the check that catches a column renamed in one commit and still referenced by another - they merge cleanly, and nothing else notices.
+- **Node ids no longer collide.** Adding a folder or duplicating an item minted an id from the clock alone, so two of the same kind created in the same millisecond could share one. Both now use the same timestamp-plus-random scheme as everything else, which is what makes pipeline JSON safe to merge across branches.
+
+Full notes: see the [v0.6.0 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.6.0).
 
 ---
 
@@ -147,32 +164,6 @@ python-oracledb with pyarrow on the same table.
 - **Concurrent runs no longer fight over spill files.** DuckDB's default spill location is already per-run, but setting a shared spill folder made every run share one - which reads as a flaky run rather than a bug: across three trials of four concurrent spilling queries, a shared folder lost 3 of 12 runs to a segfault or a delete failure, private folders lost 0 of 12. Each run now spills into its own subfolder.
 
 Full notes: see the [v0.5.10 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.10).
-
----
-
-## What's new in v0.5.9
-
-DHIS2 in both directions, two GIS overlay transforms, and correctness fixes for the Mapper, spatial joins, DuckLake catalogs and the Duckie assistant.
-
-- **DHIS2 connector, read and write.** `src.dhis2` reads the DHIS2 Web API: aggregate `dataValueSets`, paged metadata lists, tracker exports, and `analytics/dataValueSet.json`. `snk.dhis2` imports back with chunked requests, `importStrategy` (CREATE_AND_UPDATE is DHIS2's upsert) and `dryRun`. The sink parses the import summary rather than trusting the HTTP status, because DHIS2 answers 200 even when it rejects every record; conflicts, error reports and a non-zero `ignored` count fail the run instead of passing as green. Raw `/api/analytics` and async tracker jobs are not supported yet, and the palette says so.
-- **Clip and Erase geometry transforms (#217, #218).** Two-layer overlays that keep every attribute of the input layer and replace only its geometry. The second layer is dissolved with `ST_Union_Agg` first, so a feature spanning several clip polygons yields one row rather than one per polygon.
-- **Spatial Join fails on mismatched CRS (#219).** Joining layers in different coordinate systems made every predicate false, so the run succeeded and returned zero rows with nothing to explain why. It now stops and names both systems. **Covers and Covered by** are also available as predicates (#220).
-- **Mapper handles column names with spaces (#214).** With a lookup present, a spaced column produced invalid SQL (`""s1"."col" one"`) or an unqualified reference. Both forms now resolve, and the mapper UI emits properly delimited references.
-- **HTTP Basic auth actually works.** Jira, Zendesk, Twilio, CouchDB, OData and SAP all advertised Basic auth that silently sent no header at all, producing a 401 with no explanation.
-- **DuckLake catalogs on Postgres, SQLite or MySQL.** A `dataPath` option now emits `DATA_PATH`, which DuckLake requires when the catalog is a DSN rather than a local file. Without it a Postgres-catalogued lake could not be attached.
-- **Duckie trusts your OS certificate store (#183).** A custom internal AI endpoint behind a private CA failed with `UnknownIssuer` while the same endpoint worked from `xf.ai.llm`. The chat path now uses the same merged trust store as the engine.
-- **Oracle extracts are 3.6x faster (#221).** `src.oracle` used to format every value to JSON text, write it to disk, and have DuckDB parse it back. It now reads cells straight out of the driver's array-fetch buffer into Arrow, sizes its batches and Parquet row groups by cell count so wide tables do not blow up the working set, and hands DuckDB a lazy view instead of copying the data into a table. On 1M rows x 40 columns against a real Oracle 23 instance that measured **21.1s -> 5.9s**, with values verified against the server rather than against a previous run. For reference, python-oracledb's `fetch_df_batches` writing the same Parquet on the same machine takes 6.1-6.3s.
-
-  On a wider table - 232 columns x 1.47M rows, matching the shape reported in #221 - the extract itself runs at parity with that same python-oracledb path (57s against 53.5s), and the whole pipeline including writing Parquet takes 74s against 59.5s, the difference being that Duckle lands the rows in a queryable engine on the way out.
-
-  Types also improve where the fast path applies: a `NUMBER(15,2)` lands as `DECIMAL(15,2)` instead of `DOUBLE`, so values beyond ~15 significant digits stop silently losing their tail. A column declared as a bare `NUMBER`, with no precision, has no width to map from - its real precision is a property of the values. Those columns now travel as text and are typed straight after the write, by a single aggregate over the Parquet just written, which is the same answer the old path reached without re-parsing every row. `NUMBER` with a negative scale and `FLOAT(n)` take the same route. Only LOBs and zoned timestamps still fall back.
-
-- **A Parquet sink can be written by its source, off by default (#221).** `snk.parquet` gains **Write directly from the source**. With it on, and an Oracle source as its only producer, the source writes that file itself rather than encoding a temporary Parquet that DuckDB decodes and encodes again: 68.6s -> 55.5s on the 232-column table, which also puts it ahead of python-oracledb plus pyarrow doing the same job on the same machine. It is a toggle because of the cost - the source's Parquet encoder compresses this shape much worse than DuckDB's for the same setting (945 MB against 314 MB with ZSTD), and raising the dictionary budget did not close it. Nothing is skipped until the source reports a completed write, so a query the fast path cannot take still goes through the sink exactly as before.
-
-- **Oracle parallel read, off by default (#221).** `src.oracle` can split an extract across several sessions with `parallelColumn` + `parallelDegree`. It is used only when the whole read can be pinned to one SCN through `DBMS_FLASHBACK`, so every session sees the same snapshot and a table being written to during the extract cannot be torn across bands; if the account cannot pin an SCN the read falls back to a single session and says so in the run log. Most Oracle accounts do not have `EXECUTE` on `DBMS_FLASHBACK` and will need a grant first. Measured honestly: on a machine where the client and the database share the hardware there is **no speedup** (1 session 57.5s, 4 sessions 60.2s, 8 sessions 116.4s on the 232-column table, row counts exact at every degree) because one session already saturates the box. It is built for the usual production shape, a remote server with spare capacity, which is not reproducible on a single-box test rig - so no speedup is claimed for it.
-- **A workspace that cannot be read is no longer overwritten (#213).** A filesystem error looked identical to an empty folder, so the app kept the bundled starter project and auto-save then wrote it over the real workspace metadata. It now stops and names the folder.
-
-Full notes: see the [v0.5.9 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.9).
 
 ---
 
@@ -205,7 +196,7 @@ The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Code
 | **Single-file binary, no bundled DB** | ~65 MB app (it embeds the headless runner + MCP server). DuckDB downloads on first launch with a guided step. AI engine is opt-in. |
 | **Native speed** | Execution runs through DuckDB: vectorized, columnar, local. A clean-and-export job that crawls in a spreadsheet finishes in milliseconds. |
 | **Git-friendly by design** | Pipelines, connections, contexts, and routines persist as plain files in a folder you pick. Diff them, branch them, review them. |
-| **364 components ready today** | Files, databases, warehouses, lakehouses, object stores, SaaS APIs, NoSQL, streaming brokers, vector DBs, FTP, IMAP, SMTP. Each is covered by tests. |
+| **366 components ready today** | Files, databases, warehouses, lakehouses, object stores, SaaS APIs, NoSQL, streaming brokers, vector DBs, FTP, IMAP, SMTP. Each is covered by tests. |
 | **Honest about scope** | Single-machine and embedded by design. Built to make local and small-team data work fast, not to replace a distributed warehouse. |
 | **60 UI languages** | Topbar, palette, chat assistant, properties panel, and common dialogs ship localized. English, Spanish, Chinese (Simplified + Traditional), Hindi, Arabic, Portuguese (Brazil), Bengali, Russian, Japanese, Punjabi, German, Korean, French, Vietnamese, Telugu, Marathi, Turkish, Tamil, Urdu, Persian, Polish, Italian, Ukrainian, Indonesian, Thai, Dutch, Hebrew, Swedish, Greek, Czech, Hungarian, Romanian, Filipino, Malay, Norwegian, Danish, Finnish, Catalan, Bulgarian, Slovak, Croatian, Serbian, Slovenian, Lithuanian, Latvian, Estonian, Khmer, Burmese, Sinhala, Nepali, Swahili, Afrikaans, Welsh, Irish, Icelandic, Albanian, Azerbaijani, Mongolian, Kazakh. RTL (Arabic, Hebrew, Persian, Urdu) supported. Switch languages from the topbar globe. |
 | **Open source** | Dual-licensed MIT OR Apache-2.0. Yours to use, fork, and extend. |
@@ -259,9 +250,9 @@ Duckle is in **public beta**. The visual designer, the DuckDB execution engine, 
 
 **Scope, stated plainly:** Duckle is a single-machine, embedded studio. If you outgrow one box, point Duckle's output at the system that scales (a warehouse, an object store, a lakehouse). It will not pretend to be a cluster.
 
-The component palette ships **382 nodes** so the roadmap is visible in the product itself:
+The component palette ships **384 nodes** so the roadmap is visible in the product itself:
 
-- **364 available** runs on the DuckDB engine today
+- **366 available** runs on the DuckDB engine today
 - **3 preview** is configurable in the designer (drag, wire, set properties); execution is being wired engine-by-engine
 - **15 planned** is reserved in the palette but not yet executable - see [`docs/roadmap.md`](docs/roadmap.md)
 
@@ -511,7 +502,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.10):
+Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.6.0):
 
 | OS | Asset | How to run |
 |---|---|---|

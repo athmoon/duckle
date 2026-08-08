@@ -5663,6 +5663,37 @@ function synthVectorSink(comp: ComponentDef): ComponentManifest {
             },
         ], 'upstream');
     }
+    // #223. Rows reach Pixeltable as Parquet, which Table.insert accepts
+    // directly, so there is nothing to configure beyond the table and mode.
+    if (comp.id === 'snk.pixeltable') {
+        return base(comp, [
+            {
+                label: 'Pixeltable',
+                fields: [
+                    {
+                        key: 'table',
+                        label: 'Table',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'myapp.captions',
+                        description: 'Pixeltable table path, e.g. myapp.captions.',
+                    },
+                    {
+                        key: 'mode',
+                        label: 'Write mode',
+                        kind: 'select',
+                        defaultValue: 'insert',
+                        options: [
+                            { label: 'Insert into existing table', value: 'insert' },
+                            { label: 'Create table from these rows', value: 'create' },
+                        ],
+                        description:
+                            'Insert requires the table to exist already. Create infers its schema from the incoming rows.',
+                    },
+                ],
+            },
+        ]);
+    }
     if (comp.id === 'snk.lancedb') {
         return base(comp, [
             {
@@ -5849,6 +5880,47 @@ function synthVectorSource(comp: ComponentDef): ComponentManifest {
                 { key: 'tableName', label: 'Table', kind: 'text', required: true, placeholder: 'embeddings' },
             ]},
         ]);
+    }
+    // #223. Pixeltable exchanges through Parquet, so the schema is only known
+    // once the table is exported - hence 'upstream' rather than an autodetect
+    // placeholder we could not honestly fill in.
+    if (comp.id === 'src.pixeltable') {
+        return base(
+            comp,
+            [
+                {
+                    label: 'Pixeltable',
+                    fields: [
+                        {
+                            key: 'table',
+                            label: 'Table',
+                            kind: 'text',
+                            required: true,
+                            placeholder: 'myapp.media',
+                            description:
+                                'Pixeltable table path. Append :N to read a past version, e.g. myapp.media:3.',
+                        },
+                        {
+                            key: 'columns',
+                            label: 'Columns (optional)',
+                            kind: 'text',
+                            placeholder: 'id, caption, score',
+                            description: 'Comma-separated. Empty reads every column.',
+                        },
+                        {
+                            key: 'filter',
+                            label: 'Where (optional)',
+                            kind: 'text',
+                            placeholder: 't.score > 0.8',
+                            description:
+                                'A Pixeltable expression, evaluated by Pixeltable before export. The table is bound as t.',
+                        },
+                        { key: 'limit', label: 'Limit (optional)', kind: 'integer' },
+                    ],
+                },
+            ],
+            'upstream',
+        );
     }
     if (comp.id === 'src.lancedb') {
         return base(comp, [

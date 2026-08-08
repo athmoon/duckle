@@ -22,6 +22,7 @@ use tracing_subscriber::EnvFilter;
 mod app_settings;
 mod ci_status;
 mod dbt_engine;
+mod pixeltable_engine;
 mod engine_manager;
 mod llama_chat;
 mod samples;
@@ -128,6 +129,7 @@ pub fn run() {
                 // (the dbt node's Install action -> dbt_install), and the engine
                 // errors clearly if xf.dbt runs before dbt is present.
                 dbt_engine::publish_if_present(&dir);
+                pixeltable_engine::publish_if_present(&dir);
             }
             // Stage the bundled LanceDB sidecar (if this build carries one) and
             // point the engine at it, so src.lancedb / snk.lancedb work without a
@@ -194,6 +196,8 @@ pub fn run() {
             llama_default_model,
             dbt_status,
             dbt_install,
+            pixeltable_status,
+            pixeltable_install,
             seed_sample_workspace,
             chat_send,
             chat_extract_pipeline,
@@ -726,6 +730,28 @@ fn dbt_status(app: tauri::AppHandle) -> Result<bool, String> {
 async fn dbt_install(app: tauri::AppHandle) -> Result<String, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tokio::task::spawn_blocking(move || dbt_engine::ensure(&dir))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Whether the Pixeltable Python is already provisioned (#223), so the UI can
+/// say "will download ~1 GB on first run" instead of appearing to hang.
+#[tauri::command]
+async fn pixeltable_status(app: tauri::AppHandle) -> Result<bool, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(pixeltable_engine::is_installed(&dir))
+}
+
+/// Provision the Pixeltable Python on demand and return its path (#223).
+///
+/// Not done at startup: it is a large dependency tree for a connector most
+/// workspaces never touch, so it is fetched when a Pixeltable node first needs
+/// it. Idempotent - returns instantly once installed.
+#[tauri::command]
+async fn pixeltable_install(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || pixeltable_engine::ensure(&dir))
         .await
         .map_err(|e| e.to_string())?
         .map(|p| p.to_string_lossy().into_owned())

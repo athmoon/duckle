@@ -90,7 +90,7 @@ fn uv_asset() -> Option<&'static str> {
 
 /// Resolve uv: prefer a system `uv` on PATH; otherwise download a pinned-latest
 /// uv release into `<app_data>/dbt/uv/` and return that path.
-fn ensure_uv(app_data: &Path) -> Result<PathBuf, String> {
+pub(crate) fn ensure_uv(app_data: &Path) -> Result<PathBuf, String> {
     // 1. System uv on PATH.
     let on_path = if cfg!(windows) { "uv.exe" } else { "uv" };
     let mut probe = std::process::Command::new(on_path);

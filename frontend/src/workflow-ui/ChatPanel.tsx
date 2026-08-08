@@ -6,10 +6,13 @@ import {
     chatSend,
     engineInstall,
     engineStatus,
+    llamaDefaultModel,
+    llamaModels,
     settingsGetAi,
     type ChatMessage,
     type EngineStatus,
     type InstallProgress,
+    type LlamaModel,
 } from '../tauri-bridge';
 import { getWorkspacePath } from '../workspace';
 
@@ -78,17 +81,45 @@ export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
         };
     }, []);
 
+    // The catalogue is only needed on the install screen, so it is fetched
+    // when that screen appears rather than on every panel open. An empty
+    // list is not fatal: the install falls back to the default model.
+    const [models, setModels] = useState<LlamaModel[]>([]);
+    const [modelId, setModelId] = useState<string>('');
+
+    useEffect(() => {
+        if (setup.phase !== 'not-installed' && setup.phase !== 'install-failed') return;
+        if (models.length) return;
+        let cancelled = false;
+        void (async () => {
+            // The backend owns which model is the sensible default; the list
+            // is ordered smallest-first, so falling back to [0] would quietly
+            // pick the weakest one instead.
+            const [list, fallback] = await Promise.all([
+                llamaModels(),
+                llamaDefaultModel().catch(() => ''),
+            ]);
+            if (cancelled || !list.length) return;
+            setModels(list);
+            const preferred = list.some(m => m.id === fallback) ? fallback : list[0].id;
+            setModelId(prev => prev || preferred);
+        })();
+        return () => { cancelled = true; };
+    }, [setup.phase, models.length]);
+
+    const chosen = models.find(m => m.id === modelId) ?? null;
+
     const installEngine = useCallback(async () => {
         setSetup({ phase: 'installing', progress: null });
         try {
             await engineInstall('llamacpp', p => {
                 setSetup({ phase: 'installing', progress: p });
-            });
+            }, modelId || undefined);
             setSetup({ phase: 'ready', external: false });
         } catch (err) {
             setSetup({ phase: 'install-failed', error: String(err) });
         }
-    }, []);
+    }, [modelId]);
 
     const send = useCallback(async (text?: string) => {
         const body = (text ?? draft).trim();
@@ -196,17 +227,45 @@ export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
             ) : setup.phase === 'not-installed' ? (
                 <SetupCard
                     title={t('chat.installTitle')}
-                    body={t('chat.installBody')}
-                    cta={t('chat.installCta')}
+                    body={t('chat.modelBody', {
+                        defaultValue:
+                            'The assistant runs entirely on your machine - no API keys, no cloud calls. Pick the model that suits your hardware.',
+                    })}
+                    cta={
+                        chosen
+                            ? t('chat.installCtaSized', {
+                                defaultValue: 'Install ({{size}})',
+                                size: formatSize(chosen.size_mb),
+                            })
+                            : t('chat.installCta')
+                    }
                     onCta={installEngine}
-                />
+                >
+                    {models.length > 1 ? (
+                        <ModelPicker
+                            models={models}
+                            value={modelId}
+                            onChange={setModelId}
+                            label={t('chat.modelLabel', { defaultValue: 'Chat model' })}
+                        />
+                    ) : null}
+                </SetupCard>
             ) : setup.phase === 'install-failed' ? (
                 <SetupCard
                     title={t('chat.installFailedTitle')}
                     body={setup.error}
                     cta={t('chat.retry')}
                     onCta={installEngine}
-                />
+                >
+                    {models.length > 1 ? (
+                        <ModelPicker
+                            models={models}
+                            value={modelId}
+                            onChange={setModelId}
+                            label={t('chat.modelLabel', { defaultValue: 'Chat model' })}
+                        />
+                    ) : null}
+                </SetupCard>
             ) : setup.phase === 'installing' ? (
                 <div className="chat-panel-state chat-panel-state-install">
                     <Loader2 size={18} className="spin" />
@@ -295,16 +354,59 @@ export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
     );
 }
 
+/** Sizes come from the Hugging Face file listing, so they are the real
+ *  download, not an estimate. */
+function formatSize(mb: number): string {
+    return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
+}
+
+function ModelPicker({
+    models,
+    value,
+    onChange,
+    label,
+}: {
+    models: LlamaModel[];
+    value: string;
+    onChange: (id: string) => void;
+    label: string;
+}) {
+    const chosen = models.find(m => m.id === value);
+    return (
+        <div className="chat-panel-model">
+            <label className="chat-panel-model-label" htmlFor="duckie-model">
+                {label}
+            </label>
+            <select
+                id="duckie-model"
+                className="chat-panel-model-select"
+                value={value}
+                onChange={e => onChange(e.target.value)}
+            >
+                {models.map(m => (
+                    <option key={m.id} value={m.id}>
+                        {m.label} - {formatSize(m.size_mb)}
+                    </option>
+                ))}
+            </select>
+            {chosen ? <div className="chat-panel-model-note">{chosen.note}</div> : null}
+        </div>
+    );
+}
+
 function SetupCard({
     title,
     body,
     cta,
     onCta,
+    children,
 }: {
     title: string;
     body: string;
     cta: string;
     onCta: () => void;
+    /** Optional controls between the copy and the button - the model picker. */
+    children?: React.ReactNode;
 }) {
     return (
         <div className="chat-panel-setup">
@@ -313,6 +415,7 @@ function SetupCard({
             </div>
             <div className="chat-panel-setup-title">{title}</div>
             <div className="chat-panel-setup-body">{body}</div>
+            {children}
             <button type="button" className="chat-panel-setup-cta" onClick={onCta}>
                 <Download size={14} /> {cta}
             </button>

@@ -364,8 +364,35 @@ fn format_inspect_error(err: InspectError) -> String {
 /// `on_event` is a Tauri Channel - every stage start / stage finish /
 /// cancellation is pushed through it so the frontend can light up
 /// status badges in real time.
+/// #223: the Pixeltable connector needs a private Python, and `ensure` was
+/// only reachable from a Tauri command that nothing ever called - so a user
+/// who had never installed it never could, and the node fell back to bare
+/// `python3`. Provision it here, the first time a run actually contains one
+/// of its nodes, which is the contract the feature was documented with.
+///
+/// Failure is deliberately not fatal: the engine still raises its own, more
+/// specific error when the interpreter turns out to lack pixeltable.
+fn ensure_pixeltable_if_used(app: &tauri::AppHandle, pipeline: &PipelineDoc) {
+    let used = pipeline.nodes.iter().any(|n| {
+        n.data
+            .component_id
+            .as_deref()
+            .is_some_and(|c| c == "src.pixeltable" || c == "snk.pixeltable")
+    });
+    if !used {
+        return;
+    }
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    if let Err(e) = pixeltable_engine::ensure(&dir) {
+        eprintln!("pixeltable provisioning failed: {e}");
+    }
+}
+
 #[tauri::command]
 async fn run_pipeline(
+    app: tauri::AppHandle,
     pipeline: PipelineDoc,
     on_event: Channel<PipelineEvent>,
     pipeline_id: Option<String>,
@@ -382,6 +409,7 @@ async fn run_pipeline(
     let mut pipeline = pipeline;
     resolve_saved_connections(&mut pipeline, &workspace_path)?;
     duckle_duckdb_engine::context::apply_env(&mut pipeline);
+    ensure_pixeltable_if_used(&app, &pipeline);
     let name = pipeline_name.clone();
     let joined = tokio::task::spawn_blocking(move || {
         engine.execute_pipeline_with_events(&pipeline, None, name.as_deref(), |evt| {
@@ -435,6 +463,7 @@ fn record_history(
 /// returns a preview.
 #[tauri::command]
 async fn run_pipeline_partial(
+    app: tauri::AppHandle,
     pipeline: PipelineDoc,
     target_node_id: String,
     on_event: Channel<PipelineEvent>,
@@ -449,6 +478,7 @@ async fn run_pipeline_partial(
     let mut pipeline = pipeline;
     resolve_saved_connections(&mut pipeline, &workspace_path)?;
     duckle_duckdb_engine::context::apply_env(&mut pipeline);
+    ensure_pixeltable_if_used(&app, &pipeline);
     let target = target_node_id;
     let name = pipeline_name.clone();
     let joined = tokio::task::spawn_blocking(move || {

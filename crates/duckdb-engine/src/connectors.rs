@@ -14079,7 +14079,13 @@ impl DuckdbEngine {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let parquet_path = db.with_file_name(format!("{}.pxt-{}.parquet", db_name, safe));
+        // A DIRECTORY, not a file: export_parquet partitions its output and
+        // writes part-00000.parquet and friends inside the path it is given.
+        // Verified against pixeltable 0.7.1 - passing a file path silently
+        // produces a directory of that name, and reading it as a single file
+        // finds nothing.
+        let parquet_dir = db.with_file_name(format!("{}.pxt-{}", db_name, safe));
+        let _ = std::fs::remove_dir_all(&parquet_dir);
 
         // The query is built up the way Pixeltable's own docs do: get_table,
         // then optional select / where / limit, then export_parquet. `filter`
@@ -14101,22 +14107,29 @@ impl DuckdbEngine {
         if let Some(l) = spec.limit {
             q = format!("{}.limit({})", q, l);
         }
+        // export_parquet is typed `parquet_path: Path`, and passing a str fails
+        // inside pixeltable with "'str' object has no attribute 'exists'", so
+        // wrap it rather than relying on duck typing.
         let script = format!(
-            "import pixeltable as pxt\n\
+            "import pathlib\n\
+             import pixeltable as pxt\n\
              t = pxt.get_table({table})\n\
-             pxt.io.export_parquet({q}, {out})\n",
+             pxt.io.export_parquet({q}, pathlib.Path({out}))\n",
             table = py_str(&spec.table),
             q = q,
-            out = py_str(&parquet_path.to_string_lossy()),
+            out = py_str(&parquet_dir.to_string_lossy()),
         );
         self.run_pixeltable_python(&script, "read")?;
-        if !parquet_path.exists() {
+        if !parquet_dir.is_dir() {
             return Err(EngineError::Query(format!(
-                "pixeltable: {} exported no file. Check the table path and that pixeltable is installed",
+                "pixeltable: {} exported nothing. Check the table path and that pixeltable is installed",
                 spec.table
             )));
         }
-        let ppath = parquet_path
+        // Glob the part files: the export is partitioned, so a single-file read
+        // would silently see none of it.
+        let ppath = parquet_dir
+            .join("*.parquet")
             .to_string_lossy()
             .replace('\\', "/")
             .replace('\'', "''");
@@ -14126,9 +14139,9 @@ impl DuckdbEngine {
             ppath
         );
         let create_result = self.run(Some(db), &create, false);
-        // Remove the temp Parquet whether or not the load succeeded, so a
-        // failed CREATE does not leak it beside the run database.
-        let _ = std::fs::remove_file(&parquet_path);
+        // Remove the temp export whether or not the load succeeded, so a failed
+        // CREATE does not leak it beside the run database.
+        let _ = std::fs::remove_dir_all(&parquet_dir);
         create_result?;
         Ok(format!(
             "pixeltable: materialized {} into {}",

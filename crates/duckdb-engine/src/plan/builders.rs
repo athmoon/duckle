@@ -7478,14 +7478,21 @@ pub(crate) fn build_geo_clip(inputs: &NodeInputs, props: &JsonValue) -> Result<S
     let clip_col = string_prop(props, "clipGeomColumn")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| in_col.clone());
+    // #218 follow-up: the input geometry is deliberately NOT cast to GEOMETRY.
+    // DuckDB keeps a geometry's CRS in its logical type - GEOMETRY('EPSG:27700')
+    // - and CAST(x AS GEOMETRY) targets the unparameterised type, discarding it,
+    // which is why the Shapefile sink had no CRS to write and emitted no .prj.
+    // ST_Intersection propagates the CRS from its arguments. The clip layer keeps
+    // its cast: its CRS never reaches the output, and the guard below already
+    // requires the two layers to agree.
     let (guard_cte, guard_pred) = crs_match_guard(input, &in_col, clip, &clip_col, "Clip");
     Ok(format!(
         "WITH {guard}, \
          __clip AS (SELECT ST_Union_Agg(CAST({cc} AS GEOMETRY)) AS __g FROM {cv}) \
-         SELECT m.* REPLACE (ST_Intersection(CAST(m.{ic} AS GEOMETRY), __c.__g) AS {ic}) \
+         SELECT m.* REPLACE (ST_Intersection(m.{ic}, __c.__g) AS {ic}) \
          FROM {iv} m CROSS JOIN __clip __c \
          WHERE {pred} AND __c.__g IS NOT NULL \
-           AND ST_Intersects(CAST(m.{ic} AS GEOMETRY), __c.__g)",
+           AND ST_Intersects(m.{ic}, __c.__g)",
         guard = guard_cte,
         pred = guard_pred,
         cc = quote_ident(&clip_col),
@@ -7515,17 +7522,21 @@ pub(crate) fn build_geo_erase(inputs: &NodeInputs, props: &JsonValue) -> Result<
     let erase_col = string_prop(props, "eraseGeomColumn")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| in_col.clone());
+    // #218 follow-up: input geometry left uncast so its CRS survives into the
+    // output type - see the note in build_geo_clip. BOTH CASE branches must stay
+    // uncast; if one is cast the branches disagree and the result decays to bare
+    // GEOMETRY, losing the CRS again.
     let (guard_cte, guard_pred) = crs_match_guard(input, &in_col, erase, &erase_col, "Erase");
     Ok(format!(
         "SELECT * FROM (\
            WITH {guard}, \
            __erase AS (SELECT ST_Union_Agg(CAST({ec} AS GEOMETRY)) AS __g FROM {ev}) \
            SELECT m.* REPLACE (\
-             CASE WHEN __e.__g IS NULL THEN CAST(m.{ic} AS GEOMETRY) \
-                  ELSE ST_Difference(CAST(m.{ic} AS GEOMETRY), __e.__g) END AS {ic}) \
+             CASE WHEN __e.__g IS NULL THEN m.{ic} \
+                  ELSE ST_Difference(m.{ic}, __e.__g) END AS {ic}) \
            FROM {iv} m CROSS JOIN __erase __e \
            WHERE {pred}\
-         ) WHERE NOT ST_IsEmpty(CAST({ic} AS GEOMETRY))",
+         ) WHERE NOT ST_IsEmpty({ic})",
         guard = guard_cte,
         pred = guard_pred,
         ec = quote_ident(&erase_col),
@@ -7965,6 +7976,22 @@ pub(crate) fn build_excel_source(
                 ),
                 // String is already VARCHAR from all_varchar - select as-is.
                 _ if matches!(c.data_type, DataType::String) => id.clone(),
+                // #225: with no explicit format a DATE/TIMESTAMP column may hold
+                // either a text date or an Excel serial number, and a declared
+                // schema forces all_varchar, so a serial arrives as the string
+                // "46037" and a plain CAST fails with "invalid date field
+                // format". Try the text date first, so real date strings are
+                // unaffected, then fall back to the serial conversion. #104's
+                // format:"excel" is still honoured above and is now only needed
+                // to force the serial reading on an ambiguous column.
+                (None, DataType::Date) => format!(
+                    "COALESCE(try_cast({id} AS DATE), (TIMESTAMP '1899-12-30' +                      try_cast({id} AS DOUBLE) * INTERVAL 1 DAY)::DATE) AS {id}",
+                    id = id
+                ),
+                (None, DataType::Timestamp) => format!(
+                    "COALESCE(try_cast({id} AS TIMESTAMP), TIMESTAMP '1899-12-30' +                      try_cast({id} AS DOUBLE) * INTERVAL 1 DAY) AS {id}",
+                    id = id
+                ),
                 _ => format!("CAST({id} AS {ty}) AS {id}", id = id, ty = data_type_to_duckdb_sql(&c.data_type)),
             }
         })

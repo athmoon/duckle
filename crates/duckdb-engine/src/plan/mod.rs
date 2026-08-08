@@ -157,6 +157,9 @@ pub enum RuntimeSpec {
     MongoSource(MongoSourceSpec),
     LanceSink(LanceSinkSpec),
     LanceSource(LanceSourceSpec),
+    /// #223: Pixeltable read/write, exchanged as Parquet through Python.
+    PixeltableSink(PixeltableSinkSpec),
+    PixeltableSource(PixeltableSourceSpec),
     VortexSink(VortexSinkSpec),
     VortexSource(VortexSourceSpec),
     ClickhouseSink(ClickHouseSinkSpec),
@@ -1077,6 +1080,8 @@ fn build_stage(
     let mut mongo_source: Option<MongoSourceSpec> = None;
     let mut lance_sink: Option<LanceSinkSpec> = None;
     let mut lance_source: Option<LanceSourceSpec> = None;
+    let mut pixeltable_sink: Option<PixeltableSinkSpec> = None;
+    let mut pixeltable_source: Option<PixeltableSourceSpec> = None;
     let mut vortex_sink: Option<VortexSinkSpec> = None;
     let mut vortex_source: Option<VortexSourceSpec> = None;
     let mut clickhouse_sink: Option<ClickHouseSinkSpec> = None;
@@ -1793,6 +1798,19 @@ fn build_stage(
             mode: string_prop(&props, "mode").unwrap_or_else(|| "create".into()),
             api_key: string_prop(&props, "apiKey").filter(|s| !s.is_empty()),
             region: string_prop(&props, "region").filter(|s| !s.is_empty()),
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.pixeltable" {
+        // #223. Mode mirrors the other sinks: `insert` appends to a table that
+        // already exists, `create` builds it from the incoming rows.
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let table = string_prop(&props, "table")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: table required", component_id)))?;
+        pixeltable_sink = Some(PixeltableSinkSpec {
+            from_view: from_view.to_string(),
+            table,
+            mode: string_prop(&props, "mode").unwrap_or_else(|| "insert".into()),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.vortex" {
@@ -3749,6 +3767,26 @@ fn build_stage(
             limit: props.get("limit").and_then(|v| v.as_i64()).filter(|n| *n > 0),
         });
         (String::new(), StageKind::View, None)
+    } else if component_id == "src.pixeltable" {
+        // #223. `table` is Pixeltable's own path form (`dir.table`, optionally
+        // `:version`); we pass it through rather than parsing it, so versioned
+        // reads work without this needing to know their grammar.
+        let table = string_prop(&props, "table")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: table required", component_id)))?;
+        pixeltable_source = Some(PixeltableSourceSpec {
+            node_id: node.id.clone(),
+            table,
+            filter: string_prop(&props, "filter").filter(|s| !s.is_empty()),
+            columns: string_prop(&props, "columns")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            limit: props.get("limit").and_then(|v| v.as_i64()).filter(|n| *n > 0),
+        });
+        (String::new(), StageKind::View, None)
     } else if component_id == "src.vortex" {
         let path = string_prop(&props, "path")
             .filter(|s| !s.is_empty())
@@ -4792,6 +4830,8 @@ fn build_stage(
         .or_else(|| mongo_source.map(RuntimeSpec::MongoSource))
         .or_else(|| lance_sink.map(RuntimeSpec::LanceSink))
         .or_else(|| lance_source.map(RuntimeSpec::LanceSource))
+        .or_else(|| pixeltable_sink.map(RuntimeSpec::PixeltableSink))
+        .or_else(|| pixeltable_source.map(RuntimeSpec::PixeltableSource))
         .or_else(|| vortex_sink.map(RuntimeSpec::VortexSink))
         .or_else(|| vortex_source.map(RuntimeSpec::VortexSource))
         .or_else(|| clickhouse_sink.map(RuntimeSpec::ClickhouseSink))

@@ -14040,3 +14040,179 @@ impl OraCol {
         }
     }
 }
+
+/// Resolve the Python that has `pixeltable` installed (#223).
+///
+/// DUCKLE_PIXELTABLE_PYTHON is published by the desktop app after it
+/// provisions a venv with uv, the same fetch-not-bundle model as dbt. Falling
+/// back to `python` on PATH lets the headless runner and CI work against an
+/// existing install without the desktop app.
+fn resolve_pixeltable_python() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("DUCKLE_PIXELTABLE_PYTHON") {
+        if !p.is_empty() {
+            return std::path::PathBuf::from(p);
+        }
+    }
+    std::path::PathBuf::from(if cfg!(windows) { "python.exe" } else { "python3" })
+}
+
+/// Render a Python string literal. Pixeltable table paths and file paths are
+/// user data, so they are quoted rather than pasted in raw.
+fn py_str(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{}'", escaped)
+}
+
+impl DuckdbEngine {
+    /// src.pixeltable: export a Pixeltable table to Parquet, then load it (#223).
+    pub(crate) fn run_pixeltable_source(
+        &self,
+        db: &Path,
+        spec: &PixeltableSourceSpec,
+    ) -> Result<String, EngineError> {
+        let safe: String = spec
+            .node_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let db_name = db
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let parquet_path = db.with_file_name(format!("{}.pxt-{}.parquet", db_name, safe));
+
+        // The query is built up the way Pixeltable's own docs do: get_table,
+        // then optional select / where / limit, then export_parquet. `filter`
+        // is inlined as a Pixeltable expression (e.g. `t.score > 0.8`) rather
+        // than escaped, because that is what it is - the same trust level as
+        // the SQL a user types into code.sql.
+        let mut q = String::from("t");
+        if !spec.columns.is_empty() {
+            let cols: Vec<String> = spec
+                .columns
+                .iter()
+                .map(|c| format!("t[{}]", py_str(c)))
+                .collect();
+            q = format!("{}.select({})", q, cols.join(", "));
+        }
+        if let Some(f) = &spec.filter {
+            q = format!("{}.where({})", q, f);
+        }
+        if let Some(l) = spec.limit {
+            q = format!("{}.limit({})", q, l);
+        }
+        let script = format!(
+            "import pixeltable as pxt\n\
+             t = pxt.get_table({table})\n\
+             pxt.io.export_parquet({q}, {out})\n",
+            table = py_str(&spec.table),
+            q = q,
+            out = py_str(&parquet_path.to_string_lossy()),
+        );
+        self.run_pixeltable_python(&script, "read")?;
+        if !parquet_path.exists() {
+            return Err(EngineError::Query(format!(
+                "pixeltable: {} exported no file. Check the table path and that pixeltable is installed",
+                spec.table
+            )));
+        }
+        let ppath = parquet_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "''");
+        let create = format!(
+            "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_parquet('{}')",
+            plan::quote_ident(&spec.node_id),
+            ppath
+        );
+        let create_result = self.run(Some(db), &create, false);
+        // Remove the temp Parquet whether or not the load succeeded, so a
+        // failed CREATE does not leak it beside the run database.
+        let _ = std::fs::remove_file(&parquet_path);
+        create_result?;
+        Ok(format!(
+            "pixeltable: materialized {} into {}",
+            spec.table, spec.node_id
+        ))
+    }
+
+    /// snk.pixeltable: COPY the upstream view to Parquet, then insert it (#223).
+    pub(crate) fn run_pixeltable_sink(
+        &self,
+        db: &Path,
+        spec: &PixeltableSinkSpec,
+    ) -> Result<String, EngineError> {
+        let safe: String = spec
+            .from_view
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let db_name = db
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let parquet_path = db.with_file_name(format!("{}.pxt-snk-{}.parquet", db_name, safe));
+        let ppath = parquet_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "''");
+        let copy = format!(
+            "COPY (SELECT * FROM {}) TO '{}' (FORMAT parquet)",
+            plan::quote_ident(&spec.from_view),
+            ppath
+        );
+        self.run(Some(db), &copy, false)?;
+
+        // `create` builds the table from the incoming rows and infers the
+        // schema; `insert` requires it to exist already. Both take the Parquet
+        // path directly, so no rows cross the process boundary one at a time.
+        let script = if spec.mode == "create" {
+            format!(
+                "import pixeltable as pxt\n\
+                 pxt.create_table({table}, source={src})\n",
+                table = py_str(&spec.table),
+                src = py_str(&parquet_path.to_string_lossy()),
+            )
+        } else {
+            format!(
+                "import pixeltable as pxt\n\
+                 t = pxt.get_table({table})\n\
+                 t.insert({src})\n",
+                table = py_str(&spec.table),
+                src = py_str(&parquet_path.to_string_lossy()),
+            )
+        };
+        let result = self.run_pixeltable_python(&script, "write");
+        let _ = std::fs::remove_file(&parquet_path);
+        result?;
+        Ok(format!("pixeltable: wrote {} ({})", spec.table, spec.mode))
+    }
+
+    /// Run one short Python program against the provisioned interpreter.
+    fn run_pixeltable_python(&self, script: &str, op: &str) -> Result<(), EngineError> {
+        let python = resolve_pixeltable_python();
+        let mut cmd = std::process::Command::new(&python);
+        cmd.arg("-c").arg(script);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let out = cmd.output().map_err(|e| {
+            EngineError::Query(format!(
+                "pixeltable {}: cannot run {}: {}. Install pixeltable, or set \
+                 DUCKLE_PIXELTABLE_PYTHON to a Python that has it",
+                op,
+                python.display(),
+                e
+            ))
+        })?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            // Python tracebacks put the useful line last, so keep the tail.
+            let tail: String = err.trim().lines().rev().take(6).collect::<Vec<_>>().join(" | ");
+            return Err(EngineError::Query(format!("pixeltable {}: {}", op, tail)));
+        }
+        Ok(())
+    }
+}

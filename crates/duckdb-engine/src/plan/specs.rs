@@ -1257,6 +1257,38 @@ pub struct MongoSourceSpec {
     pub pipeline: Option<String>,
 }
 
+/// src.pixeltable: read a Pixeltable table (#223).
+///
+/// Pixeltable is a Python library with no Rust client and no wire protocol, so
+/// the exchange runs through Parquet, the one format both sides already do
+/// well: a short Python program calls `pxt.io.export_parquet` and the engine
+/// ingests the file with `read_parquet`. Same shape as the Lance sidecar above,
+/// with `python` in place of the sidecar binary.
+#[derive(Debug, Clone)]
+pub struct PixeltableSourceSpec {
+    pub node_id: String,
+    /// Pixeltable table path, e.g. `myapp.media` or a versioned `myapp.media:3`.
+    pub table: String,
+    /// Optional `where` expression evaluated by Pixeltable, e.g. `t.score > 0.8`.
+    pub filter: Option<String>,
+    /// Columns to export; empty means all of them.
+    pub columns: Vec<String>,
+    pub limit: Option<i64>,
+}
+
+/// snk.pixeltable: insert the upstream rows into a Pixeltable table (#223).
+///
+/// The engine COPYs the upstream view to a Parquet temp file and Pixeltable
+/// reads it directly, since `Table.insert` accepts a Parquet path. Nothing is
+/// serialised row by row across the process boundary.
+#[derive(Debug, Clone)]
+pub struct PixeltableSinkSpec {
+    pub from_view: String,
+    pub table: String,
+    /// `insert` into an existing table, or `create` it from the incoming rows.
+    pub mode: String,
+}
+
 /// src.lancedb: read a Lance table via the duckle-lance sidecar (which owns the
 /// lancedb crate); the sidecar writes a Parquet file the engine ingests through
 /// read_parquet, so lancedb's deps never enter the engine.

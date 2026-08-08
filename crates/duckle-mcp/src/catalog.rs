@@ -76,3 +76,62 @@ pub fn schema(id: &str) -> Option<Value> {
 pub fn full() -> &'static Value {
     catalog()
 }
+
+#[cfg(test)]
+mod tests {
+    /// Components whose engine builder requires a second input, and so must
+    /// declare a `lookup` port for the canvas to let anyone wire one up.
+    ///
+    /// The canvas gates the lookup connection on `manifest.ports.inputs`
+    /// (Canvas.tsx), and the engine reads the second layer via
+    /// `NodeInputs::first_lookup()`, which resolves the handle named `lookup`
+    /// (plan/graph.rs). If the two disagree the node is unusable: the engine
+    /// fails with "needs a ... on the second input" and the UI offers no port
+    /// to satisfy it. That is exactly what shipped for Clip and Erase in
+    /// v0.5.9 (#217, #218), so this pins the contract.
+    const NEEDS_LOOKUP_INPUT: &[&str] = &[
+        "xf.join",
+        "xf.join.cross",
+        "xf.join.spatial",
+        "xf.lookup",
+        "xf.semi",
+        "xf.anti",
+        "xf.cdc.diff",
+        "xf.cdc.scd1",
+        "xf.cdc.scd2",
+        "xf.cdc.scd3",
+        "xf.cdc.upsert",
+        "qa.refintegrity",
+        "qa.link",
+        "qa.reconcile",
+        "xf.geo.clip",
+        "xf.geo.erase",
+    ];
+
+    #[test]
+    fn two_input_components_declare_a_lookup_port() {
+        for id in NEEDS_LOOKUP_INPUT {
+            let schema = super::schema(id).unwrap_or_else(|| panic!("{id} missing from catalog"));
+            let inputs = schema
+                .get("ports")
+                .and_then(|p| p.get("inputs"))
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{id} declares no input ports"));
+            let has_lookup = inputs.iter().any(|p| {
+                p.get("type").and_then(|v| v.as_str()) == Some("lookup")
+                    || p.get("id")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|s| s.starts_with("lookup"))
+            });
+            assert!(
+                has_lookup,
+                "{id} needs a second input but the catalog declares only {:?}. \
+                 The canvas will not offer the connection and the node cannot run.",
+                inputs
+                    .iter()
+                    .filter_map(|p| p.get("id").and_then(|v| v.as_str()))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}

@@ -600,6 +600,27 @@ export function portsForComponent(comp: ComponentDef): NodePorts {
         };
     }
 
+    // Two-layer geometry overlays (#217 Clip, #218 Erase). The engine requires
+    // the second layer - build_geo_clip / build_geo_erase fail with "needs a
+    // clip/erase layer on the second input" - so without this the node cannot
+    // be wired up at all and the transform is unusable from the canvas.
+    //
+    // No reject output: features that do not intersect (Clip), or that are
+    // fully erased (Erase), are dropped rather than emitted on a second port.
+    if (id === 'xf.geo.clip' || id === 'xf.geo.erase') {
+        return {
+            inputs: [
+                { id: 'main', label: 'input layer', type: 'main' },
+                {
+                    id: 'lookup',
+                    label: id === 'xf.geo.clip' ? 'clip layer' : 'erase layer',
+                    type: 'lookup',
+                },
+            ],
+            outputs: [MAIN_OUT],
+        };
+    }
+
     // Replicate - one in, multiple outs
     if (id === 'ctl.replicate') {
         return {

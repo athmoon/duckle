@@ -46,8 +46,8 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
+- [What's new in v0.6.1](#whats-new-in-v061)
 - [What's new in v0.6.0](#whats-new-in-v060)
-- [What's new in v0.5.9](#whats-new-in-v059)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
 - [Build from source](#build-from-source)
@@ -126,6 +126,17 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 <div align="center">
 <img src="docs/assets/flow.svg" alt="Sources flow through 50+ transforms into files, databases, object storage, vector stores, and AI" width="100%"/>
 </div>
+
+---
+
+## What's new in v0.6.1
+
+Talend jobs import straight into the canvas, and credentials are masked more
+carefully in exported SQL.
+
+- **Import a Talend job from the editor.** A **Talend** button sits in the project sidebar next to New Pipeline and New Folder, and the same action is in the editor's **⋯** menu as **Import Talend job...**. Either one picks a `.item` job, translates it, and opens it as a new pipeline tab, laid out on the canvas at the coordinates the job was drawn with. Measured on a real 44-job corpus: all 44 parse and 211 of 216 nodes map, the only refusal being a site-specific custom component. Nothing is written to your workspace until you save, so a job that translates badly costs a closed tab.
+- **The import report says what still needs a person.** A node count on its own would suggest a working pipeline, so the report leads with how many components actually translated, then lists everything unresolved. Encrypted Studio passwords arrive as `${ENV:...}` placeholders instead of guesses. Connections stored outside the job file are named, so you can fill them in or point the node at a saved connection. tMap outputs computed by Java are listed column by column with the expression to rewrite as SQL. A component with no Duckle equivalent is imported as a labelled placeholder, so the shape of the job survives rather than quietly losing a step.
+- **Credentials are masked on token boundaries in exported SQL.** Redaction replaced a credential value wherever it appeared, so a password that was also a substring of an ordinary identifier corrupted the statement around it: a password of `prod` rewrote `production_report.parquet` as `${DUCKLE_PASSWORD}uction_report.parquet`. The secret itself was always protected; the damage was to everything else, and it mattered most when reading the Plan or SQL view to debug. Matching is now delimiter-aware, so `LOAD postgres` is left intact while a one-character password is still masked in `password=p'`. Deliberately no minimum length: a short password is still a password.
 
 ---
 
@@ -502,7 +513,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.6.0):
+Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.6.1):
 
 | OS | Asset | How to run |
 |---|---|---|

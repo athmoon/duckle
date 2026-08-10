@@ -60,11 +60,13 @@ pub(crate) fn secret_placeholder(key: &str) -> String {
     format!("${{{}}}", out.trim_end_matches('_'))
 }
 
-/// Collect the plaintext secrets configured anywhere in the pipeline, so
-/// they can be replaced in display-only SQL. Only strings of a few chars
-/// or more are taken, to avoid redacting incidental short values that
-/// collide with SQL tokens. Sorted longest-value-first so a value that
-/// contains another is replaced first.
+/// Collect the plaintext secrets configured anywhere in the pipeline, so they
+/// can be replaced in display-only SQL. Every non-empty value under a secret
+/// key is taken regardless of length - a short password is still a password,
+/// and a length floor here would leak it. Collisions with ordinary SQL tokens
+/// are handled at replace time by [`replace_delimited`], not by dropping the
+/// secret. Sorted longest-value-first so a value that contains another is
+/// replaced first.
 pub(crate) fn collect_secrets(doc: &PipelineDoc) -> Vec<Secret> {
     let mut out: Vec<Secret> = Vec::new();
     for node in &doc.nodes {
@@ -103,19 +105,68 @@ pub(crate) fn collect_secrets(doc: &PipelineDoc) -> Vec<Secret> {
 pub(crate) fn redact_secret_values(sql: &str, secrets: &[Secret]) -> String {
     let mut out = sql.to_string();
     for secret in secrets {
-        if out.contains(secret.value.as_str()) {
-            out = out.replace(secret.value.as_str(), &secret.placeholder);
-        }
+        out = replace_delimited(&out, secret.value.as_str(), &secret.placeholder);
         // Credentials are also embedded as SQL string literals with single
         // quotes doubled (sql_escape / "''"); redact that form too so a value
         // containing a quote does not leak past the raw-value replace above.
         if secret.value.contains('\'') {
             let escaped = secret.value.replace('\'', "''");
-            if out.contains(&escaped) {
-                out = out.replace(&escaped, &secret.placeholder);
-            }
+            out = replace_delimited(&out, &escaped, &secret.placeholder);
         }
     }
+    out
+}
+
+/// Replace `needle` with `placeholder`, but only where the match is a whole
+/// token - neither neighbour may be a character that could continue an
+/// identifier.
+///
+/// A blind `str::replace` corrupts the SQL whenever a credential happens to be
+/// a substring of an ordinary identifier, and that is not hypothetical:
+/// password "prod" rewrote the output path `production_report.parquet` to
+/// `${DUCKLE_PASSWORD}uction_report.parquet`, and a one-character password "p"
+/// turned `LOAD postgres` into `LOAD ${DUCKLE_PASSWORD}ostgres`. An exported
+/// script is meant to be runnable, and that is not.
+///
+/// Requiring delimiters costs nothing in safety, because a credential is never
+/// spelled as part of a longer word. Wherever one actually appears -
+/// `password=hunter2` in a libpq string, `user:hunter2@host` in a URL,
+/// `'hunter2'` as a literal - it is bounded by `=`, `'`, `:`, `@`, whitespace
+/// or the end of the string. So every real occurrence is still redacted,
+/// including short values: the length floor that this deliberately does NOT
+/// reintroduce is what would leak them.
+fn replace_delimited(haystack: &str, needle: &str, placeholder: &str) -> String {
+    if needle.is_empty() || !haystack.contains(needle) {
+        return haystack.to_string();
+    }
+    // `_` counts as an identifier character, so a password equal to `report`
+    // does not carve up `report_id`.
+    let continues_ident = |c: char| c.is_alphanumeric() || c == '_';
+
+    let mut out = String::with_capacity(haystack.len());
+    let mut rest = haystack;
+    while let Some(hit) = rest.find(needle) {
+        let before_ok = rest[..hit]
+            .chars()
+            .next_back()
+            .map(|c| !continues_ident(c))
+            .unwrap_or(true);
+        let after = hit + needle.len();
+        let after_ok = rest[after..]
+            .chars()
+            .next()
+            .map(|c| !continues_ident(c))
+            .unwrap_or(true);
+
+        out.push_str(&rest[..hit]);
+        if before_ok && after_ok {
+            out.push_str(placeholder);
+        } else {
+            out.push_str(needle); // part of a longer identifier - leave it alone
+        }
+        rest = &rest[after..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -1308,5 +1359,60 @@ mod tests {
         );
         // Objects/arrays are JSON-stringified on write, so they map to string.
         assert_eq!(infer_avro_nullable_field(&rows, "obj"), json!(["null", "string"]));
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    fn secret(value: &str) -> Secret {
+        Secret { value: value.to_string(), placeholder: "${DUCKLE_PASSWORD}".to_string() }
+    }
+
+    /// The reported defect: a credential that happens to be a substring of an
+    /// identifier used to corrupt the SQL around it.
+    #[test]
+    fn a_password_inside_an_identifier_is_left_alone() {
+        let sql = "COPY (SELECT * FROM \"t\") TO '/data/production_report.parquet'";
+        assert_eq!(redact_secret_values(sql, &[secret("prod")]), sql);
+
+        let sql = "LOAD postgres; SELECT * FROM public.orders";
+        assert_eq!(redact_secret_values(sql, &[secret("p")]), sql);
+    }
+
+    /// ...while every place a credential actually appears is still redacted,
+    /// at any length. A length floor would have let these through.
+    #[test]
+    fn a_password_in_credential_position_is_always_redacted() {
+        for (sql, pw) in [
+            ("ATTACH 'host=h dbname=d user=u password=prod'", "prod"),
+            ("ATTACH 'host=h dbname=d user=u password=p'", "p"),
+            ("ATTACH 'mysql://u:prod@host:3306/db'", "prod"),
+            ("CREATE SECRET (KEY_ID 'a', SECRET 'prod')", "prod"),
+        ] {
+            let got = redact_secret_values(sql, &[secret(pw)]);
+            assert!(got.contains("${DUCKLE_PASSWORD}"), "not redacted: {sql}");
+            assert!(!got.contains(&format!("={pw}'")), "value survived: {got}");
+        }
+    }
+
+    /// Underscore continues an identifier, so a password equal to a column
+    /// stem must not split a longer column name.
+    #[test]
+    fn underscore_counts_as_part_of_an_identifier() {
+        let sql = "SELECT report_id FROM t WHERE x = 1";
+        assert_eq!(redact_secret_values(sql, &[secret("report")]), sql);
+    }
+
+    /// A value appearing both ways in one statement: redact the credential,
+    /// keep the identifier.
+    #[test]
+    fn mixed_occurrences_are_handled_independently() {
+        let sql = "ATTACH 'dbname=shop password=shop' AS s; SELECT * FROM shopping_cart";
+        let got = redact_secret_values(sql, &[secret("shop")]);
+        assert!(got.contains("shopping_cart"), "identifier was corrupted: {got}");
+        assert!(!got.contains("password=shop"), "credential survived: {got}");
+        assert_eq!(got.matches("${DUCKLE_PASSWORD}").count(), 2, "{got}");
     }
 }

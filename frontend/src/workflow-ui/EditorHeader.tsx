@@ -291,11 +291,11 @@ export default function EditorHeader({
                                 >
                                     <Upload size={13} />
                                     <div>
-                                        <div>{t('header.importJob', 'Import job file...')}</div>
+                                        <div>{t('header.importJob', 'Import Talend job...')}</div>
                                         <div className="toolbar-more-desc">
                                             {t(
                                                 'header.importJobDesc',
-                                                'Translate a legacy .item job into a pipeline',
+                                                'Translate a Talend .item job into a pipeline',
                                             )}
                                         </div>
                                     </div>

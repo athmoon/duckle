@@ -16,6 +16,8 @@ type Props = {
     onNewPipeline: (parentId: string) => void;
     onNewFolder: (parentId: string) => void;
     onNewConnection: (parentId: string) => void;
+    /** Undefined in the web editor, where the engine-side translator is unreachable. */
+    onImportJob?: () => void;
     onNewContext: (parentId: string) => void;
     onNewDocument: (parentId: string) => void;
     onNewRoutine: (parentId: string) => void;
@@ -39,6 +41,7 @@ export default function LeftSidebar({
     onNewPipeline,
     onNewFolder,
     onNewConnection,
+    onImportJob,
     onNewContext,
     onNewDocument,
     onNewRoutine,
@@ -92,6 +95,7 @@ export default function LeftSidebar({
                         onNewPipeline={onNewPipeline}
                         onNewFolder={onNewFolder}
                         onNewConnection={onNewConnection}
+                        onImportJob={onImportJob}
                         onNewContext={onNewContext}
                         onNewDocument={onNewDocument}
                         onNewRoutine={onNewRoutine}

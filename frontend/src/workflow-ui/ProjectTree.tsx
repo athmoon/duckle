@@ -17,6 +17,7 @@ import {
     Plug,
     Plus,
     Trash2,
+    Upload,
     Variable,
     Workflow,
     ArrowUpRight,
@@ -33,6 +34,8 @@ type Props = {
     onOpenPipeline: (id: string) => void;
     onOpenItem: (item: RepoItem) => void;
     onNewPipeline: (parentId: string) => void;
+    /** Undefined in the web editor, where the engine-side translator is unreachable. */
+    onImportJob?: () => void;
     onNewFolder: (parentId: string) => void;
     onNewConnection: (parentId: string) => void;
     onNewContext: (parentId: string) => void;
@@ -98,6 +101,7 @@ export default function ProjectTree(props: Props) {
         onOpenPipeline,
         onOpenItem,
         onNewPipeline,
+        onImportJob,
         onNewFolder,
         onNewConnection,
         onNewContext,
@@ -569,6 +573,16 @@ export default function ProjectTree(props: Props) {
                 >
                     <FolderPlus size={13} /> Folder
                 </button>
+                {onImportJob ? (
+                    <button
+                        type="button"
+                        className="repo-action-button"
+                        onClick={onImportJob}
+                        title="Import a Talend .item job"
+                    >
+                        <Upload size={13} /> Talend
+                    </button>
+                ) : null}
             </div>
             <div className="repo-tree-body" onContextMenu={e => e.preventDefault()}>
                 {roots.map(r => renderNode(r, 0))}

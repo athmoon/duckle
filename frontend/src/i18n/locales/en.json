@@ -16,7 +16,9 @@
   "sidebar": {
     "ariaLabel": "Sidebar",
     "project": "Project",
-    "components": "Components"
+    "components": "Components",
+    "importJob": "Talend",
+    "importJobTitle": "Import a Talend .item job"
   },
   "editorTabs": {
     "ariaLabel": "Editor views",
@@ -51,8 +53,8 @@
     "exportJsonDesc": "Download nodes + edges as portable JSON",
     "importJson": "Import .duckle.json...",
     "importJsonDesc": "Open a portable JSON as a new pipeline",
-    "importJob": "Import job file...",
-    "importJobDesc": "Translate a legacy .item job into a pipeline"
+    "importJob": "Import Talend job...",
+    "importJobDesc": "Translate a Talend .item job into a pipeline"
   },
   "palette": {
     "sources": "Sources",

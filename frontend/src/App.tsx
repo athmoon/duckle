@@ -2542,6 +2542,7 @@ export default function App() {
                     onNewPipeline={openNewPipelineModal}
                     onNewFolder={handleNewFolderInRepo}
                     onNewConnection={handleNewConnection}
+                    onImportJob={isInTauri() ? handleImportJob : undefined}
                     onNewContext={handleNewContext}
                     onNewDocument={handleNewDocument}
                     onNewRoutine={handleNewRoutine}

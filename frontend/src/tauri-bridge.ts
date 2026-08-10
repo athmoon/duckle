@@ -1058,3 +1058,28 @@ export async function settingsSetAi(
         apiKey: cfg.apiKey,
     });
 }
+
+// ---- Legacy job import --------------------------------------------------
+
+export type JobImport = {
+    /** `{ name, nodes, edges }` - the shape the canvas already reads. */
+    pipeline: { name?: string; nodes: unknown[]; edges: unknown[] };
+    /** Whatever translation could not settle, already phrased for a human. */
+    warnings: string[];
+    /** Source component name -> how many of them the job file held. */
+    components: [string, number][];
+    nodeCount: number;
+    /** Nodes backed by a real component; the rest landed as placeholders. */
+    translated: number;
+};
+
+/**
+ * Translate a legacy visual-ETL `.item` job file into a Duckle pipeline.
+ *
+ * Desktop only. The translation lives in the Rust engine, and `duckle serve`
+ * exposes no endpoint for it, so the web editor hides the menu entry rather
+ * than offering a button that cannot work.
+ */
+export async function importJobFile(path: string): Promise<JobImport> {
+    return await invoke<JobImport>('import_job_file', { path });
+}

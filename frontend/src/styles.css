@@ -4784,6 +4784,122 @@ html[dir='rtl'] .topbar-lang {
     white-space: pre-wrap;
 }
 
+/* Import report - what a translated legacy job actually produced. */
+.modal-import-report {
+    width: min(620px, 92vw);
+}
+
+.import-report-summary {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.import-report-summary strong {
+    color: var(--text-1);
+    font-size: 13px;
+}
+
+.import-report-summary span {
+    color: var(--text-2);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.import-report-notready,
+.import-report-clean {
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.import-report-notready {
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 34%, transparent);
+    color: var(--text-1);
+}
+
+.import-report-clean {
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--success) 34%, transparent);
+    color: var(--text-1);
+}
+
+.import-report-section {
+    margin-top: 14px;
+}
+
+.import-report-label {
+    font-size: 10px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 6px;
+}
+
+.import-report-warnings,
+.import-report-components {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 190px;
+    overflow-y: auto;
+}
+
+.import-report-warnings li {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-2);
+}
+
+.import-report-warnings li svg {
+    color: var(--warn);
+    flex: 0 0 auto;
+    margin-top: 2px;
+}
+
+.import-report-components li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 0;
+    font-size: 12px;
+    color: var(--text-2);
+}
+
+.import-report-components code {
+    font-size: 11.5px;
+    color: var(--text-1);
+}
+
+.import-report-components span {
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.import-report-error {
+    margin: 10px 0 0;
+    padding: 8px 10px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    overflow-x: auto;
+}
+
 .btn-primary:disabled {
     background: var(--bg-2);
     border-color: var(--border);

@@ -199,6 +199,7 @@ pub fn run() {
             pixeltable_status,
             pixeltable_install,
             seed_sample_workspace,
+            import_job_file,
             chat_send,
             chat_extract_pipeline,
             workspace_git_status,
@@ -803,6 +804,51 @@ async fn seed_sample_workspace(app: tauri::AppHandle, workspace: String) -> Resu
     tokio::task::spawn_blocking(move || samples::seed(&ws, &duckdb))
         .await
         .map_err(|e| e.to_string())?
+}
+
+// ---- Legacy job import -------------------------------------------------
+
+/// What one job file turned into. The counts are reported alongside the
+/// pipeline so the dialog can say what the file actually contained, not only
+/// what survived translation.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobImport {
+    /// `{ name, nodes, edges }` - the same shape the canvas and runner read.
+    pipeline: JsonValue,
+    /// Everything translation could not settle, already phrased for a human.
+    warnings: Vec<String>,
+    /// Source component name -> how many of them the file held.
+    components: Vec<(String, usize)>,
+    node_count: usize,
+    /// How many of those nodes came through with a real Duckle component
+    /// behind them. The remainder are placeholders on the canvas that still
+    /// have to be replaced by hand, so the two numbers are reported side by
+    /// side rather than letting a node count imply a working pipeline.
+    translated: usize,
+}
+
+/// Read a legacy visual-ETL `.item` job file and translate it into a Duckle
+/// pipeline.
+///
+/// Nothing is written to the workspace here. The translated pipeline is handed
+/// back for the frontend to open as an unsaved tab, so a job that imports badly
+/// costs the user nothing but a closed tab.
+#[tauri::command]
+fn import_job_file(path: String) -> Result<JobImport, String> {
+    let path = PathBuf::from(path);
+    let xml = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    // The file stem is the job name, matching how the jobs are stored.
+    let job_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("imported_job");
+    let import = duckle_duckdb_engine::talend::import_item(&xml, job_name)?;
+    Ok(JobImport {
+        node_count: import.nodes.len(),
+        translated: import.nodes.iter().filter(|n| n.data.component_id.is_some()).count(),
+        pipeline: import.to_pipeline_json(),
+        warnings: import.warnings.iter().map(|w| w.to_string()).collect(),
+        components: import.components.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+    })
 }
 
 // ---- AI chat assistant -------------------------------------------------

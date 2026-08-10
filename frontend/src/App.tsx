@@ -48,7 +48,8 @@ import ChatPanel from './workflow-ui/ChatPanel';
 import GitPanel from './workflow-ui/GitPanel';
 import WindowControls from './workflow-ui/WindowControls';
 import WindowResizeHandles from './workflow-ui/WindowResizeHandles';
-import { engineStatus, seedSampleWorkspace } from './tauri-bridge';
+import { engineStatus, seedSampleWorkspace, importJobFile } from './tauri-bridge';
+import ImportReportModal, { type ImportReport } from './workflow-ui/ImportReportModal';
 import { copyText, saveTextFile } from './tauri-io';
 import { writeClipboard, readClipboard, instantiateClipboard } from './clipboard';
 import { RunStatusContext } from './canvas/run-status-context';
@@ -442,6 +443,10 @@ export default function App() {
         open: boolean;
         defaultParent: string;
     }>({ open: false, defaultParent: 'pipelines' });
+
+    // Shown once after a legacy job file is translated, so an import that left
+    // placeholders or unresolved credentials says so instead of looking done.
+    const [importReport, setImportReport] = useState<ImportReport | null>(null);
 
     const activePipeline = pipelineData[activeJobId] ?? EMPTY_PIPELINE;
     const nodes = activePipeline.nodes;
@@ -1632,6 +1637,57 @@ export default function App() {
         input.click();
     }, [importFromText]);
 
+    // Import a legacy visual-ETL job file. Desktop only - the translation lives
+    // in the Rust engine and `duckle serve` exposes no endpoint for it, so the
+    // menu entry is hidden in the web editor rather than failing when clicked.
+    const handleImportJob = useCallback(async () => {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const picked = await open({
+            multiple: false,
+            filters: [
+                { name: 'Job file', extensions: ['item'] },
+                { name: 'All files', extensions: ['*'] },
+            ],
+        });
+        if (typeof picked !== 'string') return;
+        const jobName = picked.split(/[\\/]/).pop() ?? 'job';
+        try {
+            const result = await importJobFile(picked);
+            if (result.nodeCount === 0) {
+                // importFromText refuses an empty node list, so nothing would
+                // open. Say that rather than reporting a successful import.
+                setImportReport({
+                    jobName,
+                    nodeCount: 0,
+                    translated: 0,
+                    components: result.components,
+                    warnings: result.warnings,
+                    error: 'That job file holds no components, so there was nothing to open.',
+                });
+                return;
+            }
+            importFromText(JSON.stringify(result.pipeline), jobName);
+            setImportReport({
+                jobName,
+                nodeCount: result.nodeCount,
+                translated: result.translated,
+                components: result.components,
+                warnings: result.warnings,
+            });
+        } catch (err) {
+            const message =
+                typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
+            setImportReport({
+                jobName,
+                nodeCount: 0,
+                translated: 0,
+                components: [],
+                warnings: [],
+                error: message,
+            });
+        }
+    }, [importFromText]);
+
     const handleAutoLayout = useCallback(() => {
         setNodes(ns => layoutByDependency(ns, edges));
         markDirty();
@@ -2518,6 +2574,7 @@ export default function App() {
                         onExportJson={handleExportJson}
                         onExportSqlFile={handleExportSql}
                         onImportJson={handleImportJson}
+                        onImportJob={isInTauri() ? handleImportJob : undefined}
                     />
                     <EditorTabs
                         engine={engine}
@@ -2584,6 +2641,8 @@ export default function App() {
                 }
                 onCreate={handleCreatePipeline}
             />
+
+            <ImportReportModal report={importReport} onClose={() => setImportReport(null)} />
 
             <ConfirmModal
                 open={pendingDelete !== null}

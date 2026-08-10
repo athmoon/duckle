@@ -41,6 +41,8 @@ type Props = {
     onExportJson: () => void;
     onExportSqlFile: () => void;
     onImportJson: () => void;
+    /** Undefined in the web editor, where the engine-side translator is unreachable. */
+    onImportJob?: () => void;
 };
 
 export default function EditorHeader({
@@ -61,6 +63,7 @@ export default function EditorHeader({
     onExportJson,
     onExportSqlFile,
     onImportJson,
+    onImportJob,
 }: Props) {
     const { t } = useTranslation();
     const [moreOpen, setMoreOpen] = useState(false);
@@ -279,6 +282,25 @@ export default function EditorHeader({
                                     </div>
                                 </div>
                             </button>
+                            {onImportJob ? (
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="toolbar-more-item"
+                                    onClick={fire(onImportJob)}
+                                >
+                                    <Upload size={13} />
+                                    <div>
+                                        <div>{t('header.importJob', 'Import job file...')}</div>
+                                        <div className="toolbar-more-desc">
+                                            {t(
+                                                'header.importJobDesc',
+                                                'Translate a legacy .item job into a pipeline',
+                                            )}
+                                        </div>
+                                    </div>
+                                </button>
+                            ) : null}
                         </div>
                     ) : null}
                 </div>

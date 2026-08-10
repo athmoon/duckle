@@ -50,7 +50,9 @@
     "exportJson": "Export as .duckle.json",
     "exportJsonDesc": "Download nodes + edges as portable JSON",
     "importJson": "Import .duckle.json...",
-    "importJsonDesc": "Open a portable JSON as a new pipeline"
+    "importJsonDesc": "Open a portable JSON as a new pipeline",
+    "importJob": "Import job file...",
+    "importJobDesc": "Translate a legacy .item job into a pipeline"
   },
   "palette": {
     "sources": "Sources",
@@ -219,5 +221,14 @@
     "loading": "Loading...",
     "error": "Error",
     "success": "Success"
+  },
+  "import": {
+    "reportTitle": "Job imported",
+    "reportCounts": "{{translated}} of {{total}} components translated",
+    "reportNotReady": "This pipeline is not ready to run yet. Work through the list below first.",
+    "reportClean": "Every component translated and nothing left unresolved.",
+    "reportNeedsAttention": "Needs attention ({{n}})",
+    "reportComponentsSeen": "Components in the job file",
+    "failed": "Nothing was imported"
   }
 }

@@ -672,6 +672,88 @@ fn numeric_round_adds_column() {
     assert_eq!(rounded, "3.14");
 }
 
+/// Rounding a Float32 column must actually apply the requested precision (#227).
+///
+/// DuckDB resolves round() against a native FLOAT overload, so the rounding
+/// happened in Float32 and simply could not carry six decimals: the value came
+/// back 9876.543 with three. The value here is chosen deliberately - the
+/// reporter's own 31.45364740732 prints identically before and after the fix,
+/// because Float32 renders via its shortest round-trip form, so a test built on
+/// that value passes either way and proves nothing.
+#[test]
+fn numeric_round_applies_precision_to_float32() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "v\n9876.5432109\n");
+    let out = out_path(tmp.path(), "out.csv");
+
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            // read_csv_auto types this DOUBLE; narrow it to Float32 first so the
+            // FLOAT overload is the one round() would pick.
+            node("c1", "xf.cast", json!({ "column": "v", "targetType": "float32" })),
+            node(
+                "r1",
+                "xf.num.round",
+                json!({ "column": "v", "argument": 6, "outputColumn": "rounded" }),
+            ),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([
+            main_edge("e1", "s1", "c1"),
+            main_edge("e2", "c1", "r1"),
+            main_edge("e3", "r1", "k1")
+        ]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let rounded = scalar_string(&format!(
+        "SELECT CAST(rounded AS VARCHAR) FROM read_csv_auto('{}')",
+        out
+    ));
+    assert_eq!(
+        rounded, "9876.542969",
+        "Float32 round lost the requested precision (was 9876.543 before #227)"
+    );
+}
+
+/// The #227 fix widens only FLOAT. DECIMAL rounds half-up exactly, and routing
+/// it through binary floating point would turn 8.325 into 8.32, so this pins
+/// the behaviour that must NOT change.
+#[test]
+fn numeric_round_keeps_decimal_half_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "v\n8.325\n");
+    let out = out_path(tmp.path(), "out.csv");
+
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("c1", "xf.cast", json!({ "column": "v", "targetType": "decimal" })),
+            node(
+                "r1",
+                "xf.num.round",
+                json!({ "column": "v", "argument": 2, "outputColumn": "rounded" }),
+            ),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([
+            main_edge("e1", "s1", "c1"),
+            main_edge("e2", "c1", "r1"),
+            main_edge("e3", "r1", "k1")
+        ]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let rounded = scalar_string(&format!(
+        "SELECT CAST(rounded AS VARCHAR) FROM read_csv_auto('{}')",
+        out
+    ));
+    assert_eq!(rounded, "8.33", "DECIMAL rounding must stay exact half-up");
+}
+
 #[test]
 fn unimplemented_component_fails_loudly_not_silently() {
     // A not-yet-executable transform must error, not silently pass data

@@ -1436,7 +1436,27 @@ pub(crate) fn build_numeric(inputs: &NodeInputs, props: &JsonValue, component_id
         }
     }
     let expr = match component_id {
-        "xf.num.round" => format!("round({}, {})", col, arg.unwrap_or_else(|| "0".into())),
+        // DuckDB resolves round() against a native FLOAT overload, so a Float32
+        // column is rounded in Float32 - and past about seven significant digits
+        // that cannot move: 31.453647 and 31.453648 are the same Float32, so
+        // round(col, 6) hands back the input bit for bit and the requested
+        // precision is silently dropped (#227). Widening to DOUBLE first makes
+        // the precision representable.
+        //
+        // Only FLOAT is widened. Casting every input would change results that
+        // are correct today: DECIMAL rounds half-up exactly, so 8.325 -> 8.33,
+        // and through binary floating point the same value comes back 8.32.
+        // The cost of the guard is that a DECIMAL input leaves as DOUBLE,
+        // because the two CASE branches unify; the value is unchanged.
+        "xf.num.round" => {
+            let decimals = arg.unwrap_or_else(|| "0".into());
+            format!(
+                "CASE WHEN typeof({c}) = 'FLOAT' THEN round(CAST({c} AS DOUBLE), {d}) \
+                 ELSE round({c}, {d}) END",
+                c = col,
+                d = decimals
+            )
+        }
         "xf.num.abs" => format!("abs({})", col),
         "xf.num.mod" => format!("{} % {}", col, arg.ok_or("Modulo needs a divisor argument")?),
         "xf.num.power" => format!("power({}, {})", col, arg.unwrap_or_else(|| "2".into())),

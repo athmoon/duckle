@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "componentCount": 384,
+  "componentCount": 385,
   "components": [
     {
       "id": "src.csv",
@@ -19214,11 +19214,105 @@
       }
     },
     {
+      "id": "xf.text.tocolumns",
+      "label": "Text to Columns",
+      "kind": "transform",
+      "availability": "available",
+      "summary": "Split a delimited column into separate named columns (split_part), e.g. \"31.21 30.24\" into latitude and longitude",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject",
+            "optional": true
+          }
+        ]
+      },
+      "manifest": {
+        "id": "xf.text.tocolumns",
+        "kind": "transform",
+        "label": "Text to Columns",
+        "description": "Split a delimited column into separate named columns (split_part), e.g. \"31.21 30.24\" into latitude and longitude",
+        "schemaSource": "upstream",
+        "sections": [
+          {
+            "label": "Text to columns",
+            "fields": [
+              {
+                "key": "column",
+                "label": "Column",
+                "kind": "column",
+                "required": true
+              },
+              {
+                "key": "delimiter",
+                "label": "Delimiter",
+                "kind": "text",
+                "required": true,
+                "placeholder": "a space, or , or | or ;",
+                "description": "The text each value is split on. Multi-character delimiters work."
+              },
+              {
+                "key": "outputColumns",
+                "label": "Output columns",
+                "kind": "text",
+                "required": true,
+                "placeholder": "latitude, longitude",
+                "description": "Comma-separated names, in order: the 1st name takes the part before the first delimiter, the 2nd the next, and so on. A part that is not there arrives as NULL."
+              },
+              {
+                "key": "dropSource",
+                "label": "Remove the original column",
+                "kind": "bool",
+                "defaultValue": false,
+                "description": "Off by default, so the value you split is still there to check against."
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject",
+              "optional": true
+            }
+          ]
+        }
+      }
+    },
+    {
       "id": "xf.split",
       "label": "Split",
       "kind": "transform",
       "availability": "available",
-      "summary": "",
+      "summary": "Split a column into a LIST in one column - use Text to Columns for separate columns",
       "ports": {
         "inputs": [
           {
@@ -19245,7 +19339,7 @@
         "id": "xf.split",
         "kind": "transform",
         "label": "Split",
-        "description": "Transforms data with Split.",
+        "description": "Split a column into a LIST in one column - use Text to Columns for separate columns",
         "schemaSource": "upstream",
         "sections": [
           {

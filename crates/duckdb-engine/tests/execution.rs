@@ -672,6 +672,88 @@ fn numeric_round_adds_column() {
     assert_eq!(rounded, "3.14");
 }
 
+/// Text to Columns splits one delimited column into separate named ones (#226).
+#[test]
+fn text_to_columns_splits_into_named_columns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "location\n31.2131 30.24324\n30.1234 29.9876\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node(
+                "t1",
+                "xf.text.tocolumns",
+                json!({
+                    "column": "location",
+                    "delimiter": " ",
+                    "outputColumns": "latitude, longitude"
+                }),
+            ),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "t1"), main_edge("e2", "t1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let row = scalar_string(&format!(
+        "SELECT latitude || '|' || longitude FROM read_csv_auto('{}') ORDER BY latitude DESC LIMIT 1",
+        out
+    ));
+    assert_eq!(row, "31.2131|30.24324");
+}
+
+/// A row with fewer parts than there are output columns must yield NULL, not an
+/// empty string. split_part returns '' for a missing part and ''::DOUBLE aborts
+/// the run, so without the nullif guard this pipeline dies on the second row.
+#[test]
+fn text_to_columns_missing_part_is_null_not_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "location\n31.2131 30.24324\n31.2131\n");
+    let out = out_path(tmp.path(), "out.csv");
+
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node(
+                "t1",
+                "xf.text.tocolumns",
+                json!({
+                    "column": "location",
+                    "delimiter": " ",
+                    "outputColumns": "latitude, longitude"
+                }),
+            ),
+            // The cast is the point: it is what would blow up on '' .
+            node(
+                "c1",
+                "xf.cast",
+                json!({ "column": "longitude", "targetType": "float64", "onError": "fail" }),
+            ),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([
+            main_edge("e1", "s1", "t1"),
+            main_edge("e2", "t1", "c1"),
+            main_edge("e3", "c1", "k1")
+        ]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let nulls = scalar_string(&format!(
+        "SELECT CAST(count(*) AS VARCHAR) FROM read_csv_auto('{}') WHERE longitude IS NULL",
+        out
+    ));
+    assert_eq!(nulls, "1", "the ragged row should leave longitude NULL");
+}
+
 /// Rounding a Float32 column must actually apply the requested precision (#227).
 ///
 /// DuckDB resolves round() against a native FLOAT overload, so the rounding

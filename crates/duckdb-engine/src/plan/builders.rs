@@ -354,6 +354,7 @@ pub(crate) fn build_view_sql(
         "xf.text.replace" => build_text_replace(inputs, props),
         "xf.text.slug" => build_text_slug(inputs, props),
         "xf.text.strip_html" => build_text_strip_html(inputs, props),
+        "xf.text.tocolumns" => build_text_to_columns(inputs, props),
         "xf.compare" => build_compare(inputs, props),
         "xf.arr.element" | "xf.arr.distinct" | "xf.arr.explode" => {
             build_array(inputs, props, component_id)
@@ -3406,6 +3407,94 @@ pub(crate) fn build_pyexpr(inputs: &NodeInputs, props: &JsonValue) -> Result<Str
 /// Padding column for build_pyexpr's inner star. Named so it cannot collide
 /// with a real column, and stripped again by the outer projection.
 const PYEXPR_PAD: &str = "__duckle_pyexpr_pad";
+
+/// Split one delimited column into several named columns (#226).
+///
+/// Split already exists but returns a LIST in a single column, which is the
+/// wrong shape when the parts are really separate fields - `"31.2131 30.24324"`
+/// wants to become `latitude` and `longitude`, not a two-element list.
+///
+/// Each part is wrapped in `nullif(..., '')`. `split_part` returns an empty
+/// string, not NULL, for a part that isn't there, and an empty string is not
+/// castable: a row holding only `31.2131` would give `longitude = ''`, and the
+/// first Cast or numeric transform downstream would abort the run. Empty parts
+/// become NULL so a ragged row is missing data rather than poison.
+pub(crate) fn build_text_to_columns(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.text.tocolumns"))?;
+    let column = require_column(props)?;
+    let col = quote_ident(&column);
+
+    let delimiter = string_prop(props, "delimiter").unwrap_or_default();
+    if delimiter.is_empty() {
+        return Err(
+            "Text to Columns needs a delimiter (the character the value is split on, e.g. a space or ,)"
+                .to_string(),
+        );
+    }
+
+    // Comma-separated output names, matching the groupNames convention already
+    // used by Regex Extract rather than inventing a new repeating field.
+    let raw_names = string_prop(props, "outputColumns")
+        .or_else(|| string_prop(props, "columns"))
+        .unwrap_or_default();
+    let names: Vec<String> = raw_names
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Err(format!(
+            "Text to Columns needs output column names; list them comma separated, \
+             e.g. latitude, longitude (splitting '{}')",
+            column
+        ));
+    }
+    // Duplicates would emit two columns of the same name and DuckDB would carry
+    // both, so downstream references silently resolve to whichever came first.
+    for (i, name) in names.iter().enumerate() {
+        if names[..i].iter().any(|earlier| earlier == name) {
+            return Err(format!(
+                "Text to Columns lists the output column '{}' twice; names must be unique",
+                name
+            ));
+        }
+    }
+
+    let parts: Vec<String> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            format!(
+                "nullif(split_part(CAST({} AS VARCHAR), '{}', {}), '') AS {}",
+                col,
+                sql_escape(&delimiter),
+                i + 1,
+                quote_ident(name)
+            )
+        })
+        .collect();
+
+    // Keeping the source column is the default: dropping it is not recoverable
+    // downstream, and the parts can always be dropped instead.
+    let drop_source = props
+        .get("dropSource")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    if drop_source {
+        Ok(format!(
+            "SELECT * EXCLUDE ({}), {} FROM {}",
+            col,
+            parts.join(", "),
+            quote_ident(upstream)
+        ))
+    } else {
+        Ok(format!(
+            "SELECT *, {} FROM {}",
+            parts.join(", "),
+            quote_ident(upstream)
+        ))
+    }
+}
 
 pub(crate) fn build_addcol(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| "missing main input".to_string())?;

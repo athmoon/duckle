@@ -4090,6 +4090,40 @@ function synthStringTransform(comp: ComponentDef): ComponentManifest {
             { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: 'leave blank to overwrite' },
         ] }], 'upstream');
     }
+    if (comp.id === 'xf.text.tocolumns') {
+        return base(comp, [
+            {
+                label: 'Text to columns',
+                fields: [
+                    { key: 'column', label: 'Column', kind: 'column', required: true },
+                    {
+                        key: 'delimiter',
+                        label: 'Delimiter',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'a space, or , or | or ;',
+                        description: 'The text each value is split on. Multi-character delimiters work.',
+                    },
+                    {
+                        key: 'outputColumns',
+                        label: 'Output columns',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'latitude, longitude',
+                        description:
+                            'Comma-separated names, in order: the 1st name takes the part before the first delimiter, the 2nd the next, and so on. A part that is not there arrives as NULL.',
+                    },
+                    {
+                        key: 'dropSource',
+                        label: 'Remove the original column',
+                        kind: 'bool',
+                        defaultValue: false,
+                        description: 'Off by default, so the value you split is still there to check against.',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'xf.text.slug') {
         return base(comp, [{ label: 'URL slug', fields: [
             { key: 'column', label: 'Column', kind: 'column', required: true },

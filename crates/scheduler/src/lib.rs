@@ -99,6 +99,19 @@ struct SchedulerInner {
     fire_rx: Option<UnboundedReceiver<String>>,
 }
 
+/// What a schedule locks when it fires.
+///
+/// The pipeline, not the schedule record. The pipeline owns the sink and the
+/// `xf.incremental` watermark, so it is the thing that must not run twice: two
+/// schedules pointed at one pipeline and coinciding at midnight collide every
+/// bit as much as two processes do. It also has to be the pipeline for the
+/// lock to work across products, because the web console identifies a schedule
+/// by its pipeline while this crate mints a uuid, so a record-keyed lock would
+/// have the two naming different files and guarding nothing.
+fn lock_key(s: &Schedule) -> &str {
+    &s.pipeline_id
+}
+
 /// The answer to "may this process run that schedule right now?".
 enum Claim {
     /// Yes. Dropping the payload gives the claim back.
@@ -107,7 +120,7 @@ enum Claim {
     Taken,
 }
 
-/// Ask for the exclusive right to run `id`.
+/// Ask for the exclusive right to run `pipeline_id`.
 ///
 /// Both of this crate's fire paths and the runner's own scheduler go through a
 /// lock like this, because the in-process guards each of them keeps - a
@@ -118,14 +131,17 @@ enum Claim {
 /// advancing the same `xf.incremental` watermark, and the second is how a load
 /// silently skips rows.
 ///
+/// See [`lock_key`] for why the key is the pipeline rather than the schedule
+/// record that fired.
+///
 /// A scheduler with no workspace is handed an unheld claim rather than a
 /// refusal: there is nothing on disk for two processes to race over, and
 /// `run_now` declines such a run on its own terms with a clearer message than
 /// a lock could give.
-fn claim_run(workspace: Option<&Path>, id: &str) -> Claim {
+fn claim_run(workspace: Option<&Path>, pipeline_id: &str) -> Claim {
     match workspace {
         None => Claim::Ours(None),
-        Some(ws) => match runlock::try_acquire(ws, id) {
+        Some(ws) => match runlock::try_acquire(ws, pipeline_id) {
             Some(lock) => Claim::Ours(Some(lock)),
             None => Claim::Taken,
         },
@@ -374,15 +390,25 @@ impl Scheduler {
                         // Watching is per process, so two Duckle processes
                         // watching one folder both see the same file land and
                         // both fire. Same clash as a cron tick, same guard.
-                        let workspace = {
-                            me2.inner.lock().expect("scheduler poisoned").workspace_path.clone()
+                        let (workspace, pipeline_id) = {
+                            let g = me2.inner.lock().expect("scheduler poisoned");
+                            let pipeline_id = g
+                                .schedules
+                                .iter()
+                                .find(|s| s.id == id)
+                                .map(|s| lock_key(s).to_string());
+                            (g.workspace_path.clone(), pipeline_id)
                         };
-                        let _claim = match claim_run(workspace.as_deref(), &id) {
+                        // A schedule that vanished between the file event and
+                        // here has nothing to lock; run_now reports it missing.
+                        let key = pipeline_id.unwrap_or_else(|| id.clone());
+                        let _claim = match claim_run(workspace.as_deref(), &key) {
                             Claim::Ours(lock) => lock,
                             Claim::Taken => {
                                 warn!(
-                                    "File-watch run {} is already running in another process; skipping",
-                                    id
+                                    "Pipeline {} is already running in another process; \
+                                     skipping the file-watch fire of {}",
+                                    key, id
                                 );
                                 return;
                             }
@@ -401,12 +427,14 @@ impl Scheduler {
         // Read the workspace under the same lock as the due list, so the path
         // used for the run lock is the one this tick actually decided against.
         let workspace = { self.inner.lock().expect("scheduler poisoned").workspace_path.clone() };
-        let due: Vec<String> = {
+        // Carry the pipeline id alongside the schedule id: the schedule is what
+        // came due, but the pipeline is what gets locked.
+        let due: Vec<(String, String)> = {
             let mut g = self.inner.lock().expect("scheduler poisoned");
             let mut due = Vec::new();
             for s in g.schedules.iter_mut() {
                 if s.enabled && matches!(s.next_run_at, Some(t) if t <= now) {
-                    due.push(s.id.clone());
+                    due.push((s.id.clone(), lock_key(s).to_string()));
                     // Claim the occurrence immediately, under the lock, by
                     // advancing next_run_at to the next FUTURE time. The
                     // tick wakes every 15s and run_now only recomputes
@@ -420,7 +448,7 @@ impl Scheduler {
             }
             due
         };
-        for id in due {
+        for (id, pipeline_id) in due {
             let me = self.clone();
             let workspace = workspace.clone();
             let permit = run_permits().clone();
@@ -434,12 +462,13 @@ impl Scheduler {
                 // clash rather than queueing is deliberate: the next tick comes
                 // round anyway, and a backlog of identical overdue runs helps
                 // nobody.
-                let _claim = match claim_run(workspace.as_deref(), &id) {
+                let _claim = match claim_run(workspace.as_deref(), &pipeline_id) {
                     Claim::Ours(lock) => lock,
                     Claim::Taken => {
                         warn!(
-                            "Schedule {} is already running in another process; skipping this tick",
-                            id
+                            "Pipeline {} is already running in another process; \
+                             skipping schedule {} this tick",
+                            pipeline_id, id
                         );
                         return;
                     }
@@ -766,12 +795,28 @@ mod tests {
 
         // And that shared decision is exactly what the lock arbitrates: the
         // first process to ask gets to run it, the second is turned away.
-        let held = duckle_duckdb_engine::runlock::try_acquire(&ws, &a[0])
-            .expect("the first process could not take the run lock");
+        // Keys come from lock_key, the same function both fire paths use, so a
+        // change of mind about what gets locked fails here rather than shipping.
+        let key = |s: &Scheduler, id: &str| -> String {
+            lock_key(s.list().iter().find(|x| x.id == id).expect("schedule vanished")).to_string()
+        };
+        let held = key(&desktop, &a[0]);
+        let first = match claim_run(Some(&ws), &held) {
+            Claim::Ours(lock) => lock.expect("a workspace was set, so a lock was due"),
+            Claim::Taken => panic!("the first process could not take the run lock"),
+        };
         assert!(
-            duckle_duckdb_engine::runlock::try_acquire(&ws, &b[0]).is_none(),
-            "the second process was allowed to run the same schedule"
+            matches!(claim_run(Some(&ws), &key(&daemon, &b[0])), Claim::Taken),
+            "the second process was allowed to run the same pipeline"
         );
-        drop(held);
+
+        // What is locked is the pipeline, and that is what makes the guard hold
+        // across products: the web console names a schedule by its pipeline
+        // while this crate mints a uuid, so a record-keyed lock would have the
+        // two picking different files and guarding nothing. The ids genuinely
+        // differ here, so this would catch that.
+        assert_eq!(held, "nightly-load", "the lock was not keyed on the pipeline");
+        assert_ne!(a[0], held, "the schedule id and pipeline id must differ here");
+        drop(first);
     }
 }

@@ -411,19 +411,33 @@ export default function HomeLauncher({
                                         key={group}
                                         type="button"
                                         className="home-group-tile"
-                                        data-group={group}
                                         onClick={() => setOpenGroup(group)}
                                     >
-                                        <span className="home-group-icon"><GroupIcon size={26} /></span>
-                                        <span className="home-group-name">
-                                            {t(`launcher.group.${group}`, GROUP_LABEL[group])}
+                                        <span className="home-group-rule" aria-hidden="true" />
+                                        <span className="home-group-top">
+                                            <GroupIcon size={15} />
+                                            <span className="home-group-name">
+                                                {t(`launcher.group.${group}`, GROUP_LABEL[group])}
+                                            </span>
                                         </span>
                                         <span className="home-group-blurb">{card.blurb}</span>
-                                        <span className="home-group-count">
-                                            {t('launcher.groupCount', '{{ready}} of {{total}} ready', {
-                                                ready,
-                                                total: inGroup.length,
-                                            })}
+                                        <span className="home-group-foot">
+                                            {/* The bar is the readiness number drawn, not decoration:
+                                                Govern reading a third full is the enterprise gap. */}
+                                            <span className="home-group-meter" aria-hidden="true">
+                                                <span
+                                                    className="home-group-meter-fill"
+                                                    style={{
+                                                        width: `${Math.round((ready / Math.max(inGroup.length, 1)) * 100)}%`,
+                                                    }}
+                                                />
+                                            </span>
+                                            <span className="home-group-count">
+                                                {t('launcher.groupCount', '{{ready}} of {{total}} ready', {
+                                                    ready,
+                                                    total: inGroup.length,
+                                                })}
+                                            </span>
                                         </span>
                                     </button>
                                 );

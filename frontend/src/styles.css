@@ -8465,7 +8465,7 @@ html[dir='rtl'] .topbar-lang {
    every modal (1000), so the startup gates always win. */
 .home-launcher {
     position: fixed;
-    inset: 0;
+    inset: var(--topbar-h) 0 0 0;
     z-index: 50;
     display: flex;
     justify-content: center;
@@ -8666,32 +8666,18 @@ html[dir='rtl'] .topbar-lang {
     cursor: pointer;
 }
 
-/* Home level one: three tiles, centred, each lit with its own brand hue. */
+/* Home level one: three panels, centred in the workspace area.
+   One accent across all three. The panels are siblings, not rivals, so
+   nothing is colour-coded - hierarchy and spacing do the separating, and
+   the single orange is spent only on the rule, the icon and the meter. */
 .home-launcher-inner.is-home {
     justify-content: center;
     min-height: 100%;
-    padding-block: 30px;
+    padding-block: 26px;
 }
 
-.home-launcher-inner.is-home .home-launcher-head {
-    text-align: center;
-    flex-direction: column;
-    align-items: center;
-    position: relative;
-}
+.home-launcher-inner.is-home .home-launcher-head h1 { font-size: 23px; }
 
-.home-launcher-inner.is-home .home-launcher-head .home-launcher-close {
-    position: absolute;
-    top: 0;
-    right: 0;
-}
-
-.home-launcher-inner.is-home .home-launcher-head h1 {
-    font-size: 27px;
-}
-
-/* The body takes the leftover height so the tiles sit on the optical centre
-   of the window rather than under the title. */
 .home-launcher-inner.is-home .home-launcher-body {
     flex: 1;
     display: grid;
@@ -8700,113 +8686,101 @@ html[dir='rtl'] .topbar-lang {
 
 .home-launcher-groups {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
-    gap: 18px;
-    width: min(880px, 100%);
+    grid-template-columns: repeat(auto-fit, minmax(236px, 1fr));
+    gap: 12px;
+    width: min(840px, 100%);
 }
 
 .home-group-tile {
-    --tile: 255, 122, 69;
     position: relative;
-    isolation: isolate;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: 9px;
-    padding: 32px 22px 26px;
-    border: 1px solid rgba(var(--tile), 0.32);
-    border-radius: 15px;
+    align-items: stretch;
+    text-align: left;
+    gap: 10px;
+    padding: 22px 18px 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
     background: var(--bg-1);
     color: var(--text-1);
     cursor: pointer;
     font: inherit;
-    transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
-    box-shadow: 0 0 0 0 rgba(var(--tile), 0);
+    transition: border-color 130ms ease, background 130ms ease;
 }
 
-.home-group-tile[data-group='build']   { --tile: 255, 216, 77; }  /* lemon  */
-.home-group-tile[data-group='operate'] { --tile: 255, 122, 69; }  /* orange */
-.home-group-tile[data-group='govern']  { --tile: 46, 175, 255; }  /* maya   */
-
-/* The glow itself: a soft pool of the tile's hue behind the content, lifted
-   on hover. Kept on a pseudo-element so it never tints the text. */
-.home-group-tile::before {
-    content: '';
+/* One hairline of accent along the top edge of every panel. */
+.home-group-rule {
     position: absolute;
-    inset: -1px;
-    z-index: -1;
-    border-radius: inherit;
-    background: radial-gradient(120% 90% at 50% 0%, rgba(var(--tile), 0.16), transparent 70%);
-    opacity: 0.75;
-    transition: opacity 160ms ease;
+    inset: 0 0 auto 0;
+    height: 2px;
+    background: var(--accent);
+    opacity: 0.5;
+    transition: opacity 130ms ease;
 }
 
 .home-group-tile:hover {
-    transform: translateY(-3px);
-    border-color: rgba(var(--tile), 0.85);
-    box-shadow: 0 12px 34px -12px rgba(var(--tile), 0.55),
-                0 0 0 1px rgba(var(--tile), 0.28);
+    border-color: var(--border-bright);
+    background: var(--bg-2);
 }
 
-.home-group-tile:hover::before { opacity: 1; }
+.home-group-tile:hover .home-group-rule { opacity: 1; }
 
 .home-group-tile:focus-visible {
-    outline: 2px solid rgba(var(--tile), 0.9);
-    outline-offset: 3px;
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
-.home-group-icon {
-    display: grid;
-    place-items: center;
-    width: 58px;
-    height: 58px;
-    border-radius: 16px;
-    background: rgba(var(--tile), 0.12);
-    border: 1px solid rgba(var(--tile), 0.3);
-    color: rgb(var(--tile));
-    margin-bottom: 4px;
-    animation: home-tile-pulse 3.4s ease-in-out infinite;
+.home-group-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--accent);
 }
 
-@keyframes home-tile-pulse {
-    0%, 100% { filter: drop-shadow(0 0 1px rgba(var(--tile), 0.35)); }
-    50%      { filter: drop-shadow(0 0 8px rgba(var(--tile), 0.75)); }
-}
-
-.home-group-tile:hover .home-group-icon {
-    background: rgba(var(--tile), 0.2);
-    border-color: rgba(var(--tile), 0.55);
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .home-group-icon { animation: none; }
-    .home-group-tile { transition: border-color 160ms ease; }
-    .home-group-tile:hover { transform: none; }
-}
-
+/* The name carries the weight; it is the only large type on the panel. */
 .home-group-name {
-    font-size: 18px;
-    font-weight: 660;
-    letter-spacing: -0.01em;
+    font-size: 11px;
+    font-weight: 680;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-1);
 }
 
 .home-group-blurb {
-    font-size: 12px;
-    line-height: 1.55;
+    font-size: 12.5px;
+    line-height: 1.6;
     color: var(--text-2);
-    max-width: 26ch;
+    min-height: 3.2em;
+}
+
+.home-group-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 2px;
+}
+
+/* The readiness ratio drawn, so Govern sitting a fifth full is visible. */
+.home-group-meter {
+    height: 2px;
+    border-radius: 2px;
+    background: var(--border-strong);
+    overflow: hidden;
+}
+
+.home-group-meter-fill {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
+    opacity: 0.75;
 }
 
 .home-group-count {
-    margin-top: 5px;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: rgb(var(--tile));
+    font-size: 10.5px;
+    color: var(--text-3);
     font-variant-numeric: tabular-nums;
-    opacity: 0.85;
 }
 
 .home-launcher-back {

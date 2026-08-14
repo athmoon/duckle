@@ -377,7 +377,7 @@ export default function HomeLauncher({
 
     return (
         <div className="home-launcher" role="dialog" aria-modal="true" aria-label={t('launcher.title', 'Home')}>
-            <div className="home-launcher-inner">
+            <div className={'home-launcher-inner' + (openGroup ? '' : ' is-home')}>
                 <header className="home-launcher-head">
                     <div>
                         <h1>{t('launcher.title', 'Home')}</h1>
@@ -411,9 +411,10 @@ export default function HomeLauncher({
                                         key={group}
                                         type="button"
                                         className="home-group-tile"
+                                        data-group={group}
                                         onClick={() => setOpenGroup(group)}
                                     >
-                                        <span className="home-group-icon"><GroupIcon size={24} /></span>
+                                        <span className="home-group-icon"><GroupIcon size={26} /></span>
                                         <span className="home-group-name">
                                             {t(`launcher.group.${group}`, GROUP_LABEL[group])}
                                         </span>

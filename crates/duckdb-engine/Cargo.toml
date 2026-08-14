@@ -242,3 +242,8 @@ wat = "1"
 # (Content-Encoding: gzip), reproducing the real SQL API partition
 # format that GitHub #24 was choking on.
 flate2 = "1"
+
+# flock(2) for the cross-process run lock. Windows uses a share-mode open,
+# which is in std, so this is unix-only. Already in the tree transitively.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

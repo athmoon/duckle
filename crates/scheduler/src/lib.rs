@@ -9,7 +9,7 @@
 use chrono::{DateTime, Local, Utc};
 use cron::Schedule as CronSchedule;
 use duckle_duckdb_engine::{
-    append_run_record, DuckdbEngine, RunRecord, RunResult,
+    append_run_record, runlock, DuckdbEngine, RunRecord, RunResult,
 };
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
@@ -97,6 +97,39 @@ struct SchedulerInner {
     watchers: HashMap<String, Debouncer<RecommendedWatcher>>,
     /// Receiver for file-watch fires; taken by `spawn_ticker`.
     fire_rx: Option<UnboundedReceiver<String>>,
+}
+
+/// The answer to "may this process run that schedule right now?".
+enum Claim {
+    /// Yes. Dropping the payload gives the claim back.
+    Ours(Option<runlock::RunLock>),
+    /// No - another Duckle process is already running it.
+    Taken,
+}
+
+/// Ask for the exclusive right to run `id`.
+///
+/// Both of this crate's fire paths and the runner's own scheduler go through a
+/// lock like this, because the in-process guards each of them keeps - a
+/// semaphore here, a last-fired map there - say nothing about the other
+/// process. Two schedulers on one workspace is not a misconfiguration: it is
+/// what a workspace looks like mid-way through moving from a laptop to a
+/// server. Firing twice means two runs into the same sink and two runs
+/// advancing the same `xf.incremental` watermark, and the second is how a load
+/// silently skips rows.
+///
+/// A scheduler with no workspace is handed an unheld claim rather than a
+/// refusal: there is nothing on disk for two processes to race over, and
+/// `run_now` declines such a run on its own terms with a clearer message than
+/// a lock could give.
+fn claim_run(workspace: Option<&Path>, id: &str) -> Claim {
+    match workspace {
+        None => Claim::Ours(None),
+        Some(ws) => match runlock::try_acquire(ws, id) {
+            Some(lock) => Claim::Ours(Some(lock)),
+            None => Claim::Taken,
+        },
+    }
 }
 
 impl Scheduler {
@@ -338,6 +371,22 @@ impl Scheduler {
                 while let Some(id) = rx.recv().await {
                     let me2 = me.clone();
                     tokio::spawn(async move {
+                        // Watching is per process, so two Duckle processes
+                        // watching one folder both see the same file land and
+                        // both fire. Same clash as a cron tick, same guard.
+                        let workspace = {
+                            me2.inner.lock().expect("scheduler poisoned").workspace_path.clone()
+                        };
+                        let _claim = match claim_run(workspace.as_deref(), &id) {
+                            Claim::Ours(lock) => lock,
+                            Claim::Taken => {
+                                warn!(
+                                    "File-watch run {} is already running in another process; skipping",
+                                    id
+                                );
+                                return;
+                            }
+                        };
                         if let Err(e) = me2.run_now(&id).await {
                             warn!("File-watch run {} failed: {}", id, e);
                         }
@@ -349,6 +398,9 @@ impl Scheduler {
 
     async fn fire_due(&self) {
         let now = Utc::now();
+        // Read the workspace under the same lock as the due list, so the path
+        // used for the run lock is the one this tick actually decided against.
+        let workspace = { self.inner.lock().expect("scheduler poisoned").workspace_path.clone() };
         let due: Vec<String> = {
             let mut g = self.inner.lock().expect("scheduler poisoned");
             let mut due = Vec::new();
@@ -370,6 +422,7 @@ impl Scheduler {
         };
         for id in due {
             let me = self.clone();
+            let workspace = workspace.clone();
             let permit = run_permits().clone();
             tokio::spawn(async move {
                 // Hold a permit for the whole run. Every schedule that comes due
@@ -377,6 +430,20 @@ impl Scheduler {
                 // meant ten pipelines each sized for the whole machine. The
                 // permit bounds that; the run still happens, it just queues.
                 let _slot = permit.acquire_owned().await;
+                // The semaphore above bounds this process only. Skipping on a
+                // clash rather than queueing is deliberate: the next tick comes
+                // round anyway, and a backlog of identical overdue runs helps
+                // nobody.
+                let _claim = match claim_run(workspace.as_deref(), &id) {
+                    Claim::Ours(lock) => lock,
+                    Claim::Taken => {
+                        warn!(
+                            "Schedule {} is already running in another process; skipping this tick",
+                            id
+                        );
+                        return;
+                    }
+                };
                 if let Err(e) = me.run_now(&id).await {
                     warn!("Scheduled run {} failed: {}", id, e);
                 }
@@ -640,5 +707,71 @@ mod tests {
         };
         compute_next_run(&mut s);
         assert!(s.next_run_at.is_none());
+    }
+
+    /// The condition the run lock exists for. `fire_due` claims an occurrence
+    /// by advancing `next_run_at` under the in-process mutex, which is enough
+    /// for one process and does nothing for two: the claim never reaches disk
+    /// at fire time, so a desktop app and a `duckle-runner serve` daemon
+    /// pointed at one workspace independently decide the same schedule is due
+    /// in the same second. This asserts that decision is genuinely made twice,
+    /// so the guard in `fire_due` is load-bearing rather than defensive.
+    #[test]
+    fn two_schedulers_on_one_workspace_both_decide_the_same_run_is_due() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        let engine = || DuckdbEngine::new(PathBuf::from("duckdb"));
+
+        // The desktop app, which writes the schedule to the workspace.
+        let desktop = Scheduler::new(engine());
+        desktop.set_workspace(Some(ws.clone()));
+        desktop
+            .upsert(Schedule {
+                id: String::new(),
+                pipeline_id: "nightly-load".into(),
+                name: "every second".into(),
+                enabled: true,
+                // Six fields, so the leading one is seconds: due almost at once.
+                kind: ScheduleKind::Cron { expr: "* * * * * *".into() },
+                last_run_at: None,
+                last_run_status: None,
+                last_run_duration_ms: None,
+                last_run_error: None,
+                next_run_at: None,
+            })
+            .expect("schedule rejected");
+
+        // A runner daemon started afterwards against the same workspace, which
+        // is how a workspace gets promoted from a laptop to a server.
+        let daemon = Scheduler::new(engine());
+        daemon.set_workspace(Some(ws.clone()));
+
+        // Let the next-run time arrive for both.
+        std::thread::sleep(Duration::from_millis(1500));
+        let now = Utc::now();
+        let due = |s: &Scheduler| -> Vec<String> {
+            s.list()
+                .into_iter()
+                .filter(|x| x.enabled && matches!(x.next_run_at, Some(t) if t <= now))
+                .map(|x| x.id)
+                .collect()
+        };
+        let a = due(&desktop);
+        let b = due(&daemon);
+        assert_eq!(a.len(), 1, "the desktop scheduler did not consider it due");
+        assert_eq!(
+            a, b,
+            "both processes must reach the same fire decision for the lock to matter"
+        );
+
+        // And that shared decision is exactly what the lock arbitrates: the
+        // first process to ask gets to run it, the second is turned away.
+        let held = duckle_duckdb_engine::runlock::try_acquire(&ws, &a[0])
+            .expect("the first process could not take the run lock");
+        assert!(
+            duckle_duckdb_engine::runlock::try_acquire(&ws, &b[0]).is_none(),
+            "the second process was allowed to run the same schedule"
+        );
+        drop(held);
     }
 }

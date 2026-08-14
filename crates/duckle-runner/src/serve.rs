@@ -1353,6 +1353,32 @@ impl Drop for RunningGuard<'_> {
     }
 }
 
+/// Fire a scheduled pipeline, unless another Duckle process already is.
+///
+/// The in-memory `last_fired` / `cron_next` maps below only stop THIS process
+/// double-firing. A desktop app open on the same workspace runs its own
+/// scheduler and knows nothing about this one, so the guard has to live on
+/// disk. Skipping is the right response to a clash: the next tick comes round
+/// anyway, and two runs of one pipeline race on the sink and on the
+/// `xf.incremental` watermark, which is how a load quietly skips rows.
+fn run_scheduled(state: &State, id: &str, file: &str) {
+    let _lock = match duckle_duckdb_engine::runlock::try_acquire(&state.workspace, id) {
+        Some(l) => l,
+        None => {
+            eprintln!("duckle-runner: scheduled {id} already running elsewhere, skipped");
+            return;
+        }
+    };
+    match execute_one(state, file, "scheduled", &HashMap::new()) {
+        Ok(v) => eprintln!(
+            "duckle-runner: scheduled {} -> {}",
+            id,
+            v.get("status").and_then(|s| s.as_str()).unwrap_or("?")
+        ),
+        Err(e) => eprintln!("duckle-runner: scheduled {} failed: {}", id, e),
+    }
+}
+
 fn execute_one(
     state: &State,
     file: &str,
@@ -1453,14 +1479,7 @@ fn spawn_scheduler(state: Arc<State>) {
                                 } else if due {
                                     if let Some(path) = pipes.get(id) {
                                         let file = rel(&state.workspace, path);
-                                        match execute_one(&state, &file, "scheduled", &HashMap::new()) {
-                                            Ok(v) => eprintln!(
-                                                "duckle-runner: scheduled {} -> {}",
-                                                id,
-                                                v.get("status").and_then(|s| s.as_str()).unwrap_or("?")
-                                            ),
-                                            Err(e) => eprintln!("duckle-runner: scheduled {} failed: {}", id, e),
-                                        }
+                                        run_scheduled(&state, id, &file);
                                     }
                                     // Re-arm from now so we don't double-fire this minute.
                                     cron_next
@@ -1494,14 +1513,7 @@ fn spawn_scheduler(state: Arc<State>) {
                     if let Some(path) = pipes.get(id) {
                         let file = rel(&state.workspace, path);
                         last_fired.insert(id.clone(), now);
-                        match execute_one(&state, &file, "scheduled", &HashMap::new()) {
-                            Ok(v) => eprintln!(
-                                "duckle-runner: scheduled {} -> {}",
-                                id,
-                                v.get("status").and_then(|s| s.as_str()).unwrap_or("?")
-                            ),
-                            Err(e) => eprintln!("duckle-runner: scheduled {} failed: {}", id, e),
-                        }
+                        run_scheduled(&state, id, &file);
                     }
                 }
             }

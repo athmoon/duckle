@@ -1789,13 +1789,84 @@ fn run_scheduled(state: &State, id: &str, file: &str) {
         }
     };
     match execute_one(state, file, "scheduled", &HashMap::new()) {
-        Ok(v) => eprintln!(
-            "duckle-runner: scheduled {} -> {}",
-            id,
-            v.get("status").and_then(|s| s.as_str()).unwrap_or("?")
-        ),
-        Err(e) => eprintln!("duckle-runner: scheduled {} failed: {}", id, e),
+        Ok(v) => {
+            let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("?");
+            eprintln!("duckle-runner: scheduled {} -> {}", id, status);
+            record_schedule_outcome(
+                state,
+                id,
+                status,
+                v.get("durationMs").and_then(|d| d.as_u64()).unwrap_or(0),
+                v.get("error").and_then(|e| e.as_str()).map(str::to_string),
+            );
+        }
+        Err(e) => {
+            eprintln!("duckle-runner: scheduled {} failed: {}", id, e);
+            // A run that could not even start is still an outcome, and leaving
+            // it out is what makes a schedule look like it never fired.
+            record_schedule_outcome(state, id, "error", 0, Some(e.clone()));
+            alerts_notify(state, id, "error", 0, Some(e));
+        }
     }
+}
+
+/// Write a scheduled run's outcome back to the shared schedule store.
+///
+/// Only the desktop app used to do this, and once both products moved to one
+/// `schedules.json` that left a runner-only deployment showing "never run"
+/// forever while it was in fact running fine every hour - and made any
+/// staleness check built on `lastRunAt` useless.
+fn record_schedule_outcome(
+    state: &State,
+    pipeline_id: &str,
+    status: &str,
+    duration_ms: u64,
+    error: Option<String>,
+) {
+    let (pipeline_id, status) = (pipeline_id.to_string(), status.to_string());
+    let outcome = duckle_duckdb_engine::schedules::update(&state.workspace, move |list| {
+        for s in list.iter_mut().filter(|s| s.pipeline_id == pipeline_id) {
+            s.last_run_at = Some(chrono::Utc::now());
+            s.last_run_status = Some(status.clone());
+            s.last_run_duration_ms = Some(duration_ms);
+            s.last_run_error = error.clone();
+        }
+    });
+    if let Err(e) = outcome {
+        eprintln!("duckle-runner: could not record the run against its schedule: {e}");
+    }
+}
+
+/// Raise an alert for something that happened outside `execute_one`, which is
+/// where the ordinary path already reports from.
+fn alerts_notify(state: &State, pipeline_id: &str, status: &str, duration_ms: u64, error: Option<String>) {
+    let result = duckle_duckdb_engine::RunResult {
+        status: status.to_string(),
+        duration_ms,
+        nodes: Default::default(),
+        preview: Vec::new(),
+        category: error.as_deref().map(duckle_duckdb_engine::error_category::categorize_error)
+            .map(str::to_string),
+        error,
+    };
+    duckle_duckdb_engine::alerts::notify(&state.workspace, pipeline_id, &result);
+}
+
+/// A schedule came due and its pipeline is not there.
+///
+/// This used to do nothing at all: the fire site was `if let Some(path) =
+/// pipes.get(id)`, so renaming or deleting a pipeline turned its schedule into
+/// a no-op that reported nothing, forever. That is the worst shape a scheduler
+/// failure can take, because everything looks healthy while the data quietly
+/// stops arriving.
+fn report_missing_pipeline(state: &State, id: &str) {
+    let msg = format!(
+        "scheduled pipeline '{id}' has no pipeline file in the workspace; \
+         it was probably renamed, moved or deleted"
+    );
+    eprintln!("duckle-runner: {msg}");
+    record_schedule_outcome(state, id, "error", 0, Some(msg.clone()));
+    alerts_notify(state, id, "error", 0, Some(msg));
 }
 
 fn execute_one(
@@ -1899,9 +1970,12 @@ fn spawn_scheduler(state: Arc<State>) {
                                         cron_next.insert(id.clone(), next);
                                     }
                                 } else if due {
-                                    if let Some(path) = pipes.get(id) {
-                                        let file = rel(&state.workspace, path);
-                                        run_scheduled(&state, id, &file);
+                                    match pipes.get(id) {
+                                        Some(path) => {
+                                            let file = rel(&state.workspace, path);
+                                            run_scheduled(&state, id, &file);
+                                        }
+                                        None => report_missing_pipeline(&state, id),
                                     }
                                     // Re-arm from now so we don't double-fire this minute.
                                     cron_next
@@ -1935,10 +2009,18 @@ fn spawn_scheduler(state: Arc<State>) {
                     continue;
                 }
                 if due {
-                    if let Some(path) = pipes.get(id) {
-                        let file = rel(&state.workspace, path);
-                        last_fired.insert(id.clone(), now);
-                        run_scheduled(&state, id, &file);
+                    // The clock is re-armed whether or not the pipeline is
+                    // there. It used to be advanced only inside the match, so a
+                    // missing pipeline left this schedule permanently due and it
+                    // re-evaluated on every tick, silently, for as long as the
+                    // process lived.
+                    last_fired.insert(id.clone(), now);
+                    match pipes.get(id) {
+                        Some(path) => {
+                            let file = rel(&state.workspace, path);
+                            run_scheduled(&state, id, &file);
+                        }
+                        None => report_missing_pipeline(&state, id),
                     }
                 }
             }

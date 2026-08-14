@@ -34,7 +34,7 @@ import {
 // is `planned` and structurally cannot carry one. There is no third state where
 // a tile looks live and does nothing, because such a tile cannot be written.
 
-export type ModuleGroup = 'build' | 'operate' | 'govern' | 'admin';
+export type ModuleGroup = 'build' | 'operate' | 'govern';
 
 type ModuleBase = {
     id: string;
@@ -65,13 +65,12 @@ export type PlannedModule = ModuleBase & {
 
 export type LauncherModule = ReadyModule | PlannedModule;
 
-const GROUP_ORDER: ModuleGroup[] = ['build', 'operate', 'govern', 'admin'];
+const GROUP_ORDER: ModuleGroup[] = ['build', 'operate', 'govern'];
 
 const GROUP_LABEL: Record<ModuleGroup, string> = {
     build: 'Build',
     operate: 'Operate',
     govern: 'Govern',
-    admin: 'Administer',
 };
 
 /** Everything the launcher needs from App, so this file owns no app state. */
@@ -192,7 +191,7 @@ export function buildModules(a: LauncherActions): LauncherModule[] {
             id: 'dq',
             name: 'Data Quality',
             blurb: 'Validate, profile, cleanse and mask data as it moves',
-            group: 'govern',
+            group: 'build',
             icon: ClipboardCheck,
             status: 'ready',
             open: a.openDataQuality,
@@ -241,12 +240,12 @@ export function buildModules(a: LauncherActions): LauncherModule[] {
             note: 'Lineage already shows impact inside a single pipeline',
         },
 
-        // ---- Administer ----
+        // ---- Operate (continued) ----
         {
             id: 'connections',
             name: 'Connections',
             blurb: 'Save credentials once and reuse them across pipelines',
-            group: 'admin',
+            group: 'operate',
             icon: Database,
             status: 'ready',
             open: a.openConnections,
@@ -255,7 +254,7 @@ export function buildModules(a: LauncherActions): LauncherModule[] {
             id: 'git',
             name: 'Version Control',
             blurb: 'Commit, push and pull your workspace',
-            group: 'admin',
+            group: 'operate',
             icon: GitBranch,
             status: 'ready',
             open: a.openGit,
@@ -264,7 +263,7 @@ export function buildModules(a: LauncherActions): LauncherModule[] {
             id: 'settings',
             name: 'Settings',
             blurb: 'Engine, AI, proxy, memory and appearance',
-            group: 'admin',
+            group: 'operate',
             icon: SettingsIcon,
             status: 'ready',
             open: a.openSettings,
@@ -273,7 +272,7 @@ export function buildModules(a: LauncherActions): LauncherModule[] {
             id: 'audit',
             name: 'Audit Log',
             blurb: 'A tamper-evident record of who changed and ran what',
-            group: 'admin',
+            group: 'govern',
             icon: ScrollText,
             status: 'planned',
         },
@@ -281,7 +280,7 @@ export function buildModules(a: LauncherActions): LauncherModule[] {
             id: 'rbac',
             name: 'Users and Roles',
             blurb: 'Who may design, who may run, who may only look',
-            group: 'admin',
+            group: 'govern',
             icon: Users,
             status: 'planned',
         },

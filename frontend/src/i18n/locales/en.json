@@ -244,8 +244,7 @@
     "group": {
       "build": "Build",
       "operate": "Operate",
-      "govern": "Govern",
-      "admin": "Administer"
+      "govern": "Govern"
     }
   }
 }

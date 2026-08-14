@@ -57,6 +57,20 @@ pub fn categorize_error(msg: &str) -> &'static str {
     ]) {
         return "auth";
     }
+    // A local file that is not there is not a network problem, and calling it
+    // one is actively harmful: the stated use of these categories is "retry
+    // network errors, fail fast on schema errors", so a retry policy would sit
+    // there re-reading a path that will never appear. DuckDB reports it as
+    // "IO Error: No files found that match the pattern ...", which the generic
+    // "io error" needle below would otherwise swallow. `other` rather than a
+    // new category, because this set is documented as stable and external
+    // tooling keys on it.
+    // Deliberately narrow. A bare "does not exist" also appears in "Table
+    // 'orders' does not exist", which is a schema error and must stay one, so
+    // only file-specific wording counts here.
+    if has(&["no files found", "no such file", "file not found", "cannot open file"]) {
+        return "other";
+    }
     if has(&[
         "connection refused",
         "connection reset",
@@ -119,6 +133,16 @@ mod tests {
         let cases = [
             ("Connection refused (os error 111)", "network"),
             ("TLS handshake failed: bad certificate", "network"),
+            // A missing local file used to land in `network` because DuckDB
+            // words it as an IO Error, which meant a retry-network policy sat
+            // there re-reading a path that was never going to appear.
+            (
+                "src: query: IO Error: No files found that match the pattern \"orders.csv\"",
+                "other",
+            ),
+            ("IO Error: No such file or directory", "other"),
+            // A genuine network IO error still belongs in `network`.
+            ("IO Error: Connection reset by peer", "network"),
             ("connection timed out after 30000 ms", "timeout"),
             ("Out of Memory Error: failed to allocate block", "oom"),
             ("IO Error: No space left on device", "disk"),

@@ -28,6 +28,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 const PANEL_HTML: &str = include_str!("panel.html");
+const SIGNIN_HTML: &str = include_str!("signin.html");
+
+use crate::audit;
+use crate::console_auth;
 
 struct ServeArgs {
     host: String,
@@ -35,6 +39,9 @@ struct ServeArgs {
     workspace: PathBuf,
     duckdb: Option<PathBuf>,
     tick_interval: Duration,
+    /// Console credential. Prefer DUCKLE_CONSOLE_TOKEN: an argument is visible
+    /// to anyone who can list processes on the host.
+    token: Option<String>,
 }
 
 fn parse_serve_args() -> Result<ServeArgs, String> {
@@ -43,6 +50,7 @@ fn parse_serve_args() -> Result<ServeArgs, String> {
     let mut workspace: Option<PathBuf> = None;
     let mut duckdb: Option<PathBuf> = None;
     let mut tick_secs: Option<u64> = None;
+    let mut token: Option<String> = None;
     let mut it = std::env::args().skip(2);
     while let Some(arg) = it.next() {
         let mut take = |label: &str| it.next().ok_or_else(|| format!("{} needs a value", label));
@@ -55,6 +63,7 @@ fn parse_serve_args() -> Result<ServeArgs, String> {
             }
             "--workspace" => workspace = Some(PathBuf::from(take("--workspace")?)),
             "--duckdb" => duckdb = Some(PathBuf::from(take("--duckdb")?)),
+            "--token" => token = Some(take("--token")?),
             "--tick-interval" => {
                 tick_secs = Some(
                     take("--tick-interval")?
@@ -91,7 +100,7 @@ fn parse_serve_args() -> Result<ServeArgs, String> {
             .filter(|n| *n > 0)
             .unwrap_or(15),
     );
-    Ok(ServeArgs { host, port, workspace, duckdb, tick_interval })
+    Ok(ServeArgs { host, port, workspace, duckdb, tick_interval, token })
 }
 
 /// Bounds how many pipelines execute at once.
@@ -160,6 +169,10 @@ struct State {
     /// Pipeline ids currently executing, so the console can show a live
     /// "Running" status (discussion #155). Populated for the duration of a run.
     running: Mutex<std::collections::HashSet<String>>,
+    /// Who may call this console and what they may do. Decided once at
+    /// startup, because a bind that cannot be authenticated must not serve at
+    /// all rather than serve and warn.
+    console: console_auth::Console,
     /// Scheduler poll cadence (issue #135). Default 15s; overridable via
     /// --tick-interval or DUCKLE_TICK_INTERVAL.
     tick_interval: Duration,
@@ -180,11 +193,24 @@ pub fn run() -> Result<(), String> {
     std::env::set_var("DUCKLE_LOG_DIR", workspace.join("logs"));
     apply_workspace_memory_limit(&workspace);
 
+    // Decide who may use this console before binding anything. An exposed bind
+    // with no credential is an error here, not a warning: the console can run
+    // any pipeline in the workspace, so serving it to the network unauthenticated
+    // is remote code execution, and a warning in a service log is not a control.
+    let token = args
+        .token
+        .clone()
+        .or_else(|| std::env::var("DUCKLE_CONSOLE_TOKEN").ok())
+        .filter(|t| !t.trim().is_empty());
+    let console = console_auth::Console::configure(&workspace, &args.host, token.as_deref())?;
+    let console_open = console.is_open();
+
     let state = Arc::new(State {
         workspace: workspace.clone(),
         duckdb: duckdb.clone(),
         run_lock: RunGate::new(max_concurrent_runs()),
         running: Mutex::new(std::collections::HashSet::new()),
+        console,
         tick_interval: args.tick_interval,
     });
 
@@ -199,8 +225,10 @@ pub fn run() -> Result<(), String> {
     eprintln!("duckle-runner: management console on http://{}", addr);
     eprintln!("duckle-runner: workspace {}", workspace.display());
     eprintln!("duckle-runner: DuckDB {}", duckdb.display());
-    if args.host != "127.0.0.1" && args.host != "localhost" {
-        eprintln!("duckle-runner: WARNING - no authentication; exposed on {}", args.host);
+    if console_open {
+        eprintln!("duckle-runner: no token set; reachable only from this machine");
+    } else {
+        eprintln!("duckle-runner: sign-in required");
     }
 
     for stream in listener.incoming() {
@@ -229,6 +257,9 @@ struct WebArgs {
     workspace: PathBuf,
     duckdb: Option<PathBuf>,
     dist: PathBuf,
+    /// Editor credential. Prefer DUCKLE_CONSOLE_TOKEN over an argument, which
+    /// anyone who can list processes on the host can read.
+    token: Option<String>,
 }
 
 fn parse_web_args() -> Result<WebArgs, String> {
@@ -237,6 +268,7 @@ fn parse_web_args() -> Result<WebArgs, String> {
     let mut workspace: Option<PathBuf> = None;
     let mut duckdb: Option<PathBuf> = None;
     let mut dist: Option<PathBuf> = None;
+    let mut token: Option<String> = None;
     let mut it = std::env::args().skip(2);
     while let Some(arg) = it.next() {
         let mut take = |label: &str| it.next().ok_or_else(|| format!("{} needs a value", label));
@@ -248,6 +280,7 @@ fn parse_web_args() -> Result<WebArgs, String> {
             "--workspace" => workspace = Some(PathBuf::from(take("--workspace")?)),
             "--duckdb" => duckdb = Some(PathBuf::from(take("--duckdb")?)),
             "--dist" => dist = Some(PathBuf::from(take("--dist")?)),
+            "--token" => token = Some(take("--token")?),
             "-h" | "--help" => {
                 println!(
                     "duckle-runner web - serve the Duckle editor as a web app (spike)\n\n\
@@ -265,6 +298,7 @@ fn parse_web_args() -> Result<WebArgs, String> {
         workspace: workspace.unwrap_or_else(|| PathBuf::from(".")),
         duckdb,
         dist: dist.ok_or("web mode needs --dist <frontend dist dir>")?,
+        token,
     })
 }
 
@@ -277,6 +311,9 @@ struct WebState {
     /// Bounds concurrent runs from the browser. One at a time by default; raise
     /// with DUCKLE_MAX_CONCURRENT_RUNS. See [`RunGate`].
     run_lock: RunGate,
+    /// Who may use this editor. Same policy object the console uses, so one
+    /// set of accounts covers both.
+    console: console_auth::Console,
 }
 
 pub fn run_web() -> Result<(), String> {
@@ -294,18 +331,35 @@ pub fn run_web() -> Result<(), String> {
     std::env::set_var("DUCKLE_WORKSPACE", &workspace);
     std::env::set_var("DUCKLE_LOG_DIR", workspace.join("logs"));
     apply_workspace_memory_limit(&workspace);
+    // The editor writes files, edits connections and runs pipelines, so it is
+    // at least as powerful as the console and gets the same rule: loopback is
+    // open, anything else needs a credential before the socket is bound.
+    let token = args
+        .token
+        .clone()
+        .or_else(|| std::env::var("DUCKLE_CONSOLE_TOKEN").ok())
+        .filter(|t| !t.trim().is_empty());
+    let console = console_auth::Console::configure(&workspace, &args.host, token.as_deref())?;
+    let console_open = console.is_open();
+
     let state = Arc::new(WebState {
         workspace: workspace.clone(),
         duckdb: duckdb.clone(),
         dist: dist.clone(),
         host: args.host.clone(),
         run_lock: RunGate::new(max_concurrent_runs()),
+        console,
     });
     let addr = format!("{}:{}", args.host, args.port);
     let listener = TcpListener::bind(&addr).map_err(|e| format!("bind {}: {}", addr, e))?;
     eprintln!("duckle-runner: web editor on http://{}", addr);
     eprintln!("duckle-runner: workspace {}", workspace.display());
     eprintln!("duckle-runner: serving {}", dist.display());
+    if console_open {
+        eprintln!("duckle-runner: no token set; reachable only from this machine");
+    } else {
+        eprintln!("duckle-runner: sign-in required");
+    }
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
@@ -322,11 +376,66 @@ pub fn run_web() -> Result<(), String> {
     Ok(())
 }
 
+/// Exchange a token for a session cookie, for the editor.
+fn web_sign_in(stream: &mut TcpStream, state: &WebState, req: &Request) -> Result<(), String> {
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+    let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
+    match state.console.sign_in(token) {
+        Some((sid, who)) => {
+            audit::record(&state.workspace, Some(&who), "session.sign_in", "editor", audit::Outcome::Allowed);
+            let payload = json!({ "label": who.label, "role": who.role.as_str() }).to_string();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Set-Cookie: {}={}; HttpOnly; SameSite=Strict; Path=/\r\nConnection: close\r\n\r\n",
+                payload.len(),
+                console_auth::SESSION_COOKIE,
+                sid
+            );
+            stream.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
+            stream.write_all(payload.as_bytes()).map_err(|e| e.to_string())
+        }
+        None => {
+            audit::record(&state.workspace, None, "session.sign_in", "editor", audit::Outcome::Unauthenticated);
+            respond_err(stream, "401 Unauthorized", "that token was not accepted")
+        }
+    }
+}
+
 fn handle_web(mut stream: TcpStream, state: &WebState) -> Result<(), String> {
     let req = read_request(&mut stream)?;
     // Block cross-origin / non-local state-changing POSTs (CSRF + DNS-rebind).
     if req.method == "POST" && req.path.starts_with("/api/") && !guard_local(&req, &state.host) {
         return respond_403(&mut stream, "blocked: cross-origin or non-local request");
+    }
+    if req.method == "POST" && req.path == "/api/session" {
+        return web_sign_in(&mut stream, state, &req);
+    }
+    // The editor has no read-only mode: opening it means loading a workspace to
+    // change it, so the whole surface needs operator. Anything touching
+    // connections, which is to say credentials, needs admin.
+    let needed = if req.path.starts_with("/api/cmd/connection") {
+        console_auth::Role::Admin
+    } else {
+        console_auth::Role::Operator
+    };
+    let action = if req.path.starts_with("/api/") { "editor.api" } else { "editor.open" };
+    let who = state.console.identify(req.authorization.as_deref(), req.cookie.as_deref());
+    let Some(who) = who else {
+        audit::record(&state.workspace, None, action, &req.path, audit::Outcome::Unauthenticated);
+        if req.method == "GET" && !req.path.starts_with("/api/") {
+            return respond(&mut stream, "401 Unauthorized", "text/html; charset=utf-8", SIGNIN_HTML.as_bytes());
+        }
+        return respond_err(&mut stream, "401 Unauthorized", "sign in to use the editor");
+    };
+    if !who.role.allows(needed) {
+        audit::record(&state.workspace, Some(&who), action, &req.path, audit::Outcome::Denied);
+        return respond_403(
+            &mut stream,
+            &format!("this needs the {} role; you have {}", needed.as_str(), who.role.as_str()),
+        );
+    }
+    if req.method == "POST" {
+        audit::record(&state.workspace, Some(&who), action, &req.path, audit::Outcome::Allowed);
     }
     if req.method == "POST" && req.path.starts_with("/api/cmd/") {
         let cmd = req.path.trim_start_matches("/api/cmd/").to_string();
@@ -737,6 +846,10 @@ struct Request {
     query: HashMap<String, String>,
     origin: Option<String>,
     host: Option<String>,
+    /// `Authorization: Bearer <token>`, for API clients.
+    authorization: Option<String>,
+    /// Raw `Cookie` header, carrying the console's session id for browsers.
+    cookie: Option<String>,
     body: Vec<u8>,
 }
 
@@ -770,6 +883,8 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
     let mut content_length = 0usize;
     let mut origin = None;
     let mut host = None;
+    let mut authorization = None;
+    let mut cookie = None;
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
             let key = k.trim();
@@ -779,6 +894,10 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
                 origin = Some(v.trim().to_string());
             } else if key.eq_ignore_ascii_case("host") {
                 host = Some(v.trim().to_string());
+            } else if key.eq_ignore_ascii_case("authorization") {
+                authorization = Some(v.trim().to_string());
+            } else if key.eq_ignore_ascii_case("cookie") {
+                cookie = Some(v.trim().to_string());
             }
         }
     }
@@ -791,7 +910,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         body.extend_from_slice(&tmp[..n]);
     }
     body.truncate(content_length);
-    Ok(Request { method, path, query, origin, host, body })
+    Ok(Request { method, path, query, origin, host, authorization, cookie, body })
 }
 
 /// Host part of an Origin/Host header value (drop scheme, port, path, ipv6 []).
@@ -928,6 +1047,52 @@ fn respond_err(stream: &mut TcpStream, status: &str, msg: &str) -> Result<(), St
 fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
     let req = read_request(&mut stream)?;
     let route = (req.method.as_str(), req.path.as_str());
+
+    // Signing in is the one thing an unauthenticated caller may do.
+    if route == ("POST", "/api/session") {
+        return sign_in(&mut stream, state, &req);
+    }
+
+    // Everything else is identified and authorised before it is dispatched, so
+    // a route cannot be reached by forgetting to check it at the call site.
+    let (needed, action) = audit::requirement(&req.method, &req.path);
+    let target = audit_target(&req);
+    let who = state.console.identify(req.authorization.as_deref(), req.cookie.as_deref());
+    let Some(who) = who else {
+        audit::record(&state.workspace, None, action, &target, audit::Outcome::Unauthenticated);
+        // A browser asking for the page gets the sign-in form; an API client
+        // gets a 401 it can act on.
+        if req.method == "GET" && (req.path == "/" || req.path == "/index.html") {
+            return respond(&mut stream, "401 Unauthorized", "text/html; charset=utf-8", SIGNIN_HTML.as_bytes());
+        }
+        return respond_err(&mut stream, "401 Unauthorized", "sign in to use the console");
+    };
+    if !who.role.allows(needed) {
+        audit::record(&state.workspace, Some(&who), action, &target, audit::Outcome::Denied);
+        return respond_err(
+            &mut stream,
+            "403 Forbidden",
+            &format!("this needs the {} role; you have {}", needed.as_str(), who.role.as_str()),
+        );
+    }
+    // Reads are not recorded: they would bury the events worth seeing under a
+    // dashboard that polls every few seconds. Anything that changes something,
+    // and every refusal above, is.
+    if req.method != "GET" {
+        audit::record(&state.workspace, Some(&who), action, &target, audit::Outcome::Allowed);
+    }
+
+    if route == ("DELETE", "/api/session") {
+        state.console.sign_out(req.cookie.as_deref());
+        return respond_json(&mut stream, &json!({ "ok": true }));
+    }
+    if route == ("GET", "/api/whoami") {
+        return respond_json(
+            &mut stream,
+            &json!({ "label": who.label, "role": who.role.as_str(), "open": state.console.is_open() }),
+        );
+    }
+
     match route {
         ("GET", "/") | ("GET", "/index.html") => {
             respond(&mut stream, "200 OK", "text/html; charset=utf-8", PANEL_HTML.as_bytes())
@@ -971,6 +1136,64 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
             }
         }
         _ => respond_err(&mut stream, "404 Not Found", "not found"),
+    }
+}
+
+/// What the request was aimed at, for the audit log. Never the body, which can
+/// hold run parameters, and never the query string wholesale.
+fn audit_target(req: &Request) -> String {
+    if let Some(f) = req.query.get("file").or_else(|| req.query.get("id")) {
+        return f.clone();
+    }
+    if req.method != "GET" {
+        if let Ok(body) = serde_json::from_slice::<Value>(&req.body) {
+            if let Some(t) = body.get("file").or_else(|| body.get("id")).and_then(|v| v.as_str()) {
+                return t.to_string();
+            }
+        }
+    }
+    req.path.clone()
+}
+
+/// Exchange a token for a session cookie.
+///
+/// The token arrives in the body, never in the URL: a query string reaches the
+/// server log, the browser history and any proxy in between.
+fn sign_in(stream: &mut TcpStream, state: &State, req: &Request) -> Result<(), String> {
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+    let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
+    match state.console.sign_in(token) {
+        Some((sid, who)) => {
+            audit::record(&state.workspace, Some(&who), "session.sign_in", "-", audit::Outcome::Allowed);
+            // HttpOnly so page scripts cannot read it, SameSite=Strict so
+            // another site cannot ride it. Not Secure: the console is served
+            // over plain HTTP behind a proxy or on localhost, and marking it
+            // Secure would stop the cookie being set at all.
+            let cookie = format!(
+                "{}={}; HttpOnly; SameSite=Strict; Path=/",
+                console_auth::SESSION_COOKIE,
+                sid
+            );
+            let payload = json!({ "label": who.label, "role": who.role.as_str() }).to_string();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Set-Cookie: {}\r\nConnection: close\r\n\r\n",
+                payload.len(),
+                cookie
+            );
+            stream.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
+            stream.write_all(payload.as_bytes()).map_err(|e| e.to_string())
+        }
+        None => {
+            audit::record(
+                &state.workspace,
+                None,
+                "session.sign_in",
+                "-",
+                audit::Outcome::Unauthenticated,
+            );
+            respond_err(stream, "401 Unauthorized", "that token was not accepted")
+        }
     }
 }
 

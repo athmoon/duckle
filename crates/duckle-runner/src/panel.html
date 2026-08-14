@@ -154,6 +154,7 @@
     Workspace
     <div class="ws" id="ws">-</div>
     <div class="cli">Start from a terminal:<br><code id="cli-cmd">duckle serve</code></div>
+    <div id="me" style="margin-top:12px"></div>
     <label><input type="checkbox" id="autorefresh" checked> Auto-refresh (5s)</label>
   </div>
 </aside>
@@ -236,7 +237,39 @@
 const $ = (id) => document.getElementById(id);
 let PIPES = [], RUNS = [], JOB_FILTER = 'all', RUN_FILTER = 'all', OPEN_JOB = null;
 
-async function api(p, opts) { const r = await fetch(p, opts); return r.json(); }
+// A 401 means the session went away (server restart, or sign-out in another
+// tab). Reloading lands on the sign-in page the server serves for '/'.
+// A 403 is a role refusal and is worth saying out loud rather than silently
+// rendering nothing.
+async function api(p, opts) {
+  const r = await fetch(p, opts);
+  if (r.status === 401) { location.reload(); return {}; }
+  if (r.status === 403) {
+    const body = await r.json().catch(() => ({}));
+    toast(body.error || 'Your role does not allow that');
+    return {};
+  }
+  return r.json();
+}
+// Who is signed in, once known. Viewers get read-only controls.
+let ME = { role: 'admin', label: 'local', open: true };
+function canOperate(){ return ME.role === 'operator' || ME.role === 'admin'; }
+async function loadMe(){
+  try {
+    const r = await fetch('/api/whoami');
+    if (r.ok) ME = await r.json();
+  } catch (_) { /* leave the default; the next api() call will redirect */ }
+  const el = document.getElementById('me');
+  if (!el) return;
+  el.innerHTML = ME.open
+    ? '<span class="muted">local access</span>'
+    : `<b>${esc(ME.label)}</b> <span class="muted">${esc(ME.role)}</span>` +
+      ' &middot; <a href="#" onclick="signOut();return false">Sign out</a>';
+}
+async function signOut(){
+  await fetch('/api/session', { method: 'DELETE' });
+  location.reload();
+}
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function statusKey(s){ s=(s||'').toLowerCase(); if(s==='ok'||s==='successful')return 'ok'; if(s==='running')return 'run'; if(s)return 'err'; return 'none'; }
 function pill(s){ const k=statusKey(s); const t={ok:'Successful',err:'Failed',run:'Running',none:'Never run'}[k]; return `<span class="pill p-${k}">${t}</span>`; }
@@ -486,6 +519,7 @@ let timer=null;
 function setAutoRefresh(on){ if(timer){clearInterval(timer);timer=null;} if(on) timer=setInterval(refreshAll,5000); }
 $('autorefresh').onchange=e=>setAutoRefresh(e.target.checked);
 setAutoRefresh($('autorefresh').checked);
+loadMe();
 
 refreshAll();
 </script>

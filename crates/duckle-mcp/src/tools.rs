@@ -111,6 +111,12 @@ pub fn list_tools() -> Value {
                 "column": { "type": "string", "description": "Optional source column name; returns only its downstream dependents." },
                 "duckdb": { "type": "string", "description": "Path to the DuckDB CLI. Defaults to DUCKLE_DUCKDB_BIN or 'duckdb' on PATH." }
             }})),
+        tool("workspace_impact",
+            "Cross-pipeline blast radius. Every other lineage tool here answers about ONE pipeline; this one answers about the whole workspace, by joining pipelines through the assets they name. Ask it what breaks if a table, file or topic changes and it returns the pipelines that read it, the assets they write, everything downstream of those, the hop distance to each, and - when the workspace has an owners.json - who to tell. Omit 'asset' to list every asset instead, with how many pipelines write and read each. Read-only; no DuckDB binary needed. Always check 'unresolved': it counts source/sink nodes whose target could not be named, and a non-zero value means the answer may be missing edges.",
+            json!({ "type": "object", "properties": {
+                "workspace": { "type": "string", "description": "Workspace root holding pipelines/. Defaults to DUCKLE_WORKSPACE." },
+                "asset": { "type": "string", "description": "Asset name to trace, e.g. 'postgres://db:5432/sales.public.orders' or '/lake/raw/orders.parquet'. Omit to list all assets." }
+            }})),
         tool("diff_pipelines",
             "Diff two pipeline versions for review: reports nodes added/removed/changed (by component, properties, or compiled SQL) and edges added/removed, with a summary. Compile-only and read-only; no DuckDB binary needed. Give each side as a 'before'/'after' object or a 'beforePath'/'afterPath' file.",
             json!({ "type": "object", "properties": {
@@ -205,6 +211,7 @@ pub fn call_tool(params: Value) -> Result<Value, (i64, String)> {
         "verify_pipeline" => t_verify_pipeline(&args),
         "suggest_contracts" => t_suggest_contracts(&args),
         "pipeline_impact" => t_pipeline_impact(&args),
+        "workspace_impact" => t_workspace_impact(&args),
         "diff_pipelines" => t_diff_pipelines(&args),
         "trust_report" => t_trust_report(&args),
         "schema_drift" => t_schema_drift(&args),
@@ -824,6 +831,57 @@ fn t_run_pipeline(args: &Value) -> Result<Value, String> {
         }
     }
     Ok(out)
+}
+
+/// Cross-pipeline impact, the one question the per-pipeline tools cannot answer.
+fn t_workspace_impact(args: &Value) -> Result<Value, String> {
+    use duckle_duckdb_engine::catalog;
+    let workspace = arg_str(args, "workspace")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var("DUCKLE_WORKSPACE").ok().map(std::path::PathBuf::from))
+        .ok_or("missing 'workspace' (or set DUCKLE_WORKSPACE)")?;
+
+    let cat = catalog::build(&workspace)?;
+    let owners = catalog::load_owners(&workspace)?;
+    // The count of nodes that could not be named travels with every answer, so
+    // a caller cannot present a blast radius as exhaustive without seeing it.
+    let unresolved = json!(cat
+        .unresolved
+        .iter()
+        .map(|u| json!({ "pipeline": u.pipeline_id, "node": u.node_id, "component": u.component_id }))
+        .collect::<Vec<_>>());
+
+    match arg_str(args, "asset") {
+        Some(asset) => {
+            if !cat.assets.iter().any(|a| a.id == asset) {
+                return Err(format!(
+                    "no pipeline names '{asset}'; call this tool without 'asset' to list the names in use"
+                ));
+            }
+            let hit = cat.impact(asset, Some(&owners));
+            Ok(json!({
+                "asset": hit.asset,
+                "pipelines": hit.pipelines,
+                "assets": hit.assets,
+                "producers": cat.producers(asset).iter().map(|t| &t.pipeline_id).collect::<Vec<_>>(),
+                "consumers": cat.consumers(asset).iter().map(|t| &t.pipeline_id).collect::<Vec<_>>(),
+                "unresolved": unresolved,
+            }))
+        }
+        None => Ok(json!({
+            "pipelines": cat.pipelines.len(),
+            "assets": cat.assets.iter().map(|a| json!({
+                "id": a.id,
+                "kind": a.kind,
+                "writtenBy": cat.producers(&a.id).len(),
+                "readBy": cat.consumers(&a.id).len(),
+                "owner": owners.for_asset(&a.id).map(|r| r.owner.clone()),
+            })).collect::<Vec<_>>(),
+            "orphans": cat.orphans().iter().map(|a| &a.id).collect::<Vec<_>>(),
+            "externals": cat.externals().iter().map(|a| &a.id).collect::<Vec<_>>(),
+            "unresolved": unresolved,
+        })),
+    }
 }
 
 fn t_list_pipelines(args: &Value) -> Result<Value, String> {

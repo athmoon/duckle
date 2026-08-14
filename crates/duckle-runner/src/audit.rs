@@ -99,6 +99,7 @@ pub fn requirement(method: &str, path: &str) -> (Role, &'static str) {
         ("GET", "/api/runs") => (Role::Viewer, "runs.read"),
         ("GET", "/api/log") => (Role::Viewer, "log.read"),
         ("GET", "/api/schedules") => (Role::Viewer, "schedules.read"),
+        ("GET", "/api/catalog") => (Role::Viewer, "catalog.read"),
         ("GET", "/api/params") => (Role::Viewer, "params.read"),
         ("GET", "/api/whoami") => (Role::Viewer, "session.whoami"),
         // Ending your own session is not a privilege. Leaving this to the
@@ -109,6 +110,10 @@ pub fn requirement(method: &str, path: &str) -> (Role, &'static str) {
         // Causing work to happen, or changing when it happens.
         ("POST", "/api/run") => (Role::Operator, "pipeline.run"),
         ("POST", "/api/schedules") => (Role::Operator, "schedule.write"),
+        // Rebuilding re-derives the graph from pipelines the caller can already
+        // read, so it is not an admin act; it does write a file, so it is not a
+        // viewer one either.
+        ("POST", "/api/catalog") => (Role::Operator, "catalog.rebuild"),
 
         // Anything unrecognised needs the highest role. A route added later
         // without a line here is locked down rather than left open.
@@ -159,6 +164,9 @@ mod tests {
         // in must be able to sign out, whatever their role.
         assert_eq!(requirement("DELETE", "/api/session").0, Role::Viewer);
         assert_eq!(requirement("DELETE", "/api/session").1, "session.sign_out");
+        // Reading the workspace graph is a read; rebuilding it writes a file.
+        assert_eq!(requirement("GET", "/api/catalog").0, Role::Viewer);
+        assert_eq!(requirement("POST", "/api/catalog").0, Role::Operator);
         assert_eq!(requirement("POST", "/api/schedules").0, Role::Operator);
         // The important one: a route nobody thought about is admin-only, so
         // adding an endpoint cannot accidentally publish it.

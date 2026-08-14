@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use duckle_duckdb_engine::catalog::{self, Catalog};
+use duckle_duckdb_engine::catalog::{self, Catalog, Impact, OwnerRule, Owners};
 
 pub fn run() -> Result<i32, String> {
     let args: Vec<String> = std::env::args().skip(2).collect();
@@ -18,11 +18,17 @@ pub fn run() -> Result<i32, String> {
              duckle-runner catalog build   [--workspace <dir>]\n    \
              duckle-runner catalog assets  [--workspace <dir>] [--json]\n    \
              duckle-runner catalog impact  <asset> [--workspace <dir>] [--json]\n    \
-             duckle-runner catalog orphans [--workspace <dir>]\n\n\
+             duckle-runner catalog orphans [--workspace <dir>]\n    \
+             duckle-runner catalog owners  [--workspace <dir>]\n\n\
              build scans every pipeline and writes .duckle/catalog.json. The other\n\
              commands read it, and build it first if it is missing.\n\n\
              impact answers what breaks if an asset changes: the pipelines that read\n\
-             it, the assets they write, and everything downstream of those.\n\n\
+             it, the assets they write, and everything downstream of those. With an\n\
+             owners.json it also says who to tell.\n\n\
+             owners.json lives in the workspace and is meant to be committed:\n    \
+             {{\"assets\": [{{\"match\": \"/lake/raw/*\", \"owner\": \"Data Platform\",\n     \
+             \"contact\": \"dp@example.com\"}}], \"pipelines\": [ ... ]}}\n    \
+             The first matching rule wins, so put specific patterns above general ones.\n\n\
              assets are named the way the pipelines name them, for example\n    \
              postgres://db:5432/sales.public.orders\n    \
              s3://bucket/curated/orders.parquet\n    \
@@ -83,7 +89,8 @@ pub fn run() -> Result<i32, String> {
                 .first()
                 .ok_or("impact needs an asset, e.g. `catalog impact /lake/staged.parquet`")?;
             let cat = load_or_build(&workspace)?;
-            let hit = cat.impact(asset);
+            let owners = catalog::load_owners(&workspace)?;
+            let hit = cat.impact(asset, Some(&owners));
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&hit).map_err(|e| e.to_string())?);
                 return Ok(0);
@@ -98,12 +105,49 @@ pub fn run() -> Result<i32, String> {
                 println!("Nothing reads {asset}.");
             } else {
                 println!("Changing {asset} reaches:");
+                // The owner is the other half of the answer: knowing what
+                // breaks is only useful alongside someone to tell.
+                let owned = |o: &Option<String>| match o {
+                    Some(name) => format!("  [{name}]"),
+                    None => String::new(),
+                };
                 for p in &hit.pipelines {
-                    println!("  {:>2} hop  pipeline  {}", p.depth, p.id);
+                    println!("  {:>2} hop  pipeline  {}{}", p.depth, p.id, owned(&p.owner));
                 }
                 for a in &hit.assets {
-                    println!("  {:>2} hop  asset     {}", a.depth, a.id);
+                    println!("  {:>2} hop  asset     {}{}", a.depth, a.id, owned(&a.owner));
                 }
+                let contacts = contacts_for(&owners, &hit);
+                if !contacts.is_empty() {
+                    println!("\nTell: {}", contacts.join(", "));
+                }
+            }
+            report_unresolved(&cat);
+            Ok(0)
+        }
+        "owners" => {
+            let cat = load_or_build(&workspace)?;
+            let owners = catalog::load_owners(&workspace)?;
+            if owners.is_empty() {
+                println!(
+                    "No {}, so nothing has an owner yet.",
+                    catalog::owners_path(&workspace).display()
+                );
+            }
+            let unowned = cat.unowned(&owners).len();
+            println!("{} of {} assets have an owner.", cat.assets.len() - unowned, cat.assets.len());
+            for asset in &cat.assets {
+                let who = owners.for_asset(&asset.id).map(|r| r.owner.as_str()).unwrap_or("-");
+                println!("  {:<20} {}", who, asset.id);
+            }
+            let unowned_pipelines: Vec<&str> = cat
+                .pipelines
+                .iter()
+                .filter(|p| owners.for_pipeline(&p.id).is_none())
+                .map(|p| p.id.as_str())
+                .collect();
+            if !unowned_pipelines.is_empty() {
+                println!("\nPipelines with no owner: {}", unowned_pipelines.join(", "));
             }
             report_unresolved(&cat);
             Ok(0)
@@ -128,6 +172,30 @@ pub fn run() -> Result<i32, String> {
         }
         other => Err(format!("unknown catalog command: {other}")),
     }
+}
+
+/// Everyone reached, de-duplicated and in a stable order, so the line can be
+/// pasted into a message rather than transcribed.
+fn contacts_for(owners: &Owners, hit: &Impact) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |rule: Option<&OwnerRule>| {
+        if let Some(r) = rule {
+            let entry = match &r.contact {
+                Some(c) => format!("{} <{}>", r.owner, c),
+                None => r.owner.clone(),
+            };
+            if !out.contains(&entry) {
+                out.push(entry);
+            }
+        }
+    };
+    for p in &hit.pipelines {
+        push(owners.for_pipeline(&p.id));
+    }
+    for a in &hit.assets {
+        push(owners.for_asset(&a.id));
+    }
+    out
 }
 
 /// Say what the graph could not see. Printed after every answer, because a

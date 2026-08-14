@@ -149,6 +149,7 @@
     <button data-tab="overview" class="active"><span class="ico">▦</span> Overview</button>
     <button data-tab="runs"><span class="ico">≡</span> Runs</button>
     <button data-tab="schedules"><span class="ico">◷</span> Schedules</button>
+    <button data-tab="catalog"><span class="ico">◈</span> Catalog</button>
   </nav>
   <div class="side-foot">
     Workspace
@@ -229,6 +230,26 @@
       </div>
       <div id="sched-empty" class="empty hidden"><div class="big">◷</div>No pipelines to schedule.</div>
     </section>
+
+    <section id="tab-catalog" class="hidden">
+      <div class="sub" style="margin-bottom:14px">
+        Everything the pipelines in this workspace read and write. Two pipelines that
+        name the same thing are linked here even if neither mentions the other.
+      </div>
+      <div class="toolbar">
+        <input type="text" id="cat-q" placeholder="Filter assets" style="min-width:260px">
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn" onclick="rebuildCatalog(this)">Rescan pipelines</button>
+      </div>
+      <div id="cat-note" class="sub" style="margin-bottom:10px"></div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <table>
+          <thead><tr><th>Asset</th><th>Kind</th><th>Owner</th><th>Written by</th><th>Read by</th></tr></thead>
+          <tbody id="cat-body"></tbody>
+        </table>
+      </div>
+      <div id="cat-empty" class="empty hidden"><div class="big">◈</div>No assets found. Are there pipelines in this workspace?</div>
+    </section>
   </div>
 </main>
 <div id="toast"></div>
@@ -308,13 +329,15 @@ function toast(msg, kind){ const el=document.createElement('div'); el.className=
 // ── Tabs ──
 const TITLES={overview:['Overview','Pipelines grouped by job, with their latest status.'],
   runs:['Runs','Every execution across all pipelines, newest first.'],
-  schedules:['Schedules','Run a pipeline on an interval. The console runs schedules itself while it is open.']};
+  schedules:['Schedules','Run a pipeline on an interval. The console runs schedules itself while it is open.'],
+  catalog:['Catalog','What this workspace reads and writes, and who owns it.']};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
   const tab=b.dataset.tab;
-  for(const t of ['overview','runs','schedules']) $('tab-'+t).classList.toggle('hidden', t!==tab);
+  for(const t of ['overview','runs','schedules','catalog']) $('tab-'+t).classList.toggle('hidden', t!==tab);
   $('page-title').textContent=TITLES[tab][0]; $('page-sub').textContent=TITLES[tab][1];
   if(tab==='runs') renderRuns(); if(tab==='schedules') renderSchedules();
+  if(tab==='catalog') loadCatalog();
 });
 
 // ── Data ──
@@ -512,6 +535,54 @@ async function runJob(file, id, btn){
   refreshAll();
 }
 
+// ── Catalog ──
+// The workspace graph, built by scanning every pipeline. Loaded on demand
+// rather than on the 5s poll, because a rescan reads every pipeline file.
+let CATALOG = null;
+async function loadCatalog(force){
+  if(CATALOG && !force) { renderCatalog(); return; }
+  CATALOG = await api('/api/catalog');
+  renderCatalog();
+}
+async function rebuildCatalog(btn){
+  btn.disabled = true; btn.textContent = 'Rescanning...';
+  CATALOG = await api('/api/catalog', { method: 'POST' });
+  btn.disabled = false; btn.textContent = 'Rescan pipelines';
+  renderCatalog();
+  toast('Catalog rebuilt');
+}
+function renderCatalog(){
+  const c = CATALOG || {};
+  const assets = c.assets || [];
+  const q = ($('cat-q').value || '').toLowerCase();
+  const shown = assets.filter(a => !q || a.id.toLowerCase().includes(q));
+  $('cat-empty').classList.toggle('hidden', assets.length > 0);
+
+  // Say out loud when the graph is partial. A blast radius that hides its own
+  // gaps is the one that gets trusted and then turns out to have missed a node.
+  const notes = [`${assets.length} assets across ${c.pipelines || 0} pipelines`];
+  if(c.orphans && c.orphans.length) notes.push(`${c.orphans.length} written but never read`);
+  if(c.externals && c.externals.length) notes.push(`${c.externals.length} read but produced elsewhere`);
+  if(!c.hasOwners) notes.push('no owners.json, so nothing has an owner');
+  if(c.unresolved) notes.push(`<b style="color:var(--amber)">${c.unresolved} node(s) could not be named, so this view may be incomplete</b>`);
+  $('cat-note').innerHTML = notes.join(' &middot; ');
+
+  $('cat-body').innerHTML = shown.map(a => {
+    const w = (a.writtenBy || []), r = (a.readBy || []);
+    // Written by nobody here means the workspace depends on it without
+    // producing it; read by nobody means whatever uses it is outside.
+    const wcell = w.length ? esc(w.join(', ')) : '<span class="muted">elsewhere</span>';
+    const rcell = r.length ? esc(r.join(', ')) : '<span class="muted">nobody here</span>';
+    return `<tr>
+      <td><code style="font-size:12px">${esc(a.id)}</code></td>
+      <td><span class="sched">${esc(a.kind)}</span></td>
+      <td>${a.owner ? esc(a.owner) : '<span class="muted">unowned</span>'}</td>
+      <td>${wcell}</td>
+      <td>${rcell}</td>
+    </tr>`;
+  }).join('');
+}
+
 // ── Auto-refresh ──
 // On by default so the live "Running" status and countdown to the next run
 // stay current without a manual refresh (discussion #155). Toggle to stop.
@@ -519,6 +590,7 @@ let timer=null;
 function setAutoRefresh(on){ if(timer){clearInterval(timer);timer=null;} if(on) timer=setInterval(refreshAll,5000); }
 $('autorefresh').onchange=e=>setAutoRefresh(e.target.checked);
 setAutoRefresh($('autorefresh').checked);
+$('cat-q').oninput = renderCatalog;
 loadMe();
 
 refreshAll();

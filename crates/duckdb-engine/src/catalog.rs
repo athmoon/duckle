@@ -89,6 +89,78 @@ pub struct Catalog {
     pub unresolved: Vec<Unresolved>,
 }
 
+/// One ownership rule: a glob over names, and who answers for what it matches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerRule {
+    /// Glob over asset or pipeline names. `*` matches any characters,
+    /// separators included, so `/lake/raw/*` covers everything beneath it.
+    #[serde(rename = "match")]
+    pub pattern: String,
+    pub owner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+}
+
+/// Who owns what, as authored by a human.
+///
+/// Rules are globs rather than one entry per asset because a workspace has
+/// hundreds of assets and nobody maintains a list that long: ownership is
+/// really "this team owns everything under /lake/raw". The first matching rule
+/// wins, so put the specific ones above the general ones - the same order a
+/// reader assumes when they scan the file top to bottom.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Owners {
+    #[serde(default)]
+    pub assets: Vec<OwnerRule>,
+    #[serde(default)]
+    pub pipelines: Vec<OwnerRule>,
+}
+
+impl Owners {
+    pub fn for_asset(&self, id: &str) -> Option<&OwnerRule> {
+        first_match(&self.assets, id)
+    }
+
+    pub fn for_pipeline(&self, id: &str) -> Option<&OwnerRule> {
+        first_match(&self.pipelines, id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.assets.is_empty() && self.pipelines.is_empty()
+    }
+}
+
+fn first_match<'a>(rules: &'a [OwnerRule], name: &str) -> Option<&'a OwnerRule> {
+    rules.iter().find(|r| {
+        // A pattern that will not compile matches nothing rather than
+        // everything: a typo must not silently hand a team the whole workspace.
+        glob::Pattern::new(&r.pattern).map(|p| p.matches(name)).unwrap_or(false)
+    })
+}
+
+/// Authored, so it lives beside the pipelines and belongs in version control -
+/// unlike the catalog itself, which is derived and lives under `.duckle`.
+pub fn owners_path(workspace: &Path) -> PathBuf {
+    workspace.join("owners.json")
+}
+
+/// Ownership rules, or an empty set when the workspace has none.
+///
+/// A file that will not parse is an error rather than "nobody owns anything",
+/// because silently reporting every asset as unowned is indistinguishable from
+/// the answer a workspace with no file at all should get.
+pub fn load_owners(workspace: &Path) -> Result<Owners, String> {
+    let p = owners_path(workspace);
+    if !p.exists() {
+        return Ok(Owners::default());
+    }
+    let text = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
+    if text.trim().is_empty() {
+        return Ok(Owners::default());
+    }
+    serde_json::from_str(&text).map_err(|e| format!("parse owners.json: {e}"))
+}
+
 pub fn catalog_path(workspace: &Path) -> PathBuf {
     workspace.join(".duckle").join("catalog.json")
 }
@@ -117,7 +189,7 @@ impl Catalog {
     /// keeps a visited set because workspaces really do contain cycles - a
     /// pipeline that reads a table and writes it back is a normal incremental
     /// pattern - and a cycle must end the walk, not hang it.
-    pub fn impact(&self, asset: &str) -> Impact {
+    pub fn impact(&self, asset: &str, owners: Option<&Owners>) -> Impact {
         // Index once rather than rescanning the touch list per hop; a workspace
         // with hundreds of pipelines otherwise turns this quadratic.
         let mut reads_by_asset: HashMap<&str, Vec<&Touch>> = HashMap::new();
@@ -156,8 +228,22 @@ impl Catalog {
 
         Impact {
             asset: asset.to_string(),
-            pipelines: pipelines.into_iter().map(|(id, depth)| Reached { id, depth }).collect(),
-            assets: assets.into_iter().map(|(id, depth)| Reached { id, depth }).collect(),
+            pipelines: pipelines
+                .into_iter()
+                .map(|(id, depth)| Reached {
+                    owner: owners.and_then(|o| o.for_pipeline(&id)).map(|r| r.owner.clone()),
+                    id,
+                    depth,
+                })
+                .collect(),
+            assets: assets
+                .into_iter()
+                .map(|(id, depth)| Reached {
+                    owner: owners.and_then(|o| o.for_asset(&id)).map(|r| r.owner.clone()),
+                    id,
+                    depth,
+                })
+                .collect(),
             unresolved: self.unresolved.len(),
         }
     }
@@ -181,6 +267,15 @@ impl Catalog {
             .iter()
             .filter(|a| written.contains(a.id.as_str()) && !read.contains(a.id.as_str()))
             .collect()
+    }
+
+    /// Assets that no ownership rule matches.
+    ///
+    /// The useful governance answer is not "here is the owner of this one
+    /// thing" but "here are the forty things nobody has claimed", which is the
+    /// list that gets worked through before an audit.
+    pub fn unowned<'a>(&'a self, owners: &Owners) -> Vec<&'a Asset> {
+        self.assets.iter().filter(|a| owners.for_asset(&a.id).is_none()).collect()
     }
 
     /// Assets read by some pipeline and written by none, so the workspace
@@ -211,6 +306,10 @@ impl Catalog {
 pub struct Reached {
     pub id: String,
     pub depth: usize,
+    /// Who to tell, when the workspace says. `None` means no rule matched,
+    /// which is a real answer worth showing rather than a blank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -722,7 +821,7 @@ mod tests {
         );
 
         let cat = build(ws).unwrap();
-        let hit = cat.impact("postgres://db/sales.orders");
+        let hit = cat.impact("postgres://db/sales.orders", None);
 
         // Dropping a column in the source table reaches all three pipelines,
         // two of which never mention Postgres anywhere.
@@ -750,7 +849,7 @@ mod tests {
             ]),
         );
         let cat = build(ws).unwrap();
-        let hit = cat.impact("/lake/running.parquet");
+        let hit = cat.impact("/lake/running.parquet", None);
         assert_eq!(hit.pipelines.len(), 1);
     }
 
@@ -772,7 +871,7 @@ mod tests {
 
         // The count rides along on impact, so a caller cannot show the result
         // as exhaustive without also seeing that something was missed.
-        assert_eq!(cat.impact("/lake/in.parquet").unresolved, 1);
+        assert_eq!(cat.impact("/lake/in.parquet", None).unresolved, 1);
     }
 
     #[test]
@@ -792,6 +891,122 @@ mod tests {
         assert_eq!(orphans, vec!["/out/nobody-reads-this.csv"]);
         let externals: Vec<&str> = cat.externals().iter().map(|a| a.id.as_str()).collect();
         assert_eq!(externals, vec!["/in/upstream.csv"]);
+    }
+
+    #[test]
+    fn the_first_matching_rule_wins_so_specific_beats_general() {
+        // A file read top to bottom should behave the way it reads. Putting the
+        // narrow rule first is how anyone carves an exception out of a broad
+        // one, and last-match-wins would silently invert that.
+        let owners = Owners {
+            assets: vec![
+                OwnerRule {
+                    pattern: "/lake/raw/pii_*".into(),
+                    owner: "Privacy".into(),
+                    contact: Some("privacy@acme.test".into()),
+                },
+                OwnerRule {
+                    pattern: "/lake/raw/*".into(),
+                    owner: "Data Platform".into(),
+                    contact: None,
+                },
+            ],
+            pipelines: vec![OwnerRule {
+                pattern: "*-ingest-*".into(),
+                owner: "Ingest".into(),
+                contact: None,
+            }],
+        };
+        assert_eq!(owners.for_asset("/lake/raw/pii_customers.parquet").unwrap().owner, "Privacy");
+        assert_eq!(owners.for_asset("/lake/raw/orders.parquet").unwrap().owner, "Data Platform");
+        assert!(owners.for_asset("/exports/report.csv").is_none(), "matched something it should not");
+        assert_eq!(owners.for_pipeline("01-ingest-orders").unwrap().owner, "Ingest");
+    }
+
+    #[test]
+    fn a_pattern_that_will_not_compile_owns_nothing() {
+        // The dangerous failure is the other way round: a typo that matches
+        // everything would hand one team the whole workspace and read as though
+        // ownership were complete.
+        let owners = Owners {
+            assets: vec![OwnerRule {
+                pattern: "[unclosed".into(),
+                owner: "Nobody".into(),
+                contact: None,
+            }],
+            pipelines: vec![],
+        };
+        assert!(owners.for_asset("/lake/raw/orders.parquet").is_none());
+        assert!(owners.for_asset("anything at all").is_none());
+    }
+
+    #[test]
+    fn impact_says_who_to_tell_and_unowned_says_what_nobody_claims() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_pipeline(
+            ws,
+            "ingest",
+            json!([
+                node("a", "src.postgres", json!({ "host": "db", "database": "sales", "tableName": "orders" })),
+                node("b", "snk.parquet", json!({ "path": "/lake/raw/orders.parquet" })),
+            ]),
+        );
+        write_pipeline(
+            ws,
+            "report",
+            json!([
+                node("a", "src.parquet", json!({ "path": "/lake/raw/orders.parquet" })),
+                node("b", "snk.csv", json!({ "path": "/exports/report.csv" })),
+            ]),
+        );
+        std::fs::write(
+            owners_path(ws),
+            json!({
+                "assets": [{ "match": "/lake/raw/*", "owner": "Data Platform", "contact": "dp@acme.test" }],
+                "pipelines": [{ "match": "report", "owner": "Analytics" }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let cat = build(ws).unwrap();
+        let owners = load_owners(ws).unwrap();
+        let hit = cat.impact("postgres://db/sales.orders", Some(&owners));
+
+        let owner_of = |id: &str| {
+            hit.pipelines
+                .iter()
+                .chain(hit.assets.iter())
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("{id} was not reached"))
+                .owner
+                .clone()
+        };
+        assert_eq!(owner_of("report").as_deref(), Some("Analytics"));
+        assert_eq!(owner_of("/lake/raw/orders.parquet").as_deref(), Some("Data Platform"));
+        // No rule covers the ingest pipeline or the export, and saying so is
+        // the point: a blank owner is a finding, not a formatting problem.
+        assert_eq!(owner_of("ingest"), None);
+        assert_eq!(owner_of("/exports/report.csv"), None);
+
+        let unowned: Vec<&str> = cat.unowned(&owners).iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(unowned, vec!["/exports/report.csv", "postgres://db/sales.orders"]);
+    }
+
+    #[test]
+    fn a_workspace_with_no_owners_file_reports_everything_unowned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_pipeline(ws, "p", json!([node("a", "src.csv", json!({ "path": "/in/a.csv" }))]));
+        let owners = load_owners(ws).unwrap();
+        assert!(owners.is_empty());
+        assert_eq!(build(ws).unwrap().unowned(&owners).len(), 1);
+
+        // A file that will not parse must not read as "nobody owns anything",
+        // which is exactly what an empty result would look like.
+        std::fs::write(owners_path(ws), b"{ not json").unwrap();
+        assert!(load_owners(ws).is_err());
     }
 
     #[test]

@@ -161,6 +161,8 @@ jaq-std = "1.5"
 # SSNs, credit cards). Already in our dep graph transitively but
 # pinned explicitly here so it's stable across upstream churn.
 regex = "1"
+# Ownership rules are globs over asset names. Already in the workspace lock.
+glob = "0.3"
 # IMAP client for src.email. 3.x alpha is what we need for rustls
 # support - the 2.x stable line only supports native-tls (OpenSSL on
 # Linux which would break the self-contained build promise). The

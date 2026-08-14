@@ -1108,6 +1108,13 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
         },
         ("GET", "/api/runs") => respond_json(&mut stream, &api_runs(state, req.query.get("id").map(|s| s.as_str()))),
         ("GET", "/api/log") => respond_json(&mut stream, &api_log(state, &req.query)),
+        ("GET", "/api/catalog") => respond_json(&mut stream, &api_catalog(state)),
+        ("POST", "/api/catalog") => {
+            match duckle_duckdb_engine::catalog::build_and_save(&state.workspace) {
+                Ok(_) => respond_json(&mut stream, &api_catalog(state)),
+                Err(e) => respond_err(&mut stream, "500 Internal Server Error", &e),
+            }
+        }
         ("GET", "/api/schedules") => respond_json(&mut stream, &load_schedules(state)),
         ("POST", "/api/schedules") => {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
@@ -1450,6 +1457,48 @@ fn sanitize_segment(name: &str) -> String {
 }
 
 // ── Schedules ──
+
+/// The workspace graph, for the console's Catalog tab.
+///
+/// Reads the saved graph rather than rescanning every pipeline, because the
+/// dashboard polls every few seconds and a rebuild reads every pipeline file.
+/// A POST to the same path rebuilds it deliberately.
+fn api_catalog(state: &State) -> Value {
+    use duckle_duckdb_engine::catalog;
+    let cat = match catalog::load(&state.workspace) {
+        Ok(Some(c)) => c,
+        // Never built: do it once so the first visit shows something.
+        Ok(None) => match catalog::build_and_save(&state.workspace) {
+            Ok(c) => c,
+            Err(e) => return json!({ "error": e }),
+        },
+        Err(e) => return json!({ "error": e }),
+    };
+    let owners = catalog::load_owners(&state.workspace).unwrap_or_default();
+    let assets: Vec<Value> = cat
+        .assets
+        .iter()
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "kind": a.kind,
+                "writtenBy": cat.producers(&a.id).iter().map(|t| &t.pipeline_id).collect::<Vec<_>>(),
+                "readBy": cat.consumers(&a.id).iter().map(|t| &t.pipeline_id).collect::<Vec<_>>(),
+                "owner": owners.for_asset(&a.id).map(|r| r.owner.clone()),
+            })
+        })
+        .collect();
+    json!({
+        "assets": assets,
+        "pipelines": cat.pipelines.len(),
+        "orphans": cat.orphans().iter().map(|a| &a.id).collect::<Vec<_>>(),
+        "externals": cat.externals().iter().map(|a| &a.id).collect::<Vec<_>>(),
+        // Carried so the tab can say the view may be incomplete rather than
+        // presenting a partial graph as the whole picture.
+        "unresolved": cat.unresolved.len(),
+        "hasOwners": !owners.is_empty(),
+    })
+}
 
 /// Where the console's own store used to live, before both products moved to
 /// the workspace `schedules.json` the desktop app already used. Only read now,

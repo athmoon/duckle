@@ -9,11 +9,10 @@
 use chrono::{DateTime, Local, Utc};
 use cron::Schedule as CronSchedule;
 use duckle_duckdb_engine::{
-    append_run_record, runlock, DuckdbEngine, RunRecord, RunResult,
+    append_run_record, runlock, schedules, DuckdbEngine, RunRecord, RunResult,
 };
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -23,7 +22,6 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time;
 use tracing::warn;
 
-const SCHEDULES_FILE: &str = "schedules.json";
 /// Default poll cadence for checking due schedules. Overridable via the
 /// DUCKLE_TICK_INTERVAL env var (whole seconds, must be > 0) so sub-15s
 /// real-time schedules can fire closer to their configured rate (issue #135).
@@ -41,46 +39,11 @@ fn tick_interval() -> Duration {
         .unwrap_or(DEFAULT_TICK_INTERVAL)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ScheduleKind {
-    /// Standard 5-field cron (minute hour day month weekday), or 6/7-field
-    /// with a leading seconds field. Evaluated in the machine's local time
-    /// zone (issue #194).
-    Cron { expr: String },
-    /// Fire every N seconds since last run (or app start).
-    Interval { seconds: u64 },
-    /// Fire when a file or folder changes (debounced ~2s).
-    FileWatch {
-        path: String,
-        #[serde(default)]
-        recursive: bool,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Schedule {
-    pub id: String,
-    pub pipeline_id: String,
-    pub name: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    pub kind: ScheduleKind,
-    #[serde(default)]
-    pub last_run_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub last_run_status: Option<String>,
-    #[serde(default)]
-    pub last_run_duration_ms: Option<u64>,
-    #[serde(default)]
-    pub last_run_error: Option<String>,
-    #[serde(default)]
-    pub next_run_at: Option<DateTime<Utc>>,
-}
-
-fn default_true() -> bool {
-    true
-}
+/// The schedule record and its trigger kinds live in the engine crate, because
+/// `duckle-runner serve` writes the same store and a second definition of the
+/// same file format is a drift waiting to happen. Re-exported so callers keep
+/// naming them here.
+pub use duckle_duckdb_engine::schedules::{Schedule, ScheduleKind};
 
 #[derive(Clone)]
 pub struct Scheduler {
@@ -169,7 +132,7 @@ impl Scheduler {
         let mut g = self.inner.lock().expect("scheduler poisoned");
         g.workspace_path = path.clone();
         g.schedules = match path {
-            Some(p) => load_schedules(&p).unwrap_or_else(|e| {
+            Some(p) => schedules::load(&p).unwrap_or_else(|e| {
                 warn!("Failed to load schedules: {}", e);
                 Vec::new()
             }),
@@ -261,33 +224,67 @@ impl Scheduler {
         }
         compute_next_run(&mut schedule);
         let mut g = self.inner.lock().expect("scheduler poisoned");
-        if let Some(idx) = g.schedules.iter().position(|s| s.id == schedule.id) {
-            // Upsert carries config only; preserve the existing run-history
-            // fields so a partial payload doesn't wipe last_run_* to null.
-            let prev = g.schedules[idx].clone();
-            schedule.last_run_at = prev.last_run_at;
-            schedule.last_run_status = prev.last_run_status;
-            schedule.last_run_duration_ms = prev.last_run_duration_ms;
-            schedule.last_run_error = prev.last_run_error;
-            g.schedules[idx] = schedule.clone();
-        } else {
-            g.schedules.push(schedule.clone());
-        }
-        if let Some(path) = g.workspace_path.clone() {
-            let _ = save_schedules(&path, &g.schedules);
-        }
+        let saved = schedule.clone();
+        self.commit(&mut g, move |list| {
+            match list.iter().position(|s| s.id == saved.id) {
+                Some(idx) => {
+                    // Upsert carries config only; preserve the existing
+                    // run-history fields so a partial payload doesn't wipe
+                    // last_run_* to null.
+                    let prev = &list[idx];
+                    let mut next = saved;
+                    next.last_run_at = prev.last_run_at;
+                    next.last_run_status = prev.last_run_status.clone();
+                    next.last_run_duration_ms = prev.last_run_duration_ms;
+                    next.last_run_error = prev.last_run_error.clone();
+                    list[idx] = next;
+                }
+                None => list.push(saved),
+            }
+        });
         self.rebuild_watchers(&mut g);
         Ok(schedule)
     }
 
     pub fn delete(&self, id: &str) -> Result<(), String> {
         let mut g = self.inner.lock().expect("scheduler poisoned");
-        g.schedules.retain(|s| s.id != id);
         g.watchers.remove(id);
-        if let Some(path) = g.workspace_path.clone() {
-            let _ = save_schedules(&path, &g.schedules);
-        }
+        let id = id.to_string();
+        self.commit(&mut g, move |list| list.retain(|s| s.id != id));
         Ok(())
+    }
+
+    /// Apply a change to the shared store and adopt the result.
+    ///
+    /// The change runs against the list as it is on disk, not the copy this
+    /// process is holding, because `duckle-runner serve` may be editing the
+    /// same file. Whatever comes back becomes the in-memory state, so a
+    /// schedule added by the other process shows up here rather than being
+    /// overwritten on the next save.
+    ///
+    /// A scheduler with no workspace keeps its list in memory only; that is
+    /// the pre-workspace state at startup, not an error worth surfacing.
+    fn commit<F>(&self, inner: &mut SchedulerInner, change: F)
+    where
+        F: FnOnce(&mut Vec<Schedule>),
+    {
+        let Some(path) = inner.workspace_path.clone() else {
+            change(&mut inner.schedules);
+            return;
+        };
+        match schedules::update(&path, change) {
+            Ok(mut list) => {
+                // Next-run times are this process's own bookkeeping and are not
+                // what the other process wrote, so recompute rather than trust.
+                for s in list.iter_mut() {
+                    if s.next_run_at.is_none() {
+                        compute_next_run(s);
+                    }
+                }
+                inner.schedules = list;
+            }
+            Err(e) => warn!("Failed to save schedules: {}", e),
+        }
     }
 
     /// Execute a schedule's pipeline right now, regardless of its
@@ -343,22 +340,22 @@ impl Scheduler {
 
     fn record_run(&self, id: &str, started: DateTime<Utc>, result: &RunResult) {
         let mut g = self.inner.lock().expect("scheduler poisoned");
-        let mut pipeline_id = None;
-        if let Some(s) = g.schedules.iter_mut().find(|s| s.id == id) {
-            s.last_run_at = Some(started);
-            s.last_run_status = Some(result.status.clone());
-            s.last_run_duration_ms = Some(result.duration_ms);
-            s.last_run_error = result.error.clone();
-            pipeline_id = Some(s.pipeline_id.clone());
-            compute_next_run(s);
-        }
-        if let Some(path) = g.workspace_path.clone() {
-            let _ = save_schedules(&path, &g.schedules);
-            // Append to the pipeline's run history too.
-            if let Some(pid) = pipeline_id {
-                let record = RunRecord::from_result(result, "scheduled");
-                let _ = append_run_record(&path, &pid, record);
+        let pipeline_id = g.schedules.iter().find(|s| s.id == id).map(|s| s.pipeline_id.clone());
+        let (sid, status, duration, error) =
+            (id.to_string(), result.status.clone(), result.duration_ms, result.error.clone());
+        self.commit(&mut g, move |list| {
+            if let Some(s) = list.iter_mut().find(|s| s.id == sid) {
+                s.last_run_at = Some(started);
+                s.last_run_status = Some(status);
+                s.last_run_duration_ms = Some(duration);
+                s.last_run_error = error;
+                compute_next_run(s);
             }
+        });
+        // Append to the pipeline's run history too.
+        if let (Some(path), Some(pid)) = (g.workspace_path.clone(), pipeline_id) {
+            let record = RunRecord::from_result(result, "scheduled");
+            let _ = append_run_record(&path, &pid, record);
         }
     }
 
@@ -565,29 +562,6 @@ fn parse_cron(expr: &str) -> Option<CronSchedule> {
     normalize_cron(expr).and_then(|e| CronSchedule::from_str(&e).ok())
 }
 
-fn schedules_path(workspace: &PathBuf) -> PathBuf {
-    workspace.join(SCHEDULES_FILE)
-}
-
-fn load_schedules(workspace: &PathBuf) -> Result<Vec<Schedule>, String> {
-    let p = schedules_path(workspace);
-    if !p.exists() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
-    let parsed: Vec<Schedule> =
-        serde_json::from_str(&content).map_err(|e| format!("Parse schedules.json: {}", e))?;
-    Ok(parsed)
-}
-
-fn save_schedules(workspace: &PathBuf, schedules: &[Schedule]) -> Result<(), String> {
-    let p = schedules_path(workspace);
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let s = serde_json::to_string_pretty(schedules).map_err(|e| e.to_string())?;
-    std::fs::write(&p, s).map_err(|e| e.to_string())
-}
 
 #[cfg(test)]
 mod tests {

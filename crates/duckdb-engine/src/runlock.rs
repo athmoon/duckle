@@ -38,17 +38,21 @@ impl RunLock {
     }
 }
 
+/// Reduce a caller-supplied name to something safe to use as a filename.
+///
+/// Keys are pipeline ids that reach us from a file on disk, so they are
+/// sanitised rather than trusted: anything that is not plainly a name becomes
+/// an underscore, which also flattens any path separator.
+fn safe_name(key: &str) -> String {
+    key.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
 /// Where a lock for `key` lives. Kept beside the workspace key material, under
 /// `.duckle`, so everything the runtime owns is in one place.
 fn lock_path(workspace: &Path, key: &str) -> PathBuf {
-    // The key is a pipeline or schedule id and reaches us from a file on disk,
-    // so it is sanitised rather than trusted: anything that is not plainly a
-    // name becomes an underscore, which also flattens any path separator.
-    let safe: String = key
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect();
-    workspace.join(".duckle").join("locks").join(format!("{safe}.lock"))
+    workspace.join(".duckle").join("locks").join(format!("{}.lock", safe_name(key)))
 }
 
 #[cfg(windows)]
@@ -79,7 +83,24 @@ fn open_exclusive(path: &Path) -> std::io::Result<File> {
 /// cannot be taken, the run does not happen, because the failure mode of
 /// running anyway is the duplicate this exists to prevent.
 pub fn try_acquire(workspace: &Path, key: &str) -> Option<RunLock> {
-    let path = lock_path(workspace, key);
+    acquire_at(lock_path(workspace, key), key)
+}
+
+/// Take a lock that lives one level down, under `group`.
+///
+/// For locks that guard something other than a pipeline run and must never be
+/// blocked by one. A run key cannot reach this path: separators in a key are
+/// flattened to underscores, so no pipeline id can name a subdirectory.
+pub fn try_acquire_nested(workspace: &Path, group: &str, key: &str) -> Option<RunLock> {
+    let path = workspace
+        .join(".duckle")
+        .join("locks")
+        .join(safe_name(group))
+        .join(format!("{}.lock", safe_name(key)));
+    acquire_at(path, key)
+}
+
+fn acquire_at(path: PathBuf, key: &str) -> Option<RunLock> {
     if let Some(dir) = path.parent() {
         if fs::create_dir_all(dir).is_err() {
             return None;

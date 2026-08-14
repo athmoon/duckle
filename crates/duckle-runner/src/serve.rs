@@ -188,6 +188,10 @@ pub fn run() -> Result<(), String> {
         tick_interval: args.tick_interval,
     });
 
+    // Fold any pre-unification console store into schedules.json before the
+    // scheduler reads it, so an existing install keeps firing across the change.
+    migrate_legacy_schedules(&workspace);
+
     spawn_scheduler(state.clone());
 
     let addr = format!("{}:{}", args.host, args.port);
@@ -1078,7 +1082,10 @@ fn api_pipelines(state: &State) -> Value {
         .into_iter()
         .map(|(path, id, v)| {
             let last = last_run(&state.workspace, &id);
-            let sched = scheds.get(&id).cloned().unwrap_or(json!({ "enabled": false, "intervalMinutes": 0 }));
+            let sched = scheds
+                .get(&id)
+                .cloned()
+                .unwrap_or(json!({ "enabled": false, "intervalSeconds": 0, "intervalMinutes": 0 }));
             let running = state.running.lock().map(|s| s.contains(&id)).unwrap_or(false);
             let next_at = next_run_at(&sched, last.as_ref().map(|r| r.at.as_str()));
             let name = names
@@ -1221,19 +1228,117 @@ fn sanitize_segment(name: &str) -> String {
 
 // ── Schedules ──
 
-fn schedules_path(workspace: &Path) -> PathBuf {
+/// Where the console's own store used to live, before both products moved to
+/// the workspace `schedules.json` the desktop app already used. Only read now,
+/// and only to carry an existing install's schedules across once.
+fn legacy_schedules_path(workspace: &Path) -> PathBuf {
     workspace.join("panel-schedules.json")
 }
 
-/// Schedule store, one entry per pipeline id:
-/// `{ "enabled": bool, "intervalMinutes": n, "cron": "<expr>" }`. A non-empty
-/// `cron` takes precedence over `intervalMinutes`; an absent `cron` (older
-/// stores) reads as empty = interval mode (#132).
+/// The console's view of the shared store, one entry per pipeline id:
+/// `{ "enabled": bool, "intervalSeconds": n, "intervalMinutes": n, "cron": "<expr>" }`.
+/// A non-empty `cron` takes precedence over the interval (#132).
+///
+/// `intervalSeconds` is the real stored value. `intervalMinutes` is derived and
+/// kept only so an older console page still renders something sensible; it is
+/// rounded and must not be written back as if it were exact, because the
+/// desktop editor offers seconds as a unit and a 30-second schedule saved from
+/// a minutes-only view comes back as a minute.
+///
+/// The store can hold several schedules for one pipeline, and file-watch
+/// schedules the console cannot express at all. Those are left strictly alone:
+/// this view shows the first schedule the console can represent, and a save
+/// edits that same record by id rather than replacing the pipeline's entry.
 fn load_schedules(state: &State) -> Value {
-    std::fs::read_to_string(schedules_path(&state.workspace))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| json!({}))
+    let list = match duckle_duckdb_engine::schedules::load(&state.workspace) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("duckle-runner: {e}");
+            return json!({});
+        }
+    };
+    let mut out = serde_json::Map::new();
+    for s in &list {
+        if out.contains_key(&s.pipeline_id) {
+            continue;
+        }
+        let (seconds, cron) = match &s.kind {
+            duckle_duckdb_engine::schedules::ScheduleKind::Cron { expr } => (0, expr.clone()),
+            duckle_duckdb_engine::schedules::ScheduleKind::Interval { seconds } => {
+                (*seconds, String::new())
+            }
+            // Not expressible here; leave the pipeline looking unscheduled to
+            // the console rather than misrepresenting a watch as an interval.
+            duckle_duckdb_engine::schedules::ScheduleKind::FileWatch { .. } => continue,
+        };
+        out.insert(
+            s.pipeline_id.clone(),
+            json!({
+                "id": s.id,
+                "enabled": s.enabled,
+                "intervalSeconds": seconds,
+                "intervalMinutes": seconds / 60,
+                "cron": cron,
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// Carry a pre-unification `panel-schedules.json` into the shared store.
+///
+/// Runs once at startup. Only pipelines with no schedule already in the shared
+/// store are imported, so a workspace where the desktop app already scheduled
+/// the same pipeline keeps the desktop's record rather than gaining a second
+/// one. The old file is left on disk untouched: it costs nothing, and deleting
+/// a user's data to tidy up is not this function's call to make.
+fn migrate_legacy_schedules(workspace: &Path) {
+    let legacy = legacy_schedules_path(workspace);
+    let Ok(text) = std::fs::read_to_string(&legacy) else {
+        return;
+    };
+    let Ok(Value::Object(entries)) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    if entries.is_empty() {
+        return;
+    }
+    let outcome = duckle_duckdb_engine::schedules::update(workspace, |list| {
+        for (pipeline_id, cfg) in &entries {
+            if list.iter().any(|s| &s.pipeline_id == pipeline_id) {
+                continue;
+            }
+            let cron = cfg.get("cron").and_then(Value::as_str).unwrap_or("").trim();
+            let minutes = cfg.get("intervalMinutes").and_then(Value::as_u64).unwrap_or(0);
+            let kind = if !cron.is_empty() {
+                duckle_duckdb_engine::schedules::ScheduleKind::Cron { expr: cron.to_string() }
+            } else if minutes > 0 {
+                duckle_duckdb_engine::schedules::ScheduleKind::Interval { seconds: minutes * 60 }
+            } else {
+                // Neither a cron nor a usable interval: nothing to carry over.
+                continue;
+            };
+            list.push(duckle_duckdb_engine::schedules::Schedule {
+                id: format!("panel-{pipeline_id}"),
+                pipeline_id: pipeline_id.clone(),
+                name: pipeline_id.clone(),
+                enabled: cfg.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                kind,
+                last_run_at: None,
+                last_run_status: None,
+                last_run_duration_ms: None,
+                last_run_error: None,
+                next_run_at: None,
+            });
+        }
+    });
+    match outcome {
+        Ok(_) => eprintln!(
+            "duckle-runner: imported schedules from {} into schedules.json",
+            legacy.display()
+        ),
+        Err(e) => eprintln!("duckle-runner: could not import {}: {e}", legacy.display()),
+    }
 }
 
 /// The `cron` crate expects a 6- or 7-field expression (seconds first). Accept a
@@ -1262,11 +1367,11 @@ fn next_run_at(sched: &Value, last_at: Option<&str>) -> Option<String> {
         let schedule = normalize_cron(cron).and_then(|e| e.parse::<cron::Schedule>().ok())?;
         return schedule.after(&chrono::Local::now()).next().map(|dt| dt.to_rfc3339());
     }
-    let interval = sched.get("intervalMinutes").and_then(Value::as_u64).unwrap_or(0);
+    let interval = sched.get("intervalSeconds").and_then(Value::as_u64).unwrap_or(0);
     if interval == 0 {
         return None;
     }
-    let step = chrono::Duration::minutes(interval as i64);
+    let step = chrono::Duration::seconds(interval as i64);
     let now = chrono::Utc::now();
     let mut next = last_at
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
@@ -1281,6 +1386,12 @@ fn next_run_at(sched: &Value, last_at: Option<&str>) -> Option<String> {
 }
 
 fn save_schedule(state: &State, body: &Value) -> Result<Value, String> {
+    save_schedule_at(&state.workspace, body)
+}
+
+/// The store half of saving a schedule, split out so a test can drive the same
+/// code the handler runs rather than a copy of its logic.
+fn save_schedule_at(workspace: &Path, body: &Value) -> Result<Value, String> {
     let id = body.get("id").and_then(|v| v.as_str()).ok_or("missing id")?;
     let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     let interval = body.get("intervalMinutes").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1292,14 +1403,50 @@ fn save_schedule(state: &State, body: &Value) -> Result<Value, String> {
     {
         return Err("Invalid cron expression (use 5 fields, e.g. `0 9 * * 1`)".to_string());
     }
-    let mut all = load_schedules(state);
-    let obj = all.as_object_mut().ok_or("schedule store corrupt")?;
-    obj.insert(
-        id.to_string(),
-        json!({ "enabled": enabled, "intervalMinutes": interval, "cron": cron }),
-    );
-    std::fs::write(schedules_path(&state.workspace), all.to_string())
-        .map_err(|e| format!("write schedules: {}", e))?;
+    // Seconds are what the store holds. A console that sends only minutes is
+    // still honoured, but one that echoes back the intervalSeconds it was given
+    // keeps a sub-minute schedule exactly as the desktop editor set it.
+    let seconds = match body.get("intervalSeconds").and_then(|v| v.as_u64()) {
+        Some(s) => s,
+        None => interval.saturating_mul(60),
+    };
+    let kind = if !cron.is_empty() {
+        duckle_duckdb_engine::schedules::ScheduleKind::Cron { expr: cron }
+    } else {
+        duckle_duckdb_engine::schedules::ScheduleKind::Interval { seconds }
+    };
+    let pipeline_id = id.to_string();
+    duckle_duckdb_engine::schedules::update(workspace, move |list| {
+        // Edit the record this pipeline already has rather than adding another,
+        // so saving from the console does not quietly double a schedule the
+        // desktop app created. A file-watch record is not one the console can
+        // edit, so it is skipped and a new record is added alongside it.
+        let existing = list.iter_mut().find(|s| {
+            s.pipeline_id == pipeline_id
+                && !matches!(s.kind, duckle_duckdb_engine::schedules::ScheduleKind::FileWatch { .. })
+        });
+        match existing {
+            Some(s) => {
+                s.enabled = enabled;
+                s.kind = kind;
+                // A changed trigger invalidates the time this process armed.
+                s.next_run_at = None;
+            }
+            None => list.push(duckle_duckdb_engine::schedules::Schedule {
+                id: format!("panel-{pipeline_id}"),
+                pipeline_id: pipeline_id.clone(),
+                name: pipeline_id.clone(),
+                enabled,
+                kind,
+                last_run_at: None,
+                last_run_status: None,
+                last_run_duration_ms: None,
+                last_run_error: None,
+                next_run_at: None,
+            }),
+        }
+    })
+    .map_err(|e| format!("write schedules: {}", e))?;
     Ok(json!({ "ok": true }))
 }
 
@@ -1494,12 +1641,15 @@ fn spawn_scheduler(state: Arc<State>) {
                     cron_next.remove(id);
                 }
                 let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                let minutes = cfg.get("intervalMinutes").and_then(|v| v.as_u64()).unwrap_or(0);
-                if !enabled || minutes == 0 {
+                // Seconds, not minutes: the shared store keeps the exact value
+                // the desktop editor set, and rounding it here would turn a
+                // 30-second schedule into one that never fires.
+                let seconds = cfg.get("intervalSeconds").and_then(|v| v.as_u64()).unwrap_or(0);
+                if !enabled || seconds == 0 {
                     last_fired.remove(id);
                     continue;
                 }
-                let interval = Duration::from_secs(minutes * 60);
+                let interval = Duration::from_secs(seconds);
                 let due = match last_fired.get(id) {
                     Some(t) => t.elapsed() >= interval,
                     None => false, // first sighting: start the clock, fire next interval
@@ -1523,7 +1673,101 @@ fn spawn_scheduler(state: Arc<State>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{connection_secret_cmd, normalize_cron};
+    use super::{
+        connection_secret_cmd, migrate_legacy_schedules, normalize_cron, save_schedule_at,
+    };
+    use duckle_duckdb_engine::schedules::{self, ScheduleKind};
+
+    /// The console and the desktop app now keep one store, so a schedule saved
+    /// here has to be a record the desktop reads, in the file the desktop reads.
+    /// Before this, the console wrote `panel-schedules.json` and the desktop
+    /// never saw it, which is why the same pipeline could end up scheduled twice.
+    #[test]
+    fn a_console_save_lands_in_the_store_the_desktop_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+
+        save_schedule_at(
+            ws,
+            &serde_json::json!({ "id": "nightly-load", "enabled": true, "intervalSeconds": 90 }),
+        )
+        .expect("save");
+
+        let list = schedules::load(ws).expect("the desktop can read it");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].pipeline_id, "nightly-load");
+        assert!(list[0].enabled);
+        // 90 seconds, not "1 minute" or "0 minutes": the console works in the
+        // same units the desktop editor offers, so an interval survives a save
+        // from either side unchanged.
+        assert!(
+            matches!(list[0].kind, ScheduleKind::Interval { seconds: 90 }),
+            "interval was not stored exactly: {:?}",
+            list[0].kind
+        );
+
+        // Saving again edits that record rather than adding a second one, so a
+        // pipeline cannot accumulate duplicate schedules by being saved twice.
+        save_schedule_at(
+            ws,
+            &serde_json::json!({ "id": "nightly-load", "enabled": false, "cron": "0 9 * * 1" }),
+        )
+        .expect("second save");
+        let list = schedules::load(ws).expect("still readable");
+        assert_eq!(list.len(), 1, "a second save duplicated the schedule");
+        assert!(!list[0].enabled);
+        assert!(matches!(&list[0].kind, ScheduleKind::Cron { expr } if expr == "0 9 * * 1"));
+    }
+
+    /// An install that already had console schedules must keep firing across
+    /// the move to the shared store, and must not gain a duplicate for a
+    /// pipeline the desktop app had already scheduled.
+    #[test]
+    fn the_old_console_store_is_carried_over_without_duplicating() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+
+        // The desktop already schedules one of these two pipelines.
+        save_schedule_at(
+            ws,
+            &serde_json::json!({ "id": "already-known", "enabled": true, "intervalSeconds": 600 }),
+        )
+        .unwrap();
+
+        std::fs::write(
+            ws.join("panel-schedules.json"),
+            serde_json::json!({
+                "already-known": { "enabled": true, "intervalMinutes": 5, "cron": "" },
+                "console-only": { "enabled": true, "intervalMinutes": 15, "cron": "" },
+                "never-configured": { "enabled": false, "intervalMinutes": 0, "cron": "" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        migrate_legacy_schedules(ws);
+
+        let list = schedules::load(ws).unwrap();
+        let ids: std::collections::HashSet<&str> =
+            list.iter().map(|s| s.pipeline_id.as_str()).collect();
+        assert!(ids.contains("console-only"), "a console schedule was lost");
+        assert!(
+            !ids.contains("never-configured"),
+            "an entry with no cron and no interval was imported as a schedule"
+        );
+        assert_eq!(
+            list.iter().filter(|s| s.pipeline_id == "already-known").count(),
+            1,
+            "the pipeline the desktop already scheduled gained a duplicate"
+        );
+        // ...and it kept the desktop's value rather than the console's 5 minutes.
+        let known = list.iter().find(|s| s.pipeline_id == "already-known").unwrap();
+        assert!(matches!(known.kind, ScheduleKind::Interval { seconds: 600 }));
+
+        // Running again is a no-op, so a restart does not re-import.
+        migrate_legacy_schedules(ws);
+        assert_eq!(schedules::load(ws).unwrap().len(), list.len(), "re-imported on restart");
+    }
 
     #[test]
     fn normalize_cron_pads_five_fields_and_validates() {

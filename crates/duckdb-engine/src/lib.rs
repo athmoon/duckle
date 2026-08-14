@@ -35,6 +35,7 @@ pub mod drift;
 pub mod qvd;
 pub mod review;
 pub mod runlock;
+pub mod schedules;
 pub mod talend;
 pub mod trust;
 pub mod tls;

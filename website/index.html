@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Duckle - Open-source ETL you can see end to end, built on DuckDB</title>
-<meta name="description" content="Duckle is the open, single-engine ELT stack on DuckDB. One pipeline format: write it in Python, wire it from 160+ source and destination connectors, or draw it on a canvas, with an MCP server for AI agents. Runs anywhere - laptop, CI, headless, or browser. No per-row tax, no lock-in." />
+<meta name="description" content="Duckle is the open ETL stack on DuckDB that runs on your machine, not on a warehouse meter. Build as many pipelines as you need from 190 connectors and 385 components: write them in Python, wire them, or draw them on a canvas, with an MCP server for AI agents. No per-row tax, no lock-in." />
 <meta name="keywords" content="visual ETL tool, DuckDB ETL, open source ETL, ELT tool, code-first ETL, Python ETL, ETL for AI agents, MCP ETL, data pipeline builder, dbt GUI, dbt on DuckDB, DuckLake, Quack DuckDB, no-code data pipeline, Fivetran alternative, Airbyte alternative, Talend alternative, dlt alternative, self-hosted ETL, local-first ETL" />
 <meta property="og:title" content="Duckle - Open-source ETL you can see end to end" />
-<meta property="og:description" content="One pipeline - write it, wire it, or draw it. The open, single-engine ELT stack on DuckDB: 160+ connectors, AI agents via MCP, runs anywhere. Open source, no per-row tax, no lock-in." />
+<meta property="og:description" content="Pipelines you own - write them, wire them, or draw them. The open ETL stack on DuckDB: 190 connectors, dbt, AI agents via MCP, runs anywhere. Open source, no per-row tax, no lock-in." />
 <meta property="og:image" content="https://duckle.org/assets/img/og-card.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
@@ -17,7 +17,7 @@
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:url" content="https://duckle.org/" />
 <meta name="twitter:title" content="Duckle - Open-source ETL you can see end to end" />
-<meta name="twitter:description" content="One pipeline - write it, wire it, or draw it. The open, single-engine ELT stack on DuckDB: 160+ connectors, AI agents via MCP, runs anywhere. Open source, no per-row tax, no lock-in." />
+<meta name="twitter:description" content="Pipelines you own - write them, wire them, or draw them. The open ETL stack on DuckDB: 190 connectors, dbt, AI agents via MCP, runs anywhere. Open source, no per-row tax, no lock-in." />
 <meta name="twitter:image" content="https://duckle.org/assets/img/og-card.png" />
 <meta name="robots" content="index, follow" />
 <meta name="author" content="Duckle" />
@@ -72,7 +72,7 @@
       "name": "Duckle",
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "Windows, macOS, Linux",
-      "description": "Duckle is the open, single-engine ELT stack built on DuckDB. Write a pipeline in Python, wire it from 350+ connectors and components, or draw it on a canvas, with an MCP server for AI agents. One format, one engine, runs anywhere - laptop, CI, headless, or browser.",
+      "description": "Duckle is the open ETL stack built on DuckDB. Build as many pipelines as you need: write them in Python, wire them from 190 connectors and 385 components, or draw them on a canvas, with an MCP server for AI agents. Pipelines call, schedule and retry each other, and run anywhere - laptop, CI, headless, or browser.",
       "url": "https://duckle.org/",
       "downloadUrl": "https://github.com/slothflowlabs/duckle/releases/latest",
       "softwareVersion": "0.6.1",
@@ -98,7 +98,7 @@
     { "@type": "Question", "name": "How many components does Duckle have?", "acceptedAnswer": { "@type": "Answer", "text": "Duckle ships 384 components, of which 366 are available today, spanning sources, transforms, sinks, data-quality checks, control-flow nodes, and code runners for databases, warehouses, lakehouses, object storage, streaming, NoSQL, and SaaS APIs." } },
     { "@type": "Question", "name": "Can Duckle run dbt?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Duckle runs dbt on DuckDB with a visual GUI, using a fast build engine by default and falling back to dbt-core when needed, so you can build, test, and schedule dbt projects without leaving the studio." } },
     { "@type": "Question", "name": "Does Duckle have an AI assistant?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Duckie is an on-device AI assistant that generates pipelines from plain English with no API key and no telemetry. Duckle also ships an MCP server so external AI agents can list, generate, validate, and run pipelines." } },
-    { "@type": "Question", "name": "Is there an open-source alternative to Fivetran or Airbyte?", "acceptedAnswer": { "@type": "Answer", "text": "Duckle is a free, open-source ETL/ELT tool that covers similar ground to hosted platforms like Fivetran and Airbyte, but runs locally. It moves data across 160+ sources and destinations with no per-row, per-connector, or per-seat billing and nothing to host or operate. Pipelines are built visually or from plain English and compile to readable DuckDB SQL." } },
+    { "@type": "Question", "name": "Is there an open-source alternative to Fivetran or Airbyte?", "acceptedAnswer": { "@type": "Answer", "text": "Duckle is a free, open-source ETL/ELT tool that covers similar ground to hosted platforms like Fivetran and Airbyte, but runs locally. It moves data across 190 sources and destinations with no per-row, per-connector, or per-seat billing and nothing to host or operate. Pipelines are built visually or from plain English and compile to readable DuckDB SQL." } },
     { "@type": "Question", "name": "Can I run ETL pipelines without the cloud or a data warehouse?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Duckle executes on the embedded DuckDB engine, so there is no external warehouse, no server, and no account required. It runs fully offline, which suits air-gapped, on-premise, and compliance-sensitive work, and it still reads from and writes to cloud systems whenever you want." } },
     { "@type": "Question", "name": "What is a local-first ETL tool?", "acceptedAnswer": { "@type": "Answer", "text": "A local-first ETL tool builds and runs data pipelines on your own machine rather than in a hosted cloud service, so data never leaves your control. Duckle is an open, single-engine example: write a pipeline in Python, wire it from connectors, or draw it on a canvas, and run it fully offline on DuckDB - or in CI, headless, or a browser when you want." } },
     { "@type": "Question", "name": "How is Duckle different from Airbyte and dbt?", "acceptedAnswer": { "@type": "Answer", "text": "Airbyte focuses on hosted extract-and-load connectors and dbt focuses on SQL transformation. Duckle is one open engine that does extract, transform, and load together - write it in Python, wire it from connectors, or draw it on a canvas - and it runs dbt on DuckDB inside the same tool. One format, one engine, no per-row tax, no lock-in." } }
@@ -184,7 +184,7 @@
         <svg class="moon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         <svg class="sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
       </button>
-      <a class="btn btn-outline hide-sm" href="#download">Start for free</a>
+      <a class="btn btn-outline hide-sm" href="#download">Download</a>
       <a class="btn btn-primary btn-pill hide-sm js-contact" href="#contact">Contact Us</a>
       <button class="icon-btn nav-toggle" id="navToggle" aria-label="Open menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
     </div>
@@ -196,10 +196,10 @@
   <div class="wrap">
     <div class="hero-grid">
       <div>
-        <h1>One pipeline.<br />Write it, wire it, or draw it.</h1>
-        <p class="lead">Duckle is the open, single-engine ELT stack. One pipeline format on DuckDB: write it in Python, wire it from 160+ sources and destinations, or draw it on the canvas - and describe it to a built-in AI agent that builds while you verify. Runs anywhere - laptop, CI, headless, or a browser - and fully offline when you need it. No per-row tax, no lock-in.</p>
+        <h1>Pipelines you own.<br />Write them, wire them, or draw them.</h1>
+        <p class="lead">Duckle is the open ETL stack that runs on your machine, not on someone else's warehouse meter. No per-row tax, no lock-in. Build as many pipelines as you need and let them call, schedule and retry each other - write them in Python, wire them from 190 sources and destinations, or draw them on the canvas, and describe one to a built-in AI agent that builds while you verify. Runs anywhere - laptop, CI, headless, or a browser - and fully offline when you need it.</p>
         <div class="hero-cta">
-          <a class="btn btn-primary btn-pill btn-lg" href="#download">Start for free</a>
+          <a class="btn btn-primary btn-pill btn-lg" href="#download">Download Duckle</a>
           <a class="btn btn-outline btn-lg" href="https://github.com/slothflowlabs/duckle" target="_blank" rel="noopener">
             <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.23.41-2.7-.94-2.7-.94-.36-.93-.9-1.18-.9-1.18-.73-.5.06-.49.06-.49.81.06 1.24.84 1.24.84.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
             View on GitHub
@@ -307,7 +307,7 @@
 <section class="section tight" id="integrations">
   <div class="wrap center" style="margin-bottom:30px;">
     <span class="eyebrow">Integrations</span>
-    <h2>Move data across 160+ connectors, working today</h2>
+    <h2>Move data across 190 connectors, working today</h2>
     <p class="lead center">Files, databases, warehouses, object stores, streaming brokers, SaaS APIs, NoSQL and vector DBs. These work today, not a coming-soon list.</p>
   </div>
   <div class="marquee">
@@ -475,7 +475,7 @@
         </details>
         <details class="faq-item">
           <summary><h3>Is there an open-source alternative to Fivetran or Airbyte?</h3></summary>
-          <p>Duckle is a free, open-source ETL/ELT tool that covers similar ground to hosted platforms like Fivetran and Airbyte, but runs locally. It moves data across 160+ sources and destinations with no per-row, per-connector, or per-seat billing and nothing to host or operate. Pipelines are built visually or from plain English and compile to readable DuckDB SQL.</p>
+          <p>Duckle is a free, open-source ETL/ELT tool that covers similar ground to hosted platforms like Fivetran and Airbyte, but runs locally. It moves data across 190 sources and destinations with no per-row, per-connector, or per-seat billing and nothing to host or operate. Pipelines are built visually or from plain English and compile to readable DuckDB SQL.</p>
         </details>
         <details class="faq-item">
           <summary><h3>Can I run ETL pipelines without the cloud or a data warehouse?</h3></summary>
@@ -563,7 +563,7 @@
           <img class="logo-dark" src="assets/img/duckle-mark.v4.svg" alt="" />
           <span class="bw"><span class="bn">Duckle</span><span class="by">by SlothFlowLabs</span></span>
         </a>
-        <p class="muted" style="max-width:30ch;">The open, single-engine ELT stack. Write it, wire it, or draw it. Built on DuckDB.</p>
+        <p class="muted" style="max-width:30ch;">The open ETL stack. Pipelines you own - write them, wire them, or draw them. Built on DuckDB.</p>
       </div>
       <div><h4>Product</h4><a href="#product">Visual canvas</a><a href="#duckie">Duckie AI</a><a href="docs/components.html">Components</a><a href="#download">Download</a></div>
       <div><h4>Solutions</h4><a href="use-cases.html#join">Cross-system joins</a><a href="use-cases.html#snowflake">Warehouse savings</a><a href="use-cases.html#cdc">Change data capture</a><a href="use-cases.html#ai">Data prep for AI</a></div>

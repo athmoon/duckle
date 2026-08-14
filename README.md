@@ -2,11 +2,11 @@
 
 <img src="docs/assets/duckle-readme.png" alt="Duckle" width="460"/>
 
-<h3>One pipeline. Write it, wire it, or draw it.</h3>
+<h3>Pipelines you own. Write them, wire them, or draw them.</h3>
 
-<p><b>Duckle</b> is the open, single-engine ELT stack. One pipeline format, compiled to SQL on DuckDB: write it in Python, wire it from 350+ connectors and components, or draw it on the canvas - or describe it to <b>Duckie</b>, the on-device AI assistant, and verify what it builds. In-pipeline transforms, data quality, and lineage travel with the same artifact. Runs anywhere - laptop, CI, headless, or a browser - and fully offline when you need it. No per-row tax, no lock-in.</p>
+<p><b>Duckle</b> is the open ETL stack that runs on your machine, not on someone else's warehouse meter. <b>No per-row tax. No lock-in.</b> Build as many pipelines as you need and let them call, schedule and retry each other - write them in Python, wire them from 190 connectors and 385 components, or draw them on the canvas, or describe one to <b>Duckie</b>, the on-device AI assistant, and verify what it builds. Every pipeline is one portable file that compiles to SQL on DuckDB, carrying its transforms, data quality and lineage with it. ELT when you want it too: run dbt on DuckDB, or push work down into the source database. Runs anywhere - laptop, CI, headless, or a browser - and fully offline when you need it.</p>
 
-<a href="https://duckle.org/"><img src="website/assets/img/website-hero.gif" alt="Duckle connecting 160+ sources and destinations - databases, warehouses, SaaS apps and the DuckDB ecosystem - all running locally on DuckDB" width="600"/></a>
+<a href="https://duckle.org/"><img src="website/assets/img/website-hero.gif" alt="Duckle connecting 190 sources and destinations - databases, warehouses, SaaS apps and the DuckDB ecosystem - all running locally on DuckDB" width="600"/></a>
 
 <p><sub><i>Duckle is an independent open-source project by SlothFlowLabs. It builds on the DuckDB engine but is not part of, affiliated with, or endorsed by DuckDB Labs or MotherDuck.</i></sub></p>
 
@@ -1160,7 +1160,7 @@ Yes, free + open source. Dual-licensed **MIT OR Apache-2.0**. You can use it com
 <details>
 <summary><b>Is Duckle an open-source alternative to Fivetran or Airbyte?</b></summary>
 
-It covers similar ground - moving data across 160+ sources and destinations - but locally, with nothing to host and no per-row, per-connector, or per-seat billing. Pipelines are built visually or from plain English and compile to readable DuckDB SQL that runs on your machine. The trade-off is scope: Duckle is single-machine and embedded, so for warehouse-scale replication you point its output at the system that scales.
+It covers similar ground - moving data across 190 sources and destinations - but locally, with nothing to host and no per-row, per-connector, or per-seat billing. Pipelines are built visually or from plain English and compile to readable DuckDB SQL that runs on your machine. The trade-off is scope: Duckle is single-machine and embedded, so for warehouse-scale replication you point its output at the system that scales.
 
 </details>
 

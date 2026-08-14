@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod audit;
+mod catalog_cmd;
 mod branch;
 mod build;
 mod console_auth;
@@ -1455,6 +1456,16 @@ fn main() -> ExitCode {
     // `review` -> static review of a pipeline change (diff + compile gate).
     if std::env::args().nth(1).as_deref() == Some("review") {
         return match run_review() {
+            Ok(code) => ExitCode::from(code as u8),
+            Err(e) => {
+                eprintln!("duckle-runner: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    // `catalog` -> what the workspace reads and writes, across all pipelines.
+    if std::env::args().nth(1).as_deref() == Some("catalog") {
+        return match catalog_cmd::run() {
             Ok(code) => ExitCode::from(code as u8),
             Err(e) => {
                 eprintln!("duckle-runner: {e}");

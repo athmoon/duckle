@@ -352,10 +352,14 @@ impl Scheduler {
                 compute_next_run(s);
             }
         });
-        // Append to the pipeline's run history too.
+        // Append to the pipeline's run history too, and tell whoever asked to
+        // be told. Alerting comes after the record so a channel that is down
+        // cannot cost a run its history entry, and it never raises: see
+        // duckle_duckdb_engine::alerts::notify.
         if let (Some(path), Some(pid)) = (g.workspace_path.clone(), pipeline_id) {
             let record = RunRecord::from_result(result, "scheduled");
             let _ = append_run_record(&path, &pid, record);
+            duckle_duckdb_engine::alerts::notify(&path, &pid, result);
         }
     }
 

@@ -34,6 +34,7 @@ pub mod pyexpr;
 pub mod drift;
 pub mod qvd;
 pub mod review;
+pub mod alerts;
 pub mod catalog;
 pub mod runlock;
 pub mod schedules;

@@ -8457,3 +8457,211 @@ html[dir='rtl'] .topbar-lang {
 .trust-drift-missing { color: var(--error); }
 .trust-drift-types { color: var(--warn); }
 .trust-drift-added { color: var(--text-2); }
+
+/* ---- Home launcher -------------------------------------------------
+   Overlays the workspace rather than replacing it, so the first-run tour
+   still finds [data-tour="canvas"] and the editor/sidebar tabs keep their
+   state. z-index 50 sits above the chat and git drawers (40) and below
+   every modal (1000), so the startup gates always win. */
+.home-launcher {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    justify-content: center;
+    overflow-y: auto;
+    background: var(--bg-0);
+    animation: home-launcher-in 140ms ease-out;
+}
+
+@keyframes home-launcher-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .home-launcher { animation: none; }
+}
+
+.home-launcher-inner {
+    width: min(1080px, 100%);
+    padding: 34px 30px 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+}
+
+.home-launcher-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.home-launcher-head h1 {
+    margin: 0;
+    font-size: 21px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: var(--text-1);
+}
+
+.home-launcher-sub {
+    margin: 4px 0 0;
+    font-size: 12.5px;
+    color: var(--text-3);
+}
+
+.home-launcher-close {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-2);
+    border-radius: 7px;
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+}
+
+.home-launcher-close:hover {
+    background: var(--bg-2);
+    color: var(--text-1);
+}
+
+.home-launcher-body {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.home-launcher-group h2 {
+    margin: 0 0 9px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+.home-launcher-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+    gap: 9px;
+}
+
+.home-tile {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas: 'icon name' 'icon blurb' 'icon note';
+    align-content: start;
+    gap: 1px 10px;
+    text-align: left;
+    padding: 12px 13px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--bg-1);
+    color: var(--text-1);
+    cursor: pointer;
+    font: inherit;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.home-tile:hover:not(:disabled):not(.is-planned) {
+    border-color: var(--border-bright);
+    background: var(--bg-2);
+}
+
+.home-tile:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.home-tile-icon {
+    grid-area: icon;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    background: var(--bg-2);
+    color: var(--accent);
+}
+
+.home-tile-name {
+    grid-area: name;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.home-tile-blurb {
+    grid-area: blurb;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--text-2);
+}
+
+.home-tile-note {
+    grid-area: note;
+    margin-top: 4px;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--text-3);
+}
+
+.home-tile-badge {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 20px;
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent);
+    color: var(--text-2);
+}
+
+/* Planned modules are rendered as a div with no click handler at all, so
+   this styling matches a genuinely inert element rather than disguising a
+   dead button. */
+.home-tile.is-planned {
+    cursor: default;
+    background: transparent;
+    border-style: dashed;
+}
+
+.home-tile.is-planned .home-tile-icon {
+    background: transparent;
+    color: var(--text-3);
+}
+
+.home-tile.is-planned .home-tile-name,
+.home-tile.is-planned .home-tile-blurb {
+    color: var(--text-3);
+}
+
+.home-tile:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.home-launcher-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--text-3);
+}
+
+.home-launcher-startup {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+}

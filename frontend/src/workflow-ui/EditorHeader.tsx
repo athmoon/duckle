@@ -15,6 +15,7 @@ import {
     Workflow,
     X,
     Zap,
+    Home,
 } from 'lucide-react';
 
 export type Job = {
@@ -43,6 +44,8 @@ type Props = {
     onImportJson: () => void;
     /** Undefined in the web editor, where the engine-side translator is unreachable. */
     onImportJob?: () => void;
+    /** Reopen the Home launcher. */
+    onGoHome: () => void;
 };
 
 export default function EditorHeader({
@@ -64,6 +67,7 @@ export default function EditorHeader({
     onExportSqlFile,
     onImportJson,
     onImportJob,
+    onGoHome,
 }: Props) {
     const { t } = useTranslation();
     const [moreOpen, setMoreOpen] = useState(false);
@@ -141,6 +145,16 @@ export default function EditorHeader({
             </div>
 
             <div className="toolbar">
+                <button
+                    type="button"
+                    className="toolbar-icon-button"
+                    onClick={onGoHome}
+                    title={t('launcher.goHome', 'Home')}
+                    aria-label={t('launcher.goHome', 'Home')}
+                >
+                    <Home size={14} />
+                </button>
+                <div className="toolbar-sep" />
                 {isRunning ? (
                     <button
                         type="button"

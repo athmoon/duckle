@@ -232,5 +232,20 @@
     "reportNeedsAttention": "Needs attention ({{n}})",
     "reportComponentsSeen": "Components in the job file",
     "failed": "Nothing was imported"
+  },
+  "launcher": {
+    "title": "Home",
+    "goHome": "Home",
+    "subtitle": "Pick what you want to do",
+    "subtitleWs": "Workspace: {{name}}",
+    "planned": "Planned",
+    "showOnStartup": "Show this when Duckle opens",
+    "readyCount": "{{n}} available now",
+    "group": {
+      "build": "Build",
+      "operate": "Operate",
+      "govern": "Govern",
+      "admin": "Administer"
+    }
   }
 }

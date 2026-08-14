@@ -50,6 +50,7 @@ import WindowControls from './workflow-ui/WindowControls';
 import WindowResizeHandles from './workflow-ui/WindowResizeHandles';
 import { engineStatus, seedSampleWorkspace, importJobFile } from './tauri-bridge';
 import ImportReportModal, { type ImportReport } from './workflow-ui/ImportReportModal';
+import HomeLauncher from './workflow-ui/HomeLauncher';
 import { copyText, saveTextFile } from './tauri-io';
 import { writeClipboard, readClipboard, instantiateClipboard } from './clipboard';
 import { RunStatusContext } from './canvas/run-status-context';
@@ -439,6 +440,30 @@ export default function App() {
     const showProfileSetup = isInTauri() && engineGate === 'ready' && accounts.length === 0;
     const showWorkspacePicker =
         isInTauri() && engineGate === 'ready' && accounts.length > 0 && !workspacePathState;
+
+    // Home launcher. It overlays the workspace rather than replacing it: the
+    // first-run tour waits for [data-tour="canvas"] to appear and gives up for
+    // good after 24s, and unmounting would also reset the editor tab and the
+    // sidebar tab on every trip back to Home.
+    const [showHomeOnStartup, setShowHomeOnStartup] = useState<boolean>(() =>
+        loadPersisted<boolean>('showHomeOnStartup', true),
+    );
+    const [showHome, setShowHome] = useState(false);
+    // Open it once, after the startup gates have cleared, so Home is never
+    // stacked behind the engine, profile or workspace dialogs.
+    const homeShownRef = useRef(false);
+    useEffect(() => {
+        if (homeShownRef.current) return;
+        if (showEngineSetup || showProfileSetup || showWorkspacePicker) return;
+        if (isInTauri() && !workspacePathState) return;
+        homeShownRef.current = true;
+        if (showHomeOnStartup) setShowHome(true);
+    }, [showEngineSetup, showProfileSetup, showWorkspacePicker, workspacePathState, showHomeOnStartup]);
+
+    const handleToggleShowHomeOnStartup = useCallback((next: boolean) => {
+        setShowHomeOnStartup(next);
+        savePersisted('showHomeOnStartup', next);
+    }, []);
     const [newPipelineModal, setNewPipelineModal] = useState<{
         open: boolean;
         defaultParent: string;
@@ -2532,6 +2557,35 @@ export default function App() {
             ) : null}
 
             <GuidedTour />
+
+            <HomeLauncher
+                open={showHome}
+                onClose={() => setShowHome(false)}
+                workspaceName={workspacePathState?.split(/[\\/]/).filter(Boolean).pop() ?? null}
+                showOnStartup={showHomeOnStartup}
+                onToggleShowOnStartup={handleToggleShowHomeOnStartup}
+                actions={{
+                    activePipelineId: activeJobId,
+                    // Closing Home is what reveals the canvas underneath.
+                    openDesigner: () => {},
+                    openDataQuality: () => {},
+                    importJob: isInTauri() ? handleImportJob : undefined,
+                    openDuckie: () => setShowChatPanel(true),
+                    openMcp: () => setShowMcpModal(true),
+                    openRuns: () =>
+                        window.dispatchEvent(
+                            new CustomEvent('duckle:open-tab', { detail: 'history' }),
+                        ),
+                    openSchedules: () => handleSchedulePipeline(activeJobId),
+                    openBuild: () => handleBuildPipeline(activeJobId),
+                    openLineage: () => setShowLineage(true),
+                    openTrust: () => setShowTrust(true),
+                    openConnections: () => handleNewConnection('connections'),
+                    openGit: () => setShowGitPanel(true),
+                    openSettings: () => setShowSettings(true),
+                }}
+            />
+
             <main className="workspace">
                 <LeftSidebar
                     repoItems={repo}
@@ -2576,6 +2630,7 @@ export default function App() {
                         onExportSqlFile={handleExportSql}
                         onImportJson={handleImportJson}
                         onImportJob={isInTauri() ? handleImportJob : undefined}
+                        onGoHome={() => setShowHome(true)}
                     />
                     <EditorTabs
                         engine={engine}

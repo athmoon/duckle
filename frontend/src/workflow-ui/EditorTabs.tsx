@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type {
     Connection,
@@ -73,6 +73,18 @@ export default function EditorTabs({
 }: Props) {
     const { t } = useTranslation();
     const [active, setActive] = useState<TabId>('canvas');
+
+    // Let anything outside this subtree select a tab, the same way the tour and
+    // the Dives toggle are driven (a window event rather than lifted state).
+    // The Home launcher uses it to open Runs without owning the tab state.
+    useEffect(() => {
+        const onOpenTab = (e: Event) => {
+            const id = (e as CustomEvent<string>).detail;
+            if ((TAB_IDS as string[]).includes(id)) setActive(id as TabId);
+        };
+        window.addEventListener('duckle:open-tab', onOpenTab);
+        return () => window.removeEventListener('duckle:open-tab', onOpenTab);
+    }, []);
 
     return (
         <div className="editor">

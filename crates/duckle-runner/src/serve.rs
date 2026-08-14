@@ -448,18 +448,44 @@ fn confine_to_workspace(workspace: &Path, path: &str) -> Result<PathBuf, String>
     Ok(normalized)
 }
 
+/// The body of the two connection-secret commands, split out from the socket
+/// so a test can drive the real path instead of re-implementing it. Encrypting
+/// is strict: a failure must surface, never fall through to writing plaintext.
+fn connection_secret_cmd(workspace: &Path, cmd: &str, body: &[u8]) -> Result<String, String> {
+    let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let payload = args.get("payloadJson").and_then(|v| v.as_str()).unwrap_or("null");
+    if cmd == "connection_encrypt_payload" {
+        duckle_secrets::encrypt_payload_json(workspace, payload)
+    } else {
+        duckle_secrets::decrypt_payload_json(workspace, payload)
+    }
+}
+
 fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]) -> Result<(), String> {
     match cmd {
         // Drives the editor's runtime indicator offline -> ready.
         "ping" => respond_json(stream, &Value::String("pong".into())),
-        // Connection secrets: pass the payload through unchanged in the web MVP
-        // (no at-rest encryption yet; use ${ENV:KEY} for secrets). Echoing the
-        // payloadJson keeps the frontend's JSON.parse round-trip lossless -
-        // returning null here would blank out the connection's fields on save.
+        // Connection secrets, encrypted at rest with the same AES-256-GCM
+        // primitives and the same per-workspace key the desktop app uses, so a
+        // workspace stays readable whichever edition wrote it.
+        //
+        // These two used to echo the payload back unchanged, which meant the
+        // self-hosted web edition wrote passwords to connections/*.json in
+        // clear text while the desktop encrypted them - the same product
+        // quietly downgrading its own security depending on how it was
+        // launched. Encrypt is strict, because failing to encrypt must never
+        // fall through to writing plaintext. Decrypt is lenient by design:
+        // when there is no key yet, or a field is still plain, the payload is
+        // returned as-is so connections saved before this change keep opening.
         "connection_encrypt_payload" | "connection_decrypt_payload" => {
-            let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-            let payload = args.get("payloadJson").and_then(|v| v.as_str()).unwrap_or("null");
-            respond_json(stream, &Value::String(payload.to_string()))
+            match connection_secret_cmd(&state.workspace, cmd, body) {
+                Ok(out) => respond_json(stream, &Value::String(out)),
+                Err(e) => respond_err(
+                    stream,
+                    "500 Internal Server Error",
+                    &format!("connection secrets: {e}"),
+                ),
+            }
         }
         // Execute a pipeline on the server engine and return the RunResult (the
         // same shape the desktop returns). The frontend reads the final result
@@ -1485,7 +1511,7 @@ fn spawn_scheduler(state: Arc<State>) {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_cron;
+    use super::{connection_secret_cmd, normalize_cron};
 
     #[test]
     fn normalize_cron_pads_five_fields_and_validates() {
@@ -1502,5 +1528,53 @@ mod tests {
         assert!(normalize_cron("not a cron").is_none());
         assert!(normalize_cron("* * *").is_none());
         assert!(normalize_cron("").is_none());
+    }
+
+    /// The web editor must encrypt connection secrets exactly like the desktop.
+    ///
+    /// This drives `connection_secret_cmd`, the same function the HTTP handler
+    /// calls, so reverting that handler to the old echo-the-payload-back
+    /// behaviour fails here. The assertion that matters is the negative one:
+    /// the stored form must NOT contain the password. A round-trip assertion
+    /// alone would have passed against the broken pass-through, because
+    /// echoing a payload round-trips perfectly.
+    #[test]
+    fn web_editor_encrypts_connection_secrets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "payloadJson": r#"{"host":"db.internal","user":"reporting","password":"hunter2"}"#
+        }))
+        .unwrap();
+
+        let stored = connection_secret_cmd(ws, "connection_encrypt_payload", &body).expect("encrypts");
+        assert!(
+            !stored.contains("hunter2"),
+            "password reached disk in clear text: {stored}"
+        );
+        assert!(stored.contains("enc:v1:"), "no ciphertext marker: {stored}");
+        // Non-secret fields stay readable so the connection list still renders.
+        assert!(stored.contains("db.internal"), "host should not be encrypted");
+
+        let back_body =
+            serde_json::to_vec(&serde_json::json!({ "payloadJson": stored })).unwrap();
+        let back = connection_secret_cmd(ws, "connection_decrypt_payload", &back_body)
+            .expect("decrypts");
+        assert!(back.contains("hunter2"), "did not survive the round trip");
+    }
+
+    /// A workspace written before this fix holds plaintext. Opening it must
+    /// keep working rather than erroring, which is why the decrypt side is
+    /// deliberately lenient.
+    #[test]
+    fn web_editor_still_opens_legacy_plaintext_connections() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "payloadJson": r#"{"host":"db.internal","password":"hunter2"}"#
+        }))
+        .unwrap();
+        let back = connection_secret_cmd(tmp.path(), "connection_decrypt_payload", &body)
+            .expect("lenient");
+        assert!(back.contains("hunter2"), "legacy plaintext must still load");
     }
 }

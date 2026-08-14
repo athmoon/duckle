@@ -245,6 +245,7 @@
       "build": "Build",
       "operate": "Operate",
       "govern": "Govern"
-    }
+    },
+    "groupCount": "{{ready}} of {{total}} ready"
   }
 }

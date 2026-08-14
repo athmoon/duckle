@@ -1,9 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     AlertTriangle,
     BookMarked,
     Boxes,
+    ChevronLeft,
     ClipboardCheck,
     Database,
     GitBranch,
@@ -71,6 +72,22 @@ const GROUP_LABEL: Record<ModuleGroup, string> = {
     build: 'Build',
     operate: 'Operate',
     govern: 'Govern',
+};
+
+/** Home is these three. Everything else is one level in. */
+const GROUP_CARD: Record<ModuleGroup, { blurb: string; icon: typeof Workflow }> = {
+    build: {
+        blurb: 'Design a pipeline, import an existing job, or have AI draft one',
+        icon: Workflow,
+    },
+    operate: {
+        blurb: 'Run it, schedule it, ship it to a server, and keep the credentials',
+        icon: Timer,
+    },
+    govern: {
+        blurb: 'Prove where the data came from and who is allowed to touch it',
+        icon: ShieldCheck,
+    },
 };
 
 /** Everything the launcher needs from App, so this file owns no app state. */
@@ -331,24 +348,32 @@ export default function HomeLauncher({
 }: Props) {
     const { t } = useTranslation();
     const closeRef = useRef<HTMLButtonElement>(null);
+    // Home is three tiles. Picking one drills into that group.
+    const [openGroup, setOpenGroup] = useState<ModuleGroup | null>(null);
+
+    useEffect(() => {
+        if (!open) setOpenGroup(null);
+    }, [open]);
 
     useEffect(() => {
         if (!open) return;
         closeRef.current?.focus();
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                onClose();
-            }
+            if (e.key !== 'Escape') return;
+            e.preventDefault();
+            // Escape steps back out of a group before it closes Home.
+            if (openGroup) setOpenGroup(null);
+            else onClose();
         };
         document.addEventListener('keydown', onKey);
         return () => document.removeEventListener('keydown', onKey);
-    }, [open, onClose]);
+    }, [open, onClose, openGroup]);
 
     if (!open) return null;
 
     const modules = buildModules(actions);
     const readyCount = modules.filter(m => m.status === 'ready').length;
+    const shown = openGroup ? modules.filter(m => m.group === openGroup) : [];
 
     return (
         <div className="home-launcher" role="dialog" aria-modal="true" aria-label={t('launcher.title', 'Home')}>
@@ -374,14 +399,47 @@ export default function HomeLauncher({
                 </header>
 
                 <div className="home-launcher-body">
-                    {GROUP_ORDER.map(group => {
-                        const inGroup = modules.filter(m => m.group === group);
-                        if (!inGroup.length) return null;
-                        return (
-                            <section key={group} className="home-launcher-group">
-                                <h2>{t(`launcher.group.${group}`, GROUP_LABEL[group])}</h2>
-                                <div className="home-launcher-grid">
-                                    {inGroup.map(m => {
+                    {!openGroup ? (
+                        <div className="home-launcher-groups">
+                            {GROUP_ORDER.map(group => {
+                                const card = GROUP_CARD[group];
+                                const GroupIcon = card.icon;
+                                const inGroup = modules.filter(m => m.group === group);
+                                const ready = inGroup.filter(m => m.status === 'ready').length;
+                                return (
+                                    <button
+                                        key={group}
+                                        type="button"
+                                        className="home-group-tile"
+                                        onClick={() => setOpenGroup(group)}
+                                    >
+                                        <span className="home-group-icon"><GroupIcon size={24} /></span>
+                                        <span className="home-group-name">
+                                            {t(`launcher.group.${group}`, GROUP_LABEL[group])}
+                                        </span>
+                                        <span className="home-group-blurb">{card.blurb}</span>
+                                        <span className="home-group-count">
+                                            {t('launcher.groupCount', '{{ready}} of {{total}} ready', {
+                                                ready,
+                                                total: inGroup.length,
+                                            })}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <section className="home-launcher-group">
+                            <button
+                                type="button"
+                                className="home-launcher-back"
+                                onClick={() => setOpenGroup(null)}
+                            >
+                                <ChevronLeft size={14} />
+                                {t(`launcher.group.${openGroup}`, GROUP_LABEL[openGroup])}
+                            </button>
+                            <div className="home-launcher-grid">
+                                {shown.map(m => {
                                         const Icon = m.icon;
                                         // A planned module has no `open` by type, so this
                                         // renders a non-interactive element - it is not a
@@ -424,11 +482,10 @@ export default function HomeLauncher({
                                                 ) : null}
                                             </button>
                                         );
-                                    })}
-                                </div>
-                            </section>
-                        );
-                    })}
+                                })}
+                            </div>
+                        </section>
+                    )}
                 </div>
 
                 <footer className="home-launcher-foot">

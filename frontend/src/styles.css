@@ -8665,3 +8665,90 @@ html[dir='rtl'] .topbar-lang {
     gap: 7px;
     cursor: pointer;
 }
+
+/* Home level one: three tiles, nothing else. */
+.home-launcher-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+}
+
+.home-group-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+    text-align: left;
+    padding: 26px 22px 22px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-1);
+    color: var(--text-1);
+    cursor: pointer;
+    font: inherit;
+    transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.home-group-tile:hover {
+    border-color: var(--border-bright);
+    background: var(--bg-2);
+    transform: translateY(-1px);
+}
+
+.home-group-tile:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.home-group-icon {
+    display: grid;
+    place-items: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 11px;
+    background: var(--bg-2);
+    color: var(--accent);
+    margin-bottom: 3px;
+}
+
+.home-group-tile:hover .home-group-icon { background: var(--bg-1); }
+
+.home-group-name {
+    font-size: 17px;
+    font-weight: 640;
+    letter-spacing: -0.01em;
+}
+
+.home-group-blurb {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-2);
+}
+
+.home-group-count {
+    margin-top: 3px;
+    font-size: 10.5px;
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.home-launcher-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 12px;
+    padding: 5px 10px 5px 6px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.home-launcher-back:hover {
+    background: var(--bg-2);
+    color: var(--text-1);
+}

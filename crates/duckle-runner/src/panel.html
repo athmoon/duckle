@@ -223,6 +223,8 @@
     <!-- SCHEDULES -->
     <section id="tab-schedules" class="hidden">
       <div class="sub" style="margin-bottom:14px">Run a pipeline on an interval. The console runs schedules itself while it is open.</div>
+      <div id="sched-note" class="hidden" style="margin-bottom:12px;padding:14px 16px;border-radius:9px;
+           background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.25);border-left:3px solid var(--red)"></div>
       <div class="card" style="padding:0;overflow:hidden">
         <table>
           <thead><tr><th>Pipeline</th><th>Status</th><th>Next run</th><th>Schedule</th><th></th></tr></thead>
@@ -284,7 +286,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let PIPES = [], RUNS = [], JOB_FILTER = 'all', RUN_FILTER = 'all', OPEN_JOB = null;
+let PIPES = [], RUNS = [], JOB_FILTER = 'all', RUN_FILTER = 'all', OPEN_JOB = null, SCHED_ERROR = null;
 
 // A 401 means the session went away (server restart, or sign-out in another
 // tab). Reloading lands on the sign-in page the server serves for '/'.
@@ -390,6 +392,15 @@ async function refreshAll(){
   $('m-failed').textContent=s.failed;
   $('m-rate').textContent=s.totalRuns? Math.round(s.ok/s.totalRuns*100)+'%':'-';
   renderJobs();
+  // The schedule store is read separately from the pipeline list, because a
+  // store that will not parse still leaves the pipelines perfectly listable -
+  // and an empty Schedules table reads as "nothing is scheduled", which is
+  // exactly the sentence a healthy workspace produces. Ask it directly so the
+  // difference can be shown.
+  try {
+    const r = await fetch('/api/schedules');
+    SCHED_ERROR = r.ok ? null : ((await r.json().catch(()=>({}))).error || 'schedules.json could not be read');
+  } catch (e) { SCHED_ERROR = String(e); }
   if(!$('tab-runs').classList.contains('hidden')) renderRuns();
   if(!$('tab-schedules').classList.contains('hidden')) renderSchedules();
 }
@@ -505,7 +516,16 @@ function joinEvery(value,unit){
   return Math.max(0,value|0)*size;
 }
 function renderSchedules(){
-  $('sched-empty').classList.toggle('hidden', PIPES.length>0);
+  $('sched-note').classList.toggle('hidden', !SCHED_ERROR);
+  if(SCHED_ERROR){
+    $('sched-note').innerHTML = '<b>The schedule store could not be read.</b>'
+      + '<div style="margin-top:7px;font-family:Consolas,monospace;font-size:12px;color:var(--red)">'
+      + esc(SCHED_ERROR) + '</div>'
+      + '<div style="margin-top:9px;color:var(--muted);font-size:13px">Existing schedules are still in '
+      + '<code>schedules.json</code> and nothing here will overwrite it. Repair that file, then refresh.</div>';
+  }
+  // Every row's controls write to the store, so none of them can work.
+  $('sched-empty').classList.toggle('hidden', PIPES.length>0 || !!SCHED_ERROR);
   $('sched-body').innerHTML=PIPES.map(p=>{
     const sc=p.schedule||{};
     // Live status: while a run is in flight (scheduled or "Run now") the console

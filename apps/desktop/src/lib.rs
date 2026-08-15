@@ -676,7 +676,9 @@ fn schedule_set_workspace(path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn schedule_list() -> Result<Vec<Schedule>, String> {
-    Ok(scheduler()?.list())
+    // Propagated, not flattened to an empty list: a schedules.json that will
+    // not parse must not be shown as "you have no schedules".
+    scheduler()?.list()
 }
 
 #[tauri::command]

@@ -90,7 +90,7 @@ async fn run_now_executes_pipeline_from_disk_and_records_history() {
     );
 
     // The schedule's last-run bookkeeping was updated.
-    let after = sched.list();
+    let after = sched.list().expect("the schedule store could not be read");
     let updated = after.iter().find(|x| x.id == s.id).unwrap();
     assert_eq!(updated.last_run_status.as_deref(), Some("ok"));
     assert!(updated.last_run_at.is_some());

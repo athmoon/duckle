@@ -6196,6 +6196,39 @@ html[dir='rtl'] .topbar-lang {
     color: var(--text-1);
 }
 
+/* An unreadable schedules.json. Deliberately not styled like the empty state:
+   the whole defect was that "could not read the file" looked like "you have
+   none", so it reads as a fault, not as a blank slate. */
+.schedule-load-error {
+    padding: 16px;
+    background: rgba(255, 77, 109, 0.08);
+    border: 1px solid rgba(255, 77, 109, 0.25);
+    border-left: 3px solid var(--danger);
+    border-radius: 8px;
+    color: var(--text-1);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.schedule-load-error-detail {
+    margin-top: 8px;
+    font-family: Consolas, monospace;
+    font-size: 0.82rem;
+    color: var(--danger);
+    word-break: break-word;
+}
+
+.schedule-load-error-hint {
+    margin-top: 10px;
+    color: var(--text-3);
+    font-size: 0.85rem;
+}
+
+.schedule-load-error-hint code {
+    font-family: Consolas, monospace;
+    color: var(--text-2);
+}
+
 .schedule-row {
     display: flex;
     gap: 12px;

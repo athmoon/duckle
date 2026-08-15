@@ -747,12 +747,11 @@ export async function scheduleSetWorkspace(path: string | null): Promise<void> {
 
 export async function scheduleList(): Promise<Schedule[]> {
     if (!isTauri()) return [];
-    try {
-        return await invoke<Schedule[]>('schedule_list');
-    } catch (err) {
-        console.warn('scheduleList failed', err);
-        return [];
-    }
+    // Deliberately not caught. Swallowing the failure into an empty array told
+    // the user they had no schedules when the truth was that schedules.json
+    // could not be read - and the schedules were still on disk. The caller
+    // shows the reason instead.
+    return await invoke<Schedule[]>('schedule_list');
 }
 
 export async function scheduleUpsert(schedule: Schedule): Promise<Schedule | null> {

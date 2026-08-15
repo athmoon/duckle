@@ -1198,7 +1198,10 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
                 Err(e) => respond_err(&mut stream, "500 Internal Server Error", &e),
             }
         }
-        ("GET", "/api/schedules") => respond_json(&mut stream, &load_schedules(state)),
+        ("GET", "/api/schedules") => match load_schedules(state) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "500 Internal Server Error", &e),
+        },
         ("POST", "/api/schedules") => {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             match save_schedule(state, &body) {
@@ -1374,7 +1377,9 @@ fn last_run(workspace: &Path, id: &str) -> Option<RunRecord> {
 }
 
 fn api_pipelines(state: &State) -> Value {
-    let scheds = load_schedules(state);
+    // A broken store must not take the pipeline list down with it; the
+    // Schedules view reports the reason on its own.
+    let scheds = load_schedules(state).unwrap_or_else(|_| json!({}));
     let names = repo_names(&state.workspace);
     let items: Vec<Value> = discover_pipelines(&state.workspace)
         .into_iter()
@@ -1599,14 +1604,16 @@ fn legacy_schedules_path(workspace: &Path) -> PathBuf {
 /// schedules the console cannot express at all. Those are left strictly alone:
 /// this view shows the first schedule the console can represent, and a save
 /// edits that same record by id rather than replacing the pipeline's entry.
-fn load_schedules(state: &State) -> Value {
-    let list = match duckle_duckdb_engine::schedules::load(&state.workspace) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("duckle-runner: {e}");
-            return json!({});
-        }
-    };
+/// The schedule store, or why it could not be read.
+///
+/// The failure is returned rather than flattened to an empty map. An empty map
+/// renders as "nothing is scheduled", which is the same sentence a healthy
+/// workspace with no schedules produces - so a file that would not parse was
+/// indistinguishable from one that said there was nothing to do.
+fn load_schedules(state: &State) -> Result<Value, String> {
+    let list = duckle_duckdb_engine::schedules::load(&state.workspace).inspect_err(|e| {
+        eprintln!("duckle-runner: {e}");
+    })?;
     let mut out = serde_json::Map::new();
     for s in &list {
         if out.contains_key(&s.pipeline_id) {
@@ -1632,7 +1639,7 @@ fn load_schedules(state: &State) -> Value {
             }),
         );
     }
-    Value::Object(out)
+    Ok(Value::Object(out))
 }
 
 /// Carry a pre-unification `panel-schedules.json` into the shared store.
@@ -2060,7 +2067,12 @@ fn spawn_scheduler(state: Arc<State>) {
             HashMap::new();
         loop {
             std::thread::sleep(state.tick_interval);
-            let scheds = load_schedules(&state);
+            let scheds = match load_schedules(&state) {
+                Ok(v) => v,
+                // Already reported to stderr by load_schedules. Firing nothing
+                // is the safe answer to a store that will not parse.
+                Err(_) => continue,
+            };
             let obj = match scheds.as_object() {
                 Some(o) => o,
                 None => continue,

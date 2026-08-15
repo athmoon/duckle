@@ -55,6 +55,11 @@ pub struct Scheduler {
 struct SchedulerInner {
     schedules: Vec<Schedule>,
     workspace_path: Option<PathBuf>,
+    /// Why the store could not be read, when it could not be.
+    ///
+    /// Kept so the answer to "what are my schedules?" can be the truth rather
+    /// than an empty list. See [`Scheduler::list`].
+    load_error: Option<String>,
     /// Active file-watchers, keyed by schedule id. Holding the
     /// `Debouncer` keeps the watch alive; dropping it stops watching.
     watchers: HashMap<String, Debouncer<RecommendedWatcher>>,
@@ -118,6 +123,7 @@ impl Scheduler {
             inner: Arc::new(Mutex::new(SchedulerInner {
                 schedules: Vec::new(),
                 workspace_path: None,
+                load_error: None,
                 watchers: HashMap::new(),
                 fire_rx: Some(fire_rx),
             })),
@@ -130,18 +136,38 @@ impl Scheduler {
     /// new path; computes next-run times for each; rebuilds watchers.
     pub fn set_workspace(&self, path: Option<PathBuf>) {
         let mut g = self.inner.lock().expect("scheduler poisoned");
-        g.workspace_path = path.clone();
-        g.schedules = match path {
-            Some(p) => schedules::load(&p).unwrap_or_else(|e| {
-                warn!("Failed to load schedules: {}", e);
-                Vec::new()
-            }),
-            None => Vec::new(),
-        };
-        for s in g.schedules.iter_mut() {
-            compute_next_run(s);
-        }
+        g.workspace_path = path;
+        self.reload(&mut g);
         self.rebuild_watchers(&mut g);
+    }
+
+    /// Re-read the store, and remember it if it will not be read.
+    fn reload(&self, inner: &mut SchedulerInner) {
+        let Some(path) = inner.workspace_path.clone() else {
+            inner.schedules = Vec::new();
+            inner.load_error = None;
+            return;
+        };
+        match schedules::load(&path) {
+            Ok(mut list) => {
+                for s in list.iter_mut() {
+                    compute_next_run(s);
+                }
+                inner.schedules = list;
+                inner.load_error = None;
+            }
+            Err(e) => {
+                warn!("Failed to load schedules: {}", e);
+                // Emptied rather than left as it was. This may be a different
+                // workspace than the one those schedules came from, and a
+                // ticker firing another workspace's schedules would be far
+                // worse than firing none. Nothing is lost by it: the file is
+                // never written back over, because every write re-reads under
+                // a lock and fails the same way.
+                inner.schedules = Vec::new();
+                inner.load_error = Some(e);
+            }
+        }
     }
 
     /// Recreate file-watchers for the current schedule set. Drops all
@@ -194,12 +220,25 @@ impl Scheduler {
         Ok(debouncer)
     }
 
-    pub fn list(&self) -> Vec<Schedule> {
-        self.inner
-            .lock()
-            .expect("scheduler poisoned")
-            .schedules
-            .clone()
+    /// The schedules, or why the store could not be read.
+    ///
+    /// A store that will not parse used to come back as an empty list, which
+    /// reads as "you have no schedules" - the most alarming way possible to
+    /// say "I could not open the file", and one that invites re-creating
+    /// schedules that are still sitting on disk.
+    ///
+    /// While in the failed state this retries the read, so repairing the file
+    /// is enough to recover without restarting the app. A healthy store is
+    /// served from memory and costs nothing.
+    pub fn list(&self) -> Result<Vec<Schedule>, String> {
+        let mut g = self.inner.lock().expect("scheduler poisoned");
+        if g.load_error.is_some() {
+            self.reload(&mut g);
+        }
+        match &g.load_error {
+            Some(e) => Err(e.clone()),
+            None => Ok(g.schedules.clone()),
+        }
     }
 
     pub fn upsert(&self, mut schedule: Schedule) -> Result<Schedule, String> {
@@ -286,6 +325,9 @@ impl Scheduler {
             }
         }
         inner.schedules = list;
+        // The write re-read the store to apply the change, so it parses: any
+        // remembered failure is stale.
+        inner.load_error = None;
         Ok(())
     }
 
@@ -838,7 +880,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1500));
         let now = Utc::now();
         let due = |s: &Scheduler| -> Vec<String> {
-            s.list()
+            s.list().expect("schedules unreadable")
                 .into_iter()
                 .filter(|x| x.enabled && matches!(x.next_run_at, Some(t) if t <= now))
                 .map(|x| x.id)
@@ -857,7 +899,7 @@ mod tests {
         // Keys come from lock_key, the same function both fire paths use, so a
         // change of mind about what gets locked fails here rather than shipping.
         let key = |s: &Scheduler, id: &str| -> String {
-            lock_key(s.list().iter().find(|x| x.id == id).expect("schedule vanished")).to_string()
+            lock_key(s.list().expect("schedules unreadable").iter().find(|x| x.id == id).expect("schedule vanished")).to_string()
         };
         let held = key(&desktop, &a[0]);
         let first = match claim_run(Some(&ws), &held) {
@@ -921,6 +963,64 @@ mod tests {
         assert!(sched.delete("anything").is_err(), "delete reported success too");
     }
 
+    /// "I could not read the file" must never be shown as "you have none".
+    ///
+    /// An unreadable store came back as an empty list, so the UI said there
+    /// were no schedules - the most alarming possible way to report a parse
+    /// error, and one that invites re-creating schedules that are still on
+    /// disk. It also has to recover on its own once the file is repaired,
+    /// because the alternative is telling someone to restart the app.
+    #[test]
+    fn an_unreadable_store_says_so_and_recovers_when_it_is_repaired() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        let sched = Scheduler::new(DuckdbEngine::new(PathBuf::from("duckdb")));
+
+        // A workspace with a real schedule in it.
+        sched.set_workspace(Some(ws.clone()));
+        let saved = sched
+            .upsert(Schedule {
+                id: String::new(),
+                pipeline_id: "nightly-load".into(),
+                name: "nightly".into(),
+                enabled: true,
+                kind: ScheduleKind::Interval { seconds: 3600 },
+                last_run_at: None,
+                last_run_status: None,
+                last_run_duration_ms: None,
+                last_run_error: None,
+                next_run_at: None,
+            })
+            .unwrap();
+        assert_eq!(sched.list().unwrap().len(), 1);
+
+        // Now the file is damaged - a half-written save, a bad merge.
+        let good = std::fs::read_to_string(ws.join("schedules.json")).unwrap();
+        std::fs::write(ws.join("schedules.json"), "[{\"id\": \"nightly").unwrap();
+        sched.set_workspace(Some(ws.clone()));
+
+        let err = sched.list().expect_err("an unreadable store was reported as no schedules");
+        assert!(!err.is_empty(), "the failure has to say something");
+
+        // And nothing fires while it cannot be read, rather than the previous
+        // workspace's schedules firing against this one.
+        assert!(sched.claim_due(Utc::now()).is_empty(), "a schedule fired from an unreadable store");
+
+        // The file is left exactly as it was, so the schedules are recoverable.
+        assert_eq!(
+            std::fs::read_to_string(ws.join("schedules.json")).unwrap(),
+            "[{\"id\": \"nightly",
+            "the damaged store was overwritten"
+        );
+
+        // Repair it, and the next question gets the right answer without a
+        // restart or a workspace switch.
+        std::fs::write(ws.join("schedules.json"), good).unwrap();
+        let back = sched.list().expect("a repaired store still reported as broken");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, saved.id, "the schedule came back changed");
+    }
+
     /// A fire claim has to survive the next save, whatever caused it.
     ///
     /// `fire_due` advanced `next_run_at` to claim an occurrence, but only in
@@ -973,7 +1073,7 @@ mod tests {
         due_now.name = "unrelated".into();
         sched.upsert(due_now).unwrap();
 
-        let after = sched.list().into_iter().find(|s| s.id == running).unwrap();
+        let after = sched.list().unwrap().into_iter().find(|s| s.id == running).unwrap();
         assert!(
             matches!(after.next_run_at, Some(t) if t > now),
             "the running schedule is due again after an unrelated save: {:?}",
@@ -1017,7 +1117,7 @@ mod tests {
 
         sched.fire_and_record(&id, "Test").await;
 
-        let after = sched.list().into_iter().find(|s| s.id == id).expect("schedule vanished");
+        let after = sched.list().unwrap().into_iter().find(|s| s.id == id).expect("schedule vanished");
         assert_eq!(after.last_run_status.as_deref(), Some("error"));
         assert!(after.last_run_at.is_some(), "the fire left no last_run_at");
         assert!(

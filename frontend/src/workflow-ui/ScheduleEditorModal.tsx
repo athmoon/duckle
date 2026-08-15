@@ -63,11 +63,23 @@ export default function ScheduleEditorModal({
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    /// Why the schedule store could not be read, kept apart from `error` so a
+    /// broken file keeps saying so while an edit succeeds or fails on top.
+    const [loadError, setLoadError] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
         setLoading(true);
-        const all = await scheduleList();
-        setSchedules(all.filter(s => s.pipeline_id === pipelineId));
+        try {
+            const all = await scheduleList();
+            setSchedules(all.filter(s => s.pipeline_id === pipelineId));
+            setLoadError(null);
+        } catch (err) {
+            // A store that will not parse is not an empty store. Showing an
+            // empty list here read as "you have no schedules", which invites
+            // re-creating schedules that are still sitting in the file.
+            setSchedules([]);
+            setLoadError(String(err));
+        }
         if (workspacePath) {
             setHistory(await runHistory(workspacePath, pipelineId));
         }
@@ -213,6 +225,21 @@ export default function ScheduleEditorModal({
                             <div className="schedule-list">
                                 {loading ? (
                                     <div className="schedule-empty">Loading…</div>
+                                ) : loadError ? (
+                                    // Never "no schedules" when the truth is
+                                    // "the file would not open": they are still
+                                    // in it, and nothing here overwrites it.
+                                    <div className="schedule-load-error">
+                                        <b>Your schedules could not be read.</b>
+                                        <div className="schedule-load-error-detail">
+                                            {loadError}
+                                        </div>
+                                        <div className="schedule-load-error-hint">
+                                            They are still in <code>schedules.json</code> in this
+                                            workspace, and nothing here will overwrite it. Repair
+                                            that file and reopen this window.
+                                        </div>
+                                    </div>
                                 ) : schedules.length === 0 ? (
                                     <div className="schedule-empty">
                                         No schedules yet. Click <b>+ New schedule</b> to set one
@@ -235,7 +262,11 @@ export default function ScheduleEditorModal({
                                 type="button"
                                 className="btn btn-primary schedule-add"
                                 onClick={startNew}
-                                disabled={busy}
+                                // Offering this while the store is unreadable
+                                // offers a door that cannot open: every save
+                                // re-reads the file and fails the same way.
+                                disabled={busy || !!loadError}
+                                title={loadError ? 'Repair schedules.json first' : undefined}
                             >
                                 <Plus size={13} /> New schedule
                             </button>

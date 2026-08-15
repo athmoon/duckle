@@ -241,7 +241,7 @@ impl Scheduler {
                 }
                 None => list.push(saved),
             }
-        });
+        })?;
         self.rebuild_watchers(&mut g);
         Ok(schedule)
     }
@@ -250,8 +250,7 @@ impl Scheduler {
         let mut g = self.inner.lock().expect("scheduler poisoned");
         g.watchers.remove(id);
         let id = id.to_string();
-        self.commit(&mut g, move |list| list.retain(|s| s.id != id));
-        Ok(())
+        self.commit(&mut g, move |list| list.retain(|s| s.id != id))
     }
 
     /// Apply a change to the shared store and adopt the result.
@@ -264,27 +263,30 @@ impl Scheduler {
     ///
     /// A scheduler with no workspace keeps its list in memory only; that is
     /// the pre-workspace state at startup, not an error worth surfacing.
-    fn commit<F>(&self, inner: &mut SchedulerInner, change: F)
+    ///
+    /// The write failing IS worth surfacing, and the caller decides how. This
+    /// used to log and return nothing, so `upsert` and `delete` reported
+    /// success to the UI for a schedule that never reached the disk: a full
+    /// disk, a read-only workspace or a store that will not parse all looked
+    /// like a save that worked, and the schedule was gone at the next restart.
+    fn commit<F>(&self, inner: &mut SchedulerInner, change: F) -> Result<(), String>
     where
         F: FnOnce(&mut Vec<Schedule>),
     {
         let Some(path) = inner.workspace_path.clone() else {
             change(&mut inner.schedules);
-            return;
+            return Ok(());
         };
-        match schedules::update(&path, change) {
-            Ok(mut list) => {
-                // Next-run times are this process's own bookkeeping and are not
-                // what the other process wrote, so recompute rather than trust.
-                for s in list.iter_mut() {
-                    if s.next_run_at.is_none() {
-                        compute_next_run(s);
-                    }
-                }
-                inner.schedules = list;
+        let mut list = schedules::update(&path, change)?;
+        // Next-run times are this process's own bookkeeping and are not what
+        // the other process wrote, so recompute rather than trust.
+        for s in list.iter_mut() {
+            if s.next_run_at.is_none() {
+                compute_next_run(s);
             }
-            Err(e) => warn!("Failed to save schedules: {}", e),
         }
+        inner.schedules = list;
+        Ok(())
     }
 
     /// Execute a schedule's pipeline right now, regardless of its
@@ -375,7 +377,7 @@ impl Scheduler {
         let pipeline_id = g.schedules.iter().find(|s| s.id == id).map(|s| s.pipeline_id.clone());
         let (sid, status, duration, error) =
             (id.to_string(), result.status.clone(), result.duration_ms, result.error.clone());
-        self.commit(&mut g, move |list| {
+        let saved = self.commit(&mut g, move |list| {
             if let Some(s) = list.iter_mut().find(|s| s.id == sid) {
                 s.last_run_at = Some(started);
                 s.last_run_status = Some(status);
@@ -384,6 +386,12 @@ impl Scheduler {
                 compute_next_run(s);
             }
         });
+        // Nobody is waiting on this one - the run already happened - so the
+        // outcome goes to the log. Run history below is written either way, so
+        // the run is not lost with it.
+        if let Err(e) = saved {
+            warn!("Could not record the run against schedule {}: {}", id, e);
+        }
         let workspace = g.workspace_path.clone();
         // Everything below talks to the disk and the network, so the lock goes
         // back first. Alert delivery waits up to ten seconds per channel, and
@@ -461,32 +469,69 @@ impl Scheduler {
         }
     }
 
+    /// Take every schedule that is due, and claim it so nothing else takes it.
+    ///
+    /// Split out from `fire_due` so a test can drive the claim itself rather
+    /// than a copy of it: the bug this guards against was invisible to a test
+    /// that re-implemented the claiming step.
+    ///
+    /// Returns each due schedule's id alongside its pipeline id, because the
+    /// schedule is what came due but the pipeline is what gets locked.
+    fn claim_due(&self, now: DateTime<Utc>) -> Vec<(String, String)> {
+        let mut g = self.inner.lock().expect("scheduler poisoned");
+        let due: Vec<(String, String)> = g
+            .schedules
+            .iter()
+            .filter(|s| s.enabled && matches!(s.next_run_at, Some(t) if t <= now))
+            .map(|s| (s.id.clone(), lock_key(s).to_string()))
+            .collect();
+            // Claim the occurrence immediately, under the lock, by advancing
+            // next_run_at to the next FUTURE time. The tick wakes every 15s and
+            // run_now only recomputes next_run_at on completion (record_run);
+            // without this claim a run slower than 15s gets re-fired every
+            // tick. Advancing (vs clearing to None) keeps the schedule firing
+            // on cadence even if this run errors before record_run.
+            //
+            // The claim goes to the STORE, not just to this process's copy.
+            // Held in memory it was undone by the next commit for any reason
+            // at all - a schedule edited in the UI, another schedule's run
+            // finishing - because commit adopts the list from disk, where
+            // next_run_at was still the time already claimed and therefore
+            // still in the past. The run in flight was then due again on the
+            // very next tick, and only the run lock stopped it, logging a
+            // refusal that blamed "another process" for this one. Writing it
+            // also makes the claim visible to the other process, so the lock
+            // goes back to being the backstop it was meant to be.
+        if !due.is_empty() {
+            let claimed: Vec<String> = due.iter().map(|(id, _)| id.clone()).collect();
+            if let Err(e) = self.commit(&mut g, move |list| {
+                for s in list.iter_mut() {
+                    if claimed.iter().any(|id| id == &s.id) {
+                        claim_next_run(s, now);
+                    }
+                }
+            }) {
+                // The runs still go ahead: the lock keeps them from doubling,
+                // and refusing to fire because the bookkeeping could not be
+                // written would turn a full disk into a silent outage of every
+                // schedule.
+                warn!("Could not record the fire claim: {}", e);
+                for s in g.schedules.iter_mut() {
+                    if due.iter().any(|(id, _)| id == &s.id) {
+                        claim_next_run(s, now);
+                    }
+                }
+            }
+        }
+        due
+    }
+
     async fn fire_due(&self) {
         let now = Utc::now();
         // Read the workspace under the same lock as the due list, so the path
         // used for the run lock is the one this tick actually decided against.
         let workspace = { self.inner.lock().expect("scheduler poisoned").workspace_path.clone() };
-        // Carry the pipeline id alongside the schedule id: the schedule is what
-        // came due, but the pipeline is what gets locked.
-        let due: Vec<(String, String)> = {
-            let mut g = self.inner.lock().expect("scheduler poisoned");
-            let mut due = Vec::new();
-            for s in g.schedules.iter_mut() {
-                if s.enabled && matches!(s.next_run_at, Some(t) if t <= now) {
-                    due.push((s.id.clone(), lock_key(s).to_string()));
-                    // Claim the occurrence immediately, under the lock, by
-                    // advancing next_run_at to the next FUTURE time. The
-                    // tick wakes every 15s and run_now only recomputes
-                    // next_run_at on completion (record_run); without this
-                    // claim a run slower than 15s gets re-fired every tick.
-                    // Advancing (vs clearing to None) keeps the schedule
-                    // firing on cadence even if this run errors before
-                    // record_run.
-                    claim_next_run(s, now);
-                }
-            }
-            due
-        };
+        let due = self.claim_due(now);
         for (id, pipeline_id) in due {
             let me = self.clone();
             let workspace = workspace.clone();
@@ -832,6 +877,108 @@ mod tests {
         assert_eq!(held, "nightly-load", "the lock was not keyed on the pipeline");
         assert_ne!(a[0], held, "the schedule id and pipeline id must differ here");
         drop(first);
+    }
+
+    /// A save that did not reach the disk is not a save.
+    ///
+    /// `commit` logged the write failure and returned nothing, so `upsert` and
+    /// `delete` handed back Ok for a schedule that never reached the store. A
+    /// read-only workspace, a full disk or a store that will not parse all
+    /// looked exactly like success, and the schedule was simply absent at the
+    /// next restart.
+    #[test]
+    fn a_schedule_that_could_not_be_written_is_not_reported_as_saved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        // A store that will not parse. Every write is a read-modify-write, so
+        // this fails the read and must not be silently overwritten either.
+        std::fs::write(ws.join("schedules.json"), "{ this is not json").unwrap();
+
+        let sched = Scheduler::new(DuckdbEngine::new(PathBuf::from("duckdb")));
+        sched.set_workspace(Some(ws.clone()));
+
+        let err = sched
+            .upsert(Schedule {
+                id: String::new(),
+                pipeline_id: "nightly-load".into(),
+                name: "nightly".into(),
+                enabled: true,
+                kind: ScheduleKind::Interval { seconds: 3600 },
+                last_run_at: None,
+                last_run_status: None,
+                last_run_duration_ms: None,
+                last_run_error: None,
+                next_run_at: None,
+            })
+            .expect_err("a schedule that was never written was reported as saved");
+        assert!(!err.is_empty(), "the failure has to say something");
+
+        // And the unreadable store is left exactly as it was, rather than
+        // being replaced by a list built from a failed read.
+        let after = std::fs::read_to_string(ws.join("schedules.json")).unwrap();
+        assert_eq!(after, "{ this is not json", "a corrupt store was overwritten");
+
+        assert!(sched.delete("anything").is_err(), "delete reported success too");
+    }
+
+    /// A fire claim has to survive the next save, whatever caused it.
+    ///
+    /// `fire_due` advanced `next_run_at` to claim an occurrence, but only in
+    /// this process's copy. `commit` adopts the list from disk, where the time
+    /// was still the one already claimed and therefore still in the past, so
+    /// any unrelated save - a schedule edited in the UI, another schedule's run
+    /// finishing - put the in-flight schedule straight back into the due set.
+    #[test]
+    fn an_unrelated_save_does_not_make_a_running_schedule_due_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        let sched = Scheduler::new(DuckdbEngine::new(PathBuf::from("duckdb")));
+        sched.set_workspace(Some(ws.clone()));
+
+        let mut due_now = Schedule {
+            id: String::new(),
+            pipeline_id: "nightly-load".into(),
+            name: "nightly".into(),
+            enabled: true,
+            kind: ScheduleKind::Interval { seconds: 3600 },
+            last_run_at: None,
+            last_run_status: None,
+            last_run_duration_ms: None,
+            last_run_error: None,
+            next_run_at: None,
+        };
+        let running = sched.upsert(due_now.clone()).unwrap().id;
+        // Make it due, the way an hour passing would.
+        let now = Utc::now();
+        {
+            let mut g = sched.inner.lock().unwrap();
+            sched
+                .commit(&mut g, |list| {
+                    for s in list.iter_mut() {
+                        s.next_run_at = Some(now - chrono::Duration::seconds(1));
+                    }
+                })
+                .unwrap();
+        }
+
+        // Claim it through the code a tick actually runs, not a copy of it.
+        // An earlier version of this test re-implemented the claim and so
+        // passed with the defect still in place.
+        let claimed = sched.claim_due(now);
+        assert_eq!(claimed.len(), 1, "the schedule was not due when it should have been");
+
+        // Now something else saves, which is the step that used to undo it.
+        due_now.id = String::new();
+        due_now.pipeline_id = "unrelated".into();
+        due_now.name = "unrelated".into();
+        sched.upsert(due_now).unwrap();
+
+        let after = sched.list().into_iter().find(|s| s.id == running).unwrap();
+        assert!(
+            matches!(after.next_run_at, Some(t) if t > now),
+            "the running schedule is due again after an unrelated save: {:?}",
+            after.next_run_at
+        );
     }
 
     /// A run that never gets as far as starting still has to be reported.

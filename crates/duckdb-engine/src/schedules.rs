@@ -103,34 +103,11 @@ pub fn update<F>(workspace: &Path, f: F) -> Result<Vec<Schedule>, String>
 where
     F: FnOnce(&mut Vec<Schedule>),
 {
-    let _guard = lock_store(workspace)?;
+    let _guard = runlock::lock_store(workspace, "schedules")?;
     let mut list = load(workspace)?;
     f(&mut list);
     write_atomically(workspace, &list)?;
     Ok(list)
-}
-
-/// Hold the store lock, waiting briefly for the other process to finish.
-///
-/// Unlike a run lock, where a clash means "someone else is already doing this
-/// so skip", a clash here means "someone else is mid-write, so wait": the write
-/// is a few milliseconds and the caller has a change that must not be dropped.
-/// The ceiling exists so a wedged holder degrades to a reported error rather
-/// than a hung UI, though the kernel releases the lock on process death, so
-/// reaching it at all should mean a genuinely stuck writer.
-fn lock_store(workspace: &Path) -> Result<runlock::RunLock, String> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        // A nested key: pipeline ids flatten their separators to underscores, so
-        // no pipeline can ever name this lock and stall a save by running.
-        if let Some(lock) = runlock::try_acquire_nested(workspace, "store", "schedules") {
-            return Ok(lock);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err("Timed out waiting to write schedules.json".into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
 }
 
 /// Write through a temporary file in the same directory, then rename over.

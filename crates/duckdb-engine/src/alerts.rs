@@ -195,13 +195,53 @@ fn save_state(workspace: &Path, state: &AlertState) {
     // unparseable file as "remember nothing" - so a reader landing in that
     // window silently reset every cooldown and last_status in the workspace,
     // which shows up as a burst of duplicate alerts and a missing all-clear.
-    let tmp = p.with_extension("json.tmp");
+    // A temp name of this writer's own, and no unlink before the rename: see
+    // write_atomically in schedules.rs. One shared `alert-state.json.tmp` let
+    // two runs finishing together write the same file, and removing the
+    // destination first opened exactly the window this function exists to
+    // close.
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = p.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
     if std::fs::write(&tmp, body).is_err() {
         return;
     }
-    #[cfg(windows)]
-    let _ = std::fs::remove_file(&p);
-    let _ = std::fs::rename(&tmp, &p);
+    if std::fs::rename(&tmp, &p).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// Read, change and write the alert state as one exclusive step.
+///
+/// `notify` used to load the state, work, and save the whole file back with no
+/// lock at all. Two runs finishing at the same moment - which the concurrency
+/// permits make ordinary, not rare - each loaded the state before the other
+/// wrote, so the second save dropped the first's keys entirely. What is lost is
+/// `last_status`, and losing it means the next run of that pipeline classifies
+/// against a stale status: an all-clear that never goes out, or a failure alert
+/// sent a second time.
+///
+/// Delivery stays outside this. It waits up to ten seconds per channel, and
+/// holding a workspace-wide lock across that would serialise every alert in
+/// the workspace behind one unreachable webhook.
+fn update_state<F>(workspace: &Path, change: F)
+where
+    F: FnOnce(&mut AlertState),
+{
+    let _guard = match crate::runlock::lock_store(workspace, "alert-state") {
+        Ok(g) => Some(g),
+        // Not being able to take the lock must not cost the update: an alert
+        // that was delivered still has to be recorded, or it delivers again on
+        // the next run. Falling through is the same behaviour as before the
+        // lock existed.
+        Err(e) => {
+            eprintln!("duckle: {e}");
+            None
+        }
+    };
+    let mut state = load_state(workspace);
+    change(&mut state);
+    save_state(workspace, &state);
 }
 
 /// A stable name for a channel, so two rules pointing at different places do
@@ -313,10 +353,16 @@ pub fn notify(workspace: &Path, pipeline_id: &str, result: &RunResult) -> usize 
         return 0;
     }
 
-    let mut state = load_state(workspace);
+    // A snapshot, to decide against. The commit at the end re-reads under a
+    // lock and merges, so a run finishing at the same moment cannot drop this
+    // one's bookkeeping. Deciding from a snapshot is safe because every key
+    // here is scoped to one pipeline, and one pipeline cannot be running twice
+    // at once: the run lock is what guarantees that.
+    let state = load_state(workspace);
     let event = classify(result, state.last_status.get(pipeline_id).map(String::as_str));
     let now = Utc::now();
     let mut sent = 0usize;
+    let mut delivered: Vec<String> = Vec::new();
 
     for rule in &rules.rules {
         if !glob::Pattern::new(&rule.pattern).map(|p| p.matches(pipeline_id)).unwrap_or(false) {
@@ -343,7 +389,7 @@ pub fn notify(workspace: &Path, pipeline_id: &str, result: &RunResult) -> usize 
         let message = build_message(event, pipeline_id, result);
         match deliver(&rule.channel, &message) {
             Ok(()) => {
-                state.last_sent.insert(key, now);
+                delivered.push(key);
                 sent += 1;
             }
             // Reported, never propagated: see the function docs. The error is
@@ -358,8 +404,14 @@ pub fn notify(workspace: &Path, pipeline_id: &str, result: &RunResult) -> usize 
         }
     }
 
-    state.last_status.insert(pipeline_id.to_string(), result.status.clone());
-    save_state(workspace, &state);
+    let status = result.status.clone();
+    let pipeline = pipeline_id.to_string();
+    update_state(workspace, move |s| {
+        for key in delivered {
+            s.last_sent.insert(key, now);
+        }
+        s.last_status.insert(pipeline, status);
+    });
     sent
 }
 
@@ -726,5 +778,81 @@ mod tests {
         let msg = build_message(Event::Failure, "p", &result("error", Some("x")));
         let err = deliver(&channel, &msg).expect_err("must not post to the placeholder itself");
         assert!(err.contains("ENV:"), "unhelpful error: {err}");
+    }
+
+    /// Two runs finishing together must not drop each other's bookkeeping.
+    ///
+    /// The state was loaded, changed and written back with no lock, and the
+    /// write covers the whole file. Two pipelines finishing at the same moment
+    /// - ordinary, given the scheduler runs several at once - each loaded
+    /// before the other wrote, so the second save erased the first's
+    /// `last_status`. The next run of that pipeline then classified against a
+    /// stale status: an all-clear that never goes out, or a failure alert sent
+    /// twice.
+    #[test]
+    fn state_written_by_runs_finishing_together_keeps_every_pipeline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        std::fs::create_dir_all(ws.join(".duckle")).unwrap();
+
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let ws = ws.clone();
+                std::thread::spawn(move || {
+                    update_state(&ws, move |s| {
+                        s.last_status.insert(format!("pipeline-{i}"), "error".into());
+                    });
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let after = load_state(&ws);
+        assert_eq!(
+            after.last_status.len(),
+            8,
+            "a concurrent write dropped another pipeline's last status: {:?}",
+            after.last_status.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// The state file is never absent, so no reader ever sees "remember
+    /// nothing" and resets every cooldown in the workspace.
+    #[test]
+    fn the_alert_state_is_never_observably_missing_during_a_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        update_state(&ws, |s| {
+            s.last_status.insert("p".into(), "ok".into());
+        });
+        let p = state_path(&ws);
+        assert!(p.exists());
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let missing = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = {
+            let (p, stop, missing) = (p.clone(), stop.clone(), missing.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if !p.exists() {
+                        missing.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            })
+        };
+        for i in 0..200 {
+            update_state(&ws, move |s| {
+                s.last_status.insert("p".into(), format!("run-{i}"));
+            });
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap();
+        assert_eq!(
+            missing.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the alert state was observably absent during a write"
+        );
     }
 }

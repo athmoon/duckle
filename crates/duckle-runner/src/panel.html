@@ -150,6 +150,7 @@
     <button data-tab="runs"><span class="ico">≡</span> Runs</button>
     <button data-tab="schedules"><span class="ico">◷</span> Schedules</button>
     <button data-tab="catalog"><span class="ico">◈</span> Catalog</button>
+    <button data-tab="audit" id="nav-audit" class="hidden"><span class="ico">⛉</span> Audit</button>
   </nav>
   <div class="side-foot">
     Workspace
@@ -250,6 +251,33 @@
       </div>
       <div id="cat-empty" class="empty hidden"><div class="big">◈</div>No assets found. Are there pipelines in this workspace?</div>
     </section>
+
+    <section id="tab-audit" class="hidden">
+      <div class="sub" style="margin-bottom:14px">
+        Every sign-in, every change, and every refusal. Reads are left out so the
+        entries worth seeing are not buried under a dashboard that polls.
+      </div>
+      <div class="toolbar">
+        <input type="text" id="aud-actor" placeholder="Who" style="width:150px">
+        <input type="text" id="aud-action" placeholder="Action, e.g. schedule" style="width:190px">
+        <select id="aud-outcome">
+          <option value="">Any outcome</option>
+          <option value="allowed">Allowed</option>
+          <option value="denied">Refused</option>
+          <option value="unauthenticated">Not signed in</option>
+        </select>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn" onclick="loadAudit()">Refresh</button>
+      </div>
+      <div id="aud-note" class="sub" style="margin-bottom:10px"></div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <table>
+          <thead><tr><th>When</th><th>Who</th><th>Outcome</th><th>Action</th><th>Target</th></tr></thead>
+          <tbody id="aud-body"></tbody>
+        </table>
+      </div>
+      <div id="aud-empty" class="empty hidden"><div class="big">⛉</div>Nothing recorded yet.</div>
+    </section>
   </div>
 </main>
 <div id="toast"></div>
@@ -286,6 +314,10 @@ async function loadMe(){
     ? '<span class="muted">local access</span>'
     : `<b>${esc(ME.label)}</b> <span class="muted">${esc(ME.role)}</span>` +
       ' &middot; <a href="#" onclick="signOut();return false">Sign out</a>';
+  // The log names people and what they reached for, so only an admin sees it.
+  // The server refuses anyone else regardless; hiding the tab is so nobody is
+  // offered a door that will not open.
+  $('nav-audit').classList.toggle('hidden', ME.role !== 'admin');
 }
 async function signOut(){
   await fetch('/api/session', { method: 'DELETE' });
@@ -330,14 +362,16 @@ function toast(msg, kind){ const el=document.createElement('div'); el.className=
 const TITLES={overview:['Overview','Pipelines grouped by job, with their latest status.'],
   runs:['Runs','Every execution across all pipelines, newest first.'],
   schedules:['Schedules','Run a pipeline on an interval. The console runs schedules itself while it is open.'],
-  catalog:['Catalog','What this workspace reads and writes, and who owns it.']};
+  catalog:['Catalog','What this workspace reads and writes, and who owns it.'],
+  audit:['Audit','Who did what through this console, and who was turned away.']};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
   const tab=b.dataset.tab;
-  for(const t of ['overview','runs','schedules','catalog']) $('tab-'+t).classList.toggle('hidden', t!==tab);
+  for(const t of ['overview','runs','schedules','catalog','audit']) $('tab-'+t).classList.toggle('hidden', t!==tab);
   $('page-title').textContent=TITLES[tab][0]; $('page-sub').textContent=TITLES[tab][1];
   if(tab==='runs') renderRuns(); if(tab==='schedules') renderSchedules();
   if(tab==='catalog') loadCatalog();
+  if(tab==='audit') loadAudit();
 });
 
 // ── Data ──
@@ -583,6 +617,41 @@ function renderCatalog(){
   }).join('');
 }
 
+// ── Audit ──
+// Loaded on demand and never on the poll: this is a file that only grows, and
+// a 5s refresh of it would be the most expensive thing the console does.
+async function loadAudit(){
+  const q = new URLSearchParams();
+  const actor = ($('aud-actor').value || '').trim();
+  const action = ($('aud-action').value || '').trim();
+  const outcome = $('aud-outcome').value;
+  if(actor) q.set('actor', actor);
+  if(action) q.set('action', action);
+  if(outcome) q.set('outcome', outcome);
+  const page = await api('/api/audit' + (q.toString() ? '?' + q : '')) || {};
+  // An empty table because the server failed reads exactly like an empty table
+  // because nothing happened, and only one of those is good news.
+  if(page.error) toast(page.error, 'err');
+  const rows = page.entries || [];
+  $('aud-empty').classList.toggle('hidden', rows.length > 0);
+
+  const notes = [`${rows.length} entries, newest first`];
+  // Both of these change what the list means, so neither is left implied.
+  if(page.more) notes.push('older entries exist beyond this page');
+  if(page.unreadable) notes.push(`<b style="color:var(--amber)">${page.unreadable} line(s) could not be read</b>`);
+  $('aud-note').innerHTML = notes.join(' &middot; ');
+
+  const kind = { allowed:'ok', denied:'err', unauthenticated:'run' };
+  const label = { allowed:'Allowed', denied:'Refused', unauthenticated:'Not signed in' };
+  $('aud-body').innerHTML = rows.map(e => `<tr>
+      <td class="mono" style="font-size:12px">${esc((e.at||'').slice(0,19).replace('T',' '))}</td>
+      <td>${esc(e.actor||'-')} <span class="muted">${esc(e.role||'')}</span></td>
+      <td><span class="pill p-${kind[e.outcome]||'none'}">${label[e.outcome]||esc(e.outcome||'')}</span></td>
+      <td><code style="font-size:12px">${esc(e.action||'')}</code></td>
+      <td>${esc(e.target||'')}</td>
+    </tr>`).join('');
+}
+
 // ── Auto-refresh ──
 // On by default so the live "Running" status and countdown to the next run
 // stay current without a manual refresh (discussion #155). Toggle to stop.
@@ -591,6 +660,10 @@ function setAutoRefresh(on){ if(timer){clearInterval(timer);timer=null;} if(on) 
 $('autorefresh').onchange=e=>setAutoRefresh(e.target.checked);
 setAutoRefresh($('autorefresh').checked);
 $('cat-q').oninput = renderCatalog;
+// The audit filters are applied by the server, so they reload rather than
+// re-render, and typing a name should not fire a read on every keystroke.
+$('aud-outcome').onchange = loadAudit;
+for(const id of ['aud-actor','aud-action']) $(id).onkeydown = e => { if(e.key === 'Enter') loadAudit(); };
 loadMe();
 
 refreshAll();

@@ -1139,6 +1139,26 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
         ("GET", "/api/runs") => respond_json(&mut stream, &api_runs(state, req.query.get("id").map(|s| s.as_str()))),
         ("GET", "/api/log") => respond_json(&mut stream, &api_log(state, &req.query)),
         ("GET", "/api/catalog") => respond_json(&mut stream, &api_catalog(state)),
+        ("GET", "/api/audit") => {
+            let filter = audit::Filter {
+                actor: req.query.get("actor").cloned(),
+                outcome: req.query.get("outcome").cloned(),
+                action: req.query.get("action").cloned(),
+                // A page, not the file. The console polls, and an unbounded
+                // read would grow with the log until the poll was the most
+                // expensive thing the server did.
+                limit: req
+                    .query
+                    .get("limit")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(200)
+                    .clamp(1, 1000),
+            };
+            match audit::read(&state.workspace, &filter) {
+                Ok(page) => respond_json(&mut stream, &json!(page)),
+                Err(e) => respond_err(&mut stream, "500 Internal Server Error", &e),
+            }
+        }
         ("POST", "/api/catalog") => {
             match duckle_duckdb_engine::catalog::build_and_save(&state.workspace) {
                 Ok(_) => respond_json(&mut stream, &api_catalog(state)),

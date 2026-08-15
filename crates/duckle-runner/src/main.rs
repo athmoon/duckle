@@ -1473,6 +1473,16 @@ fn main() -> ExitCode {
             }
         };
     }
+    // `audit` -> read back who did what through the management console.
+    if std::env::args().nth(1).as_deref() == Some("audit") {
+        return match audit::run() {
+            Ok(code) => ExitCode::from(code as u8),
+            Err(e) => {
+                eprintln!("duckle-runner: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
     // `console` -> manage who may sign in to the management console.
     if std::env::args().nth(1).as_deref() == Some("console") {
         return match console_auth::run() {

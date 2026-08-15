@@ -908,12 +908,13 @@ To run and monitor pipelines on a server with a browser instead of the desktop a
 duckle-runner serve --port 8080 --workspace /path/to/workspace
 ```
 
-Open `http://localhost:8080`. The panel has four views:
+Open `http://localhost:8080`. The panel has five views:
 
 - **Overview** - every pipeline with its last status, duration and next scheduled run, and a Run button.
 - **Runs** - run history across every pipeline (status, duration, rows, errors) with expandable per-pipeline run logs and optional auto-refresh.
 - **Schedules** - an editable cron or interval schedule per pipeline, showing what is running now and what is due next.
 - **Catalog** - everything the workspace reads and writes, who owns it, and what is written but never read. See [Workspace catalog](#workspace-catalog-what-reads-and-writes-what).
+- **Audit** - who signed in, what they changed and who was turned away. Admin only, and shown only to admins.
 
 Runs execute in-process through the same engine, are written to the same run history (`<workspace>/runs/`) and logs (`<workspace>/logs/`), and a built-in scheduler triggers any pipeline whose schedule has elapsed - so the server itself runs your schedules, no OS cron needed.
 
@@ -937,9 +938,20 @@ duckle-runner console list
 |---|---|
 | `viewer` | Read the dashboard, run history, logs, schedules and catalog. |
 | `operator` | Everything a viewer can, plus run pipelines and change schedules. |
-| `admin` | Everything an operator can, plus connections, credentials and the workspace itself. |
+| `admin` | Everything an operator can, plus connections, credentials, the audit log and the workspace itself. |
 
 A browser exchanges the token for a session cookie, so the browser never stores the credential; an API client sends `Authorization: Bearer <token>`. Every state-changing request, and every refusal, is appended to `<workspace>/logs/audit.ndjson` with who, what, when and the outcome. The same accounts and roles cover `duckle-runner web`.
+
+Read it back from the **Audit** view, or from a terminal with no server running:
+
+```bash
+duckle-runner audit                                  # newest first, 50 by default
+duckle-runner audit --outcome denied                 # who reached for what they do not have
+duckle-runner audit --actor ops --action schedule    # one person, one family of actions
+duckle-runner audit --limit 500 --json               # for a collector
+```
+
+`allowed` means the caller was permitted to proceed, not that the work then succeeded - run history answers that. Reads are not recorded, so a dashboard polling every few seconds does not bury the entries worth seeing. A page says when older entries exist beyond it, and a line that will not parse is counted rather than silently skipped.
 
 Still put it behind a reverse proxy if you need TLS.
 

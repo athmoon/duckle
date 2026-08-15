@@ -10,10 +10,10 @@
 //! worked cannot show someone probing an endpoint they have no role for, which
 //! is the pattern worth seeing.
 
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use crate::console_auth::{Identity, Role};
 
@@ -21,9 +21,33 @@ pub fn audit_path(workspace: &Path) -> PathBuf {
     workspace.join("logs").join("audit.ndjson")
 }
 
+/// One recorded attempt.
+///
+/// The writer and the reader share this type on purpose: a log written by one
+/// shape and read by another drifts the first time a field is renamed, and the
+/// symptom is a reader that quietly shows blanks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Entry {
+    /// RFC3339, when the attempt was made.
+    #[serde(default)]
+    pub at: String,
+    /// Who, or "-" for a caller that never identified itself.
+    #[serde(default)]
+    pub actor: String,
+    #[serde(default)]
+    pub role: String,
+    pub action: String,
+    #[serde(default)]
+    pub target: String,
+    pub outcome: String,
+}
+
 /// How an attempt ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
+    /// The caller was allowed to proceed. Not that the work then succeeded -
+    /// run history is where that is answered, and conflating the two would make
+    /// a failed run read as a security event.
     Allowed,
     /// Authenticated, but the role was not enough.
     Denied,
@@ -54,19 +78,232 @@ pub fn record(
     target: &str,
     outcome: Outcome,
 ) {
-    let entry = json!({
-        "at": chrono::Utc::now().to_rfc3339(),
+    let entry = Entry {
+        at: chrono::Utc::now().to_rfc3339(),
         // An unauthenticated caller has no name, and inventing one would make
         // the log read as though somebody known did this.
-        "actor": who.map(|w| w.label.as_str()).unwrap_or("-"),
-        "role": who.map(|w| w.role.as_str()).unwrap_or("-"),
-        "action": action,
-        "target": target,
-        "outcome": outcome.as_str(),
-    });
-    if let Err(e) = append(workspace, &entry.to_string()) {
+        actor: who.map(|w| w.label.as_str()).unwrap_or("-").to_string(),
+        role: who.map(|w| w.role.as_str()).unwrap_or("-").to_string(),
+        action: action.to_string(),
+        target: target.to_string(),
+        outcome: outcome.as_str().to_string(),
+    };
+    let line = match serde_json::to_string(&entry) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("duckle-runner: could not encode an audit entry: {e}");
+            return;
+        }
+    };
+    if let Err(e) = append(workspace, &line) {
         eprintln!("duckle-runner: could not write the audit log: {e}");
     }
+}
+
+/// What to show, and how much.
+#[derive(Debug, Clone, Default)]
+pub struct Filter {
+    pub actor: Option<String>,
+    pub outcome: Option<String>,
+    pub action: Option<String>,
+    pub limit: usize,
+}
+
+impl Filter {
+    fn keeps(&self, e: &Entry) -> bool {
+        let matches = |want: &Option<String>, got: &str| match want {
+            None => true,
+            Some(w) => got.eq_ignore_ascii_case(w),
+        };
+        matches(&self.actor, &e.actor)
+            && matches(&self.outcome, &e.outcome)
+            // An action is a dotted name (schedule.write), so a prefix is the
+            // useful thing to ask for: `--action schedule` finds all of them.
+            && match &self.action {
+                None => true,
+                Some(a) => e.action.eq_ignore_ascii_case(a)
+                    || e.action.to_ascii_lowercase().starts_with(&format!("{}.", a.to_ascii_lowercase())),
+            }
+    }
+}
+
+/// A window onto the log, newest first.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Page {
+    pub entries: Vec<Entry>,
+    /// Lines that would not parse. One truncated write must not hide every
+    /// entry written before it, and a silent skip would be worse than the
+    /// truncation: the count is reported so a corrupted file is visible.
+    pub unreadable: usize,
+    /// True when older entries exist beyond what is returned - either the
+    /// limit was reached or the scan stopped short of the start of the file.
+    /// The reader says so rather than letting a window read as the whole log.
+    pub more: bool,
+}
+
+/// How far back a single read will go. The log has no rotation, so an unbounded
+/// read would have the console re-parsing the whole history every poll. Reading
+/// backwards from the end keeps a read proportional to what is shown.
+const MAX_SCAN: u64 = 4 * 1024 * 1024;
+
+/// Read the most recent entries, newest first.
+///
+/// A missing file is an empty page, not an error: a console that has never
+/// refused anything and never been signed into has nothing to show, and that is
+/// a normal state rather than a fault.
+pub fn read(workspace: &Path, filter: &Filter) -> Result<Page, String> {
+    let path = audit_path(workspace);
+    let mut f = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Page::default()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    let start = len.saturating_sub(MAX_SCAN);
+    // One byte earlier than the window, when there is one. Starting mid-file
+    // usually starts mid-line, and that fragment is not an entry: it must not
+    // be counted as a corrupt one. Reading the extra byte is what makes
+    // dropping the first element safe - it is then either that fragment, or an
+    // empty string where the window happened to open on a line boundary.
+    // Starting at the window itself would drop a whole entry in that second
+    // case, which is not a rare one: entries are near enough a fixed size.
+    let from = start.saturating_sub(if start > 0 { 1 } else { 0 });
+    f.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+    let mut buf = Vec::with_capacity((len - from) as usize);
+    f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+
+    let limit = if filter.limit == 0 { usize::MAX } else { filter.limit };
+    let mut page = Page { more: start > 0, ..Page::default() };
+    for line in lines.iter().rev() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Entry>(line) {
+            Ok(e) => {
+                if !filter.keeps(&e) {
+                    continue;
+                }
+                if page.entries.len() == limit {
+                    page.more = true;
+                    break;
+                }
+                page.entries.push(e);
+            }
+            Err(_) => page.unreadable += 1,
+        }
+    }
+    Ok(page)
+}
+
+/// `duckle-runner audit ...` - read the console's own record back.
+///
+/// Writing the log and never being able to read it is the same as not keeping
+/// it. This is the terminal answer to "who ran that, and who was turned away",
+/// and it works with no server running, which is when it is usually asked.
+pub fn run() -> Result<i32, String> {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    if args.first().map(String::as_str) == Some("-h")
+        || args.first().map(String::as_str) == Some("--help")
+    {
+        println!(
+            "duckle-runner audit - who did what through the management console\n\n\
+             USAGE:\n    \
+             duckle-runner audit [--workspace <dir>] [--actor <name>]\n                        \
+             [--outcome allowed|denied|unauthenticated]\n                        \
+             [--action <name>] [--limit <n>] [--json]\n\n\
+             Reads <workspace>/logs/audit.ndjson, newest first. Default limit 50;\n\
+             --limit 0 shows everything the read reaches.\n\n\
+             --action takes a whole name (schedule.write) or a prefix (schedule).\n\n\
+             Refusals are in here as well as successes, so\n    \
+             duckle-runner audit --outcome denied\n\
+             is the one that shows somebody reaching for what they do not have."
+        );
+        return Ok(0);
+    }
+
+    let mut workspace = PathBuf::from(".");
+    let mut filter = Filter { limit: 50, ..Filter::default() };
+    let mut as_json = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut value = |name: &str| -> Result<String, String> {
+            it.next().cloned().ok_or_else(|| format!("{name} needs a value"))
+        };
+        match a.as_str() {
+            "--workspace" => workspace = PathBuf::from(value("--workspace")?),
+            "--actor" => filter.actor = Some(value("--actor")?),
+            "--action" => filter.action = Some(value("--action")?),
+            "--outcome" => {
+                let v = value("--outcome")?;
+                if !["allowed", "denied", "unauthenticated"].contains(&v.to_ascii_lowercase().as_str())
+                {
+                    return Err(format!(
+                        "unknown outcome '{v}': expected allowed, denied or unauthenticated"
+                    ));
+                }
+                filter.outcome = Some(v);
+            }
+            "--limit" => {
+                filter.limit =
+                    value("--limit")?.parse().map_err(|_| "--limit needs a number".to_string())?
+            }
+            "--json" => as_json = true,
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+
+    let page = read(&workspace, &filter)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&page).map_err(|e| e.to_string())?);
+        return Ok(0);
+    }
+    if page.entries.is_empty() {
+        let p = audit_path(&workspace);
+        if p.exists() {
+            println!("Nothing in {} matches.", p.display());
+        } else {
+            println!(
+                "No {} yet. The console writes one the first time somebody signs in or is refused.",
+                p.display()
+            );
+        }
+        return Ok(0);
+    }
+    // Width from the names actually present, so the columns line up whatever
+    // people called themselves rather than only for short labels.
+    let who: Vec<String> =
+        page.entries.iter().map(|e| format!("{} ({})", e.actor, e.role)).collect();
+    let w = who.iter().map(String::len).max().unwrap_or(0).min(40);
+    for (e, who) in page.entries.iter().zip(&who) {
+        println!(
+            "{:<20} {:<w$} {:<16} {:<22} {}",
+            short_time(&e.at),
+            who,
+            e.outcome,
+            e.action,
+            e.target,
+            w = w
+        );
+    }
+    // Both of these change what the output means, so neither is left implied.
+    if page.more {
+        println!("\nOlder entries exist. Raise --limit to see further back.");
+    }
+    if page.unreadable > 0 {
+        eprintln!("\n{} line(s) could not be read and were skipped.", page.unreadable);
+    }
+    Ok(0)
+}
+
+/// RFC3339 is written to the file; a person reading a table wants the date and
+/// the clock and nothing else.
+fn short_time(at: &str) -> String {
+    at.get(..19).unwrap_or(at).replace('T', " ")
 }
 
 fn append(workspace: &Path, line: &str) -> Result<(), String> {
@@ -102,6 +339,11 @@ pub fn requirement(method: &str, path: &str) -> (Role, &'static str) {
         ("GET", "/api/catalog") => (Role::Viewer, "catalog.read"),
         ("GET", "/api/params") => (Role::Viewer, "params.read"),
         ("GET", "/api/whoami") => (Role::Viewer, "session.whoami"),
+        // Reading this log names people and the things they reached for, so it
+        // sits with the admin role even though it only reads. It would land
+        // there via the fallback anyway; stating it means a later reshuffle of
+        // this table has to make the decision deliberately.
+        ("GET", "/api/audit") => (Role::Admin, "audit.read"),
         // Ending your own session is not a privilege. Leaving this to the
         // admin-only fallback below meant a viewer could sign in and then not
         // sign out, which the live run found before anyone else would have.
@@ -201,6 +443,134 @@ mod tests {
         // With one parse, a doubled prefix is simply not a connection command
         // and is dispatched under the name the gate saw.
         assert!(!dispatched.unwrap().starts_with("connection"));
+    }
+
+    /// Reading is the half that makes the writing worth anything.
+    #[test]
+    fn the_log_reads_back_newest_first_and_filters_the_way_it_is_asked_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let ops = identity("ops", Role::Operator);
+        let viewer = identity("reporting", Role::Viewer);
+        record(ws, Some(&ops), "pipeline.run", "nightly-load", Outcome::Allowed);
+        record(ws, Some(&viewer), "pipeline.run", "nightly-load", Outcome::Denied);
+        record(ws, Some(&ops), "schedule.write", "nightly-load", Outcome::Allowed);
+        record(ws, None, "editor.api", "/api/run", Outcome::Unauthenticated);
+
+        let all = read(ws, &Filter { limit: 50, ..Filter::default() }).unwrap();
+        assert_eq!(all.entries.len(), 4);
+        assert_eq!(all.entries[0].action, "editor.api", "newest must come first");
+        assert_eq!(all.entries[3].action, "pipeline.run");
+        assert_eq!(all.unreadable, 0);
+        assert!(!all.more, "everything was returned, so nothing is older");
+
+        // The question actually asked after an incident.
+        let refused =
+            read(ws, &Filter { outcome: Some("denied".into()), limit: 50, ..Filter::default() })
+                .unwrap();
+        assert_eq!(refused.entries.len(), 1);
+        assert_eq!(refused.entries[0].actor, "reporting");
+
+        let by_who =
+            read(ws, &Filter { actor: Some("ops".into()), limit: 50, ..Filter::default() }).unwrap();
+        assert_eq!(by_who.entries.len(), 2);
+
+        // An action is a dotted name, so the family prefix has to work as well
+        // as the whole name: nobody remembers whether it is schedule.write or
+        // schedule.save.
+        let sched =
+            read(ws, &Filter { action: Some("schedule".into()), limit: 50, ..Filter::default() })
+                .unwrap();
+        assert_eq!(sched.entries.len(), 1);
+        assert_eq!(sched.entries[0].action, "schedule.write");
+        let exact =
+            read(ws, &Filter { action: Some("pipeline.run".into()), limit: 50, ..Filter::default() })
+                .unwrap();
+        assert_eq!(exact.entries.len(), 2);
+        // A prefix must be a whole dotted segment, or `--action run` would
+        // match `runjob` and quietly widen what was asked for.
+        let narrow =
+            read(ws, &Filter { action: Some("pipe".into()), limit: 50, ..Filter::default() })
+                .unwrap();
+        assert!(narrow.entries.is_empty(), "a partial segment must not match");
+
+        // A page says so when it is a page.
+        let page = read(ws, &Filter { limit: 2, ..Filter::default() }).unwrap();
+        assert_eq!(page.entries.len(), 2);
+        assert!(page.more, "a truncated page must not read as the whole log");
+    }
+
+    /// A console that has never refused anything has nothing to show, and that
+    /// is a normal state rather than a fault.
+    #[test]
+    fn a_log_that_does_not_exist_yet_is_empty_rather_than_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let page = read(tmp.path(), &Filter { limit: 10, ..Filter::default() }).unwrap();
+        assert!(page.entries.is_empty());
+        assert!(!page.more);
+    }
+
+    /// One half-written line must not take the rest of the log with it.
+    ///
+    /// A crash mid-append leaves a partial line. Parsing the file as a whole
+    /// would fail on it and show nothing; skipping it silently would hide that
+    /// the file is damaged. It is skipped and counted.
+    #[test]
+    fn a_damaged_line_is_skipped_and_counted_rather_than_hiding_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        record(ws, Some(&identity("ops", Role::Operator)), "pipeline.run", "a", Outcome::Allowed);
+        append(ws, "{\"at\":\"2026-08-15T00:00:00Z\",\"actor\":\"ops\"").unwrap();
+        record(ws, Some(&identity("ops", Role::Operator)), "pipeline.run", "b", Outcome::Allowed);
+
+        let page = read(ws, &Filter { limit: 50, ..Filter::default() }).unwrap();
+        assert_eq!(page.entries.len(), 2, "the intact entries must still be readable");
+        assert_eq!(page.unreadable, 1);
+    }
+
+    /// A log past the scan window still reads back exactly, boundary included.
+    ///
+    /// The read starts partway into the file, and the first thing it sees is
+    /// usually the tail of a line rather than a line, so the first element is
+    /// dropped. Reading from the window itself made that drop silently lose a
+    /// real entry whenever the window opened on a line boundary, which is not
+    /// rare: entries are near enough a fixed size. Every line here is exactly
+    /// the same length, so the boundary case is the one under test rather than
+    /// a coincidence.
+    #[test]
+    fn a_window_that_opens_on_a_line_boundary_keeps_that_line() {
+        const W: usize = 256;
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let head = "{\"at\":\"2026-08-15T00:00:00Z\",\"actor\":\"a\",\"role\":\"admin\",\
+                    \"action\":\"pipeline.run\",\"outcome\":\"allowed\",\"target\":\"";
+        let line = |i: usize| {
+            let stem = format!("line-{i}");
+            let pad = W - 1 - head.len() - stem.len() - 2;
+            format!("{head}{stem}{}\"}}", "x".repeat(pad))
+        };
+        // One line more than the window holds, so the window opens exactly at
+        // the start of line 1 with a newline immediately before it.
+        let lines = MAX_SCAN as usize / W + 1;
+        let mut text = String::with_capacity(lines * W);
+        for i in 0..lines {
+            let l = line(i);
+            assert_eq!(l.len(), W - 1, "the fixture must have fixed-width lines");
+            text.push_str(&l);
+            text.push('\n');
+        }
+        std::fs::create_dir_all(audit_path(ws).parent().unwrap()).unwrap();
+        std::fs::write(audit_path(ws), &text).unwrap();
+
+        let page = read(ws, &Filter::default()).unwrap();
+        assert_eq!(page.unreadable, 0, "a whole line was mistaken for a fragment");
+        assert_eq!(page.entries.len(), lines - 1, "the boundary line was dropped");
+        assert!(page.more, "the scan stopped short of the start and must say so");
+        assert!(
+            page.entries.last().unwrap().target.starts_with("line-1x"),
+            "the oldest entry in the window is not the one at the boundary: {}",
+            page.entries.last().unwrap().target
+        );
     }
 
     #[test]

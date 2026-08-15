@@ -352,11 +352,19 @@ impl Scheduler {
                 compute_next_run(s);
             }
         });
+        let workspace = g.workspace_path.clone();
+        // Everything below talks to the disk and the network, so the lock goes
+        // back first. Alert delivery waits up to ten seconds per channel, and
+        // holding the scheduler's mutex across that stalls every other thing
+        // that needs it - the next tick, the schedule list, an edit from the
+        // UI - for as long as an unreachable webhook takes to time out.
+        drop(g);
+
         // Append to the pipeline's run history too, and tell whoever asked to
         // be told. Alerting comes after the record so a channel that is down
         // cannot cost a run its history entry, and it never raises: see
         // duckle_duckdb_engine::alerts::notify.
-        if let (Some(path), Some(pid)) = (g.workspace_path.clone(), pipeline_id) {
+        if let (Some(path), Some(pid)) = (workspace, pipeline_id) {
             let record = RunRecord::from_result(result, "scheduled");
             let _ = append_run_record(&path, &pid, record);
             duckle_duckdb_engine::alerts::notify(&path, &pid, result);

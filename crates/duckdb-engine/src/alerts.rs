@@ -75,6 +75,11 @@ pub enum Channel {
         #[serde(default)]
         headers: BTreeMap<String, String>,
     },
+    // `rename_all` on the enum above renames the VARIANTS, not the fields
+    // inside them, so without this the same rule object would mix
+    // `cooldownMinutes` with `smtp_host` and quietly reject the spelling
+    // everyone would reach for first.
+    #[serde(rename_all = "camelCase")]
     Email {
         smtp_host: String,
         #[serde(default = "default_smtp_port")]
@@ -184,9 +189,56 @@ fn save_state(workspace: &Path, state: &AlertState) {
             return;
         }
     }
-    if let Ok(body) = serde_json::to_string_pretty(state) {
-        let _ = std::fs::write(p, body);
+    let Ok(body) = serde_json::to_string_pretty(state) else { return };
+    // Temp file then rename, the same way schedules.json and catalog.json are
+    // written. A plain write truncates first, and load_state treats an
+    // unparseable file as "remember nothing" - so a reader landing in that
+    // window silently reset every cooldown and last_status in the workspace,
+    // which shows up as a burst of duplicate alerts and a missing all-clear.
+    let tmp = p.with_extension("json.tmp");
+    if std::fs::write(&tmp, body).is_err() {
+        return;
     }
+    #[cfg(windows)]
+    let _ = std::fs::remove_file(&p);
+    let _ = std::fs::rename(&tmp, &p);
+}
+
+/// A stable name for a channel, so two rules pointing at different places do
+/// not share one cooldown slot. Never the url or the password.
+fn channel_id(channel: &Channel) -> String {
+    match channel {
+        Channel::Webhook { url, .. } => format!("webhook:{}", host_of(url)),
+        Channel::Email { smtp_host, to, .. } => format!("email:{smtp_host}:{}", to.join(",")),
+    }
+}
+
+/// Host and port only. A webhook url's path is the secret part - a Slack hook
+/// is `https://hooks.slack.com/services/T.../B.../<token>` - so anything that
+/// might be logged or persisted keeps the host and drops the rest.
+fn host_of(url: &str) -> String {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    after_scheme.split('/').next().unwrap_or("").to_string()
+}
+
+/// Remove anything secret from a transport error before it is logged.
+fn redact_secrets(error: &str, channel: &Channel) -> String {
+    let mut out = error.to_string();
+    match channel {
+        Channel::Webhook { url, .. } => {
+            let resolved = resolve_env(url);
+            if !resolved.is_empty() {
+                out = out.replace(&resolved, &format!("{}/<redacted>", host_of(&resolved)));
+            }
+        }
+        Channel::Email { password, .. } => {
+            let resolved = resolve_env(password);
+            if !resolved.is_empty() {
+                out = out.replace(&resolved, "<redacted>");
+            }
+        }
+    }
+    out
 }
 
 /// One alert, as delivered.
@@ -273,7 +325,11 @@ pub fn notify(workspace: &Path, pipeline_id: &str, result: &RunResult) -> usize 
         if !rule.on.contains(&event) {
             continue;
         }
-        let key = format!("{pipeline_id}|{}", event.as_str());
+        // Keyed by RULE as well as pipeline and event. Keyed by pipeline and
+        // event alone, two rules matching one pipeline - the ordinary "chat
+        // channel and on-call email" setup - shared one cooldown, so whichever
+        // rule was listed first delivered and the other never did.
+        let key = format!("{pipeline_id}|{}|{}|{}", event.as_str(), rule.pattern, channel_id(&rule.channel));
         // An all-clear always goes out. Suppressing it would leave people
         // believing an outage is still running long after it ended.
         if event != Event::Recovery {
@@ -290,8 +346,15 @@ pub fn notify(workspace: &Path, pipeline_id: &str, result: &RunResult) -> usize 
                 state.last_sent.insert(key, now);
                 sent += 1;
             }
-            // Reported, never propagated: see the function docs.
-            Err(e) => eprintln!("duckle: alert for {pipeline_id} could not be sent: {e}"),
+            // Reported, never propagated: see the function docs. The error is
+            // scrubbed first, because a webhook url IS the credential and a
+            // transport error quotes the url it failed to reach - which would
+            // put the secret this file works to keep out of the repository
+            // straight into the server log.
+            Err(e) => eprintln!(
+                "duckle: alert for {pipeline_id} could not be sent: {}",
+                redact_secrets(&e, &rule.channel)
+            ),
         }
     }
 
@@ -594,6 +657,64 @@ mod tests {
         let second: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
         assert_eq!(second["event"], "recovery");
         assert!(second["text"].as_str().unwrap().contains("recovered"));
+    }
+
+    #[test]
+    fn two_rules_matching_one_pipeline_both_deliver() {
+        // The ordinary setup: failures to a chat channel and to on-call email.
+        // A cooldown keyed only by pipeline and event let whichever rule was
+        // listed first claim the slot, and the second never delivered at all.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let (first, seen_first) = capture_webhook();
+        let (second, seen_second) = capture_webhook();
+        write_rules(
+            ws,
+            serde_json::json!({ "rules": [
+                { "match": "*", "channel": "webhook", "url": first,  "cooldownMinutes": 60 },
+                { "match": "*", "channel": "webhook", "url": second, "cooldownMinutes": 60 }
+            ]}),
+        );
+
+        assert_eq!(notify(ws, "nightly-load", &result("error", Some("boom"))), 2, "both rules");
+        assert_eq!(seen_first.lock().unwrap().len(), 1);
+        assert_eq!(seen_second.lock().unwrap().len(), 1, "the second rule never fired");
+
+        // Each still has its own cooldown afterwards.
+        assert_eq!(notify(ws, "nightly-load", &result("error", Some("boom"))), 0);
+    }
+
+    #[test]
+    fn a_failed_delivery_never_logs_the_webhook_url() {
+        // The url IS the credential - a Slack hook is a bearer token in a path -
+        // and a transport error quotes the address it could not reach.
+        let channel = Channel::Webhook {
+            url: "http://127.0.0.1:1/services/T000/B000/SUPERSECRETTOKEN".into(),
+            headers: Default::default(),
+        };
+        let msg = build_message(Event::Failure, "p", &result("error", Some("x")));
+        let err = deliver(&channel, &msg).expect_err("port 1 refuses");
+        let scrubbed = redact_secrets(&err, &channel);
+        assert!(!scrubbed.contains("SUPERSECRETTOKEN"), "the token survived: {scrubbed}");
+        // The host is kept, because an operator still has to know where it failed.
+        assert!(scrubbed.contains("127.0.0.1:1"), "too much was removed: {scrubbed}");
+    }
+
+    #[test]
+    fn state_is_never_left_truncated_for_a_reader_to_find() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let mut state = AlertState::default();
+        state.last_status.insert("nightly".into(), "error".into());
+        save_state(ws, &state);
+
+        // A plain write truncates first, and load_state reads an unparseable
+        // file as "remember nothing" - which silently resets every cooldown.
+        // The temp-and-rename means the file is only ever the old or the new one.
+        let text = std::fs::read_to_string(state_path(ws)).unwrap();
+        assert!(!text.is_empty());
+        assert_eq!(load_state(ws).last_status.get("nightly").map(String::as_str), Some("error"));
+        assert!(!state_path(ws).with_extension("json.tmp").exists(), "temp file left behind");
     }
 
     #[test]

@@ -174,6 +174,35 @@ mod tests {
         assert_eq!(requirement("DELETE", "/api/pipelines").0, Role::Admin);
     }
 
+    /// The gate and the dispatcher must not parse one path with two rules.
+    ///
+    /// `trim_start_matches` strips its prefix REPEATEDLY, so the editor's
+    /// dispatcher turned `/api/cmd//api/cmd/connection_decrypt_payload` into
+    /// `connection_decrypt_payload`, while the gate's `starts_with(
+    /// "/api/cmd/connection")` saw a `/` at that position and asked only for
+    /// operator. An operator token then reached the admin-only decrypt.
+    #[test]
+    fn a_doubled_route_prefix_cannot_split_the_gate_from_the_dispatcher() {
+        let doubled = "/api/cmd//api/cmd/connection_decrypt_payload";
+        // The property that was false before: whatever the dispatcher will run
+        // is what the gate must have rated.
+        let dispatched = doubled.strip_prefix("/api/cmd/");
+        assert_eq!(
+            dispatched,
+            Some("/api/cmd/connection_decrypt_payload"),
+            "strip_prefix must remove the prefix exactly once"
+        );
+        // trim_start_matches is the trap; keep a live example of why.
+        assert_eq!(
+            doubled.trim_start_matches("/api/cmd/"),
+            "connection_decrypt_payload",
+            "trim_start_matches still strips repeatedly - never route on it"
+        );
+        // With one parse, a doubled prefix is simply not a connection command
+        // and is dispatched under the name the gate saw.
+        assert!(!dispatched.unwrap().starts_with("connection"));
+    }
+
     #[test]
     fn a_viewer_cannot_run_a_pipeline_and_an_operator_can() {
         let (needed, action) = requirement("POST", "/api/run");

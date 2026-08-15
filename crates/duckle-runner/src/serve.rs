@@ -173,6 +173,11 @@ struct State {
     /// startup, because a bind that cannot be authenticated must not serve at
     /// all rather than serve and warn.
     console: console_auth::Console,
+    /// Bind host, for the cross-origin / DNS-rebind guard on state-changing
+    /// routes. The web editor has had this since it shipped; the console did
+    /// not, which left the default loopback console drivable by any page the
+    /// operator happened to visit.
+    host: String,
     /// Scheduler poll cadence (issue #135). Default 15s; overridable via
     /// --tick-interval or DUCKLE_TICK_INTERVAL.
     tick_interval: Duration,
@@ -211,6 +216,7 @@ pub fn run() -> Result<(), String> {
         run_lock: RunGate::new(max_concurrent_runs()),
         running: Mutex::new(std::collections::HashSet::new()),
         console,
+        host: args.host.clone(),
         tick_interval: args.tick_interval,
     });
 
@@ -410,13 +416,24 @@ fn handle_web(mut stream: TcpStream, state: &WebState) -> Result<(), String> {
     if req.method == "POST" && req.path == "/api/session" {
         return web_sign_in(&mut stream, state, &req);
     }
+    // Parse the route ONCE, here, and let both the gate and the dispatcher use
+    // the result. They used to parse the path separately - the gate with
+    // `starts_with("/api/cmd/connection")` and the dispatcher with
+    // `trim_start_matches("/api/cmd/")` - and `trim_start_matches` strips its
+    // prefix REPEATEDLY. So `/api/cmd//api/cmd/connection_decrypt_payload` was
+    // not "a connection command" to the gate, which asked only for operator,
+    // and was exactly `connection_decrypt_payload` to the dispatcher, which
+    // decrypted the workspace's stored credentials. Two parsers over one string
+    // is the bug; one parser is the fix.
+    let cmd = req.path.strip_prefix("/api/cmd/");
+    let fs_op = req.path.strip_prefix("/api/fs/");
+
     // The editor has no read-only mode: opening it means loading a workspace to
     // change it, so the whole surface needs operator. Anything touching
     // connections, which is to say credentials, needs admin.
-    let needed = if req.path.starts_with("/api/cmd/connection") {
-        console_auth::Role::Admin
-    } else {
-        console_auth::Role::Operator
+    let needed = match cmd {
+        Some(c) if c.starts_with("connection") => console_auth::Role::Admin,
+        _ => console_auth::Role::Operator,
     };
     let action = if req.path.starts_with("/api/") { "editor.api" } else { "editor.open" };
     let who = state.console.identify(req.authorization.as_deref(), req.cookie.as_deref());
@@ -437,27 +454,29 @@ fn handle_web(mut stream: TcpStream, state: &WebState) -> Result<(), String> {
     if req.method == "POST" {
         audit::record(&state.workspace, Some(&who), action, &req.path, audit::Outcome::Allowed);
     }
-    if req.method == "POST" && req.path.starts_with("/api/cmd/") {
-        let cmd = req.path.trim_start_matches("/api/cmd/").to_string();
-        // A panic inside a command (e.g. a source that misbehaves during a live
-        // drift read) would otherwise unwind this connection's thread and drop
-        // the socket, which the browser can only report as an opaque "Failed to
-        // fetch". Catch it and answer with a real 500 the editor can show.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            dispatch_cmd(&mut stream, state, &cmd, &req.body)
-        }));
-        return match outcome {
-            Ok(r) => r,
-            Err(_) => respond_err(
-                &mut stream,
-                "500 Internal Server Error",
-                &format!("command '{cmd}' failed unexpectedly"),
-            ),
-        };
-    }
-    if req.method == "POST" && req.path.starts_with("/api/fs/") {
-        let op = req.path.trim_start_matches("/api/fs/").to_string();
-        return dispatch_fs(&mut stream, state, &op, &req.body);
+    if req.method == "POST" {
+        if let Some(cmd) = cmd {
+            let cmd = cmd.to_string();
+            // A panic inside a command (e.g. a source that misbehaves during a
+            // live drift read) would otherwise unwind this connection's thread
+            // and drop the socket, which the browser can only report as an
+            // opaque "Failed to fetch". Catch it and answer with a real 500 the
+            // editor can show.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                dispatch_cmd(&mut stream, state, &cmd, &req.body)
+            }));
+            return match outcome {
+                Ok(r) => r,
+                Err(_) => respond_err(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    &format!("command '{cmd}' failed unexpectedly"),
+                ),
+            };
+        }
+        if let Some(op) = fs_op {
+            return dispatch_fs(&mut stream, state, &op.to_string(), &req.body);
+        }
     }
     if req.method == "POST" && req.path == "/api/run_stream" {
         return run_stream(&mut stream, state, &req.body);
@@ -1048,6 +1067,17 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
     let req = read_request(&mut stream)?;
     let route = (req.method.as_str(), req.path.as_str());
 
+    // A loopback console with no token treats every caller as a local admin,
+    // on the reasoning that reaching the socket means already being on the
+    // machine. A browser breaks that reasoning: any page the operator visits
+    // can POST to 127.0.0.1 from their machine. The editor has blocked
+    // cross-origin state changes since it shipped and the console did not, so
+    // `fetch('http://127.0.0.1:8080/api/run', ...)` from a random site ran a
+    // workspace pipeline. Same guard, same place in the request.
+    if req.method != "GET" && req.path.starts_with("/api/") && !guard_local(&req, &state.host) {
+        return respond_403(&mut stream, "blocked: cross-origin or non-local request");
+    }
+
     // Signing in is the one thing an unauthenticated caller may do.
     if route == ("POST", "/api/session") {
         return sign_in(&mut stream, state, &req);
@@ -1413,7 +1443,17 @@ fn api_runs(state: &State, only: Option<&str>) -> Value {
 fn read_pipeline_file(state: &State, file: &str) -> Result<Value, String> {
     let path = resolve_in_workspace(&state.workspace, file)?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-    serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))
+    let doc: Value = serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    // Confining to the workspace is not enough on its own. This route is rated
+    // for viewers, and the workspace also holds `.duckle/console-users.json`
+    // and `connections/*.json`, so "any JSON inside the workspace" handed the
+    // lowest role the account hashes and the stored connection payloads. A
+    // pipeline is the thing with a `nodes` array; anything else is refused
+    // whatever its path.
+    if doc.get("nodes").and_then(Value::as_array).is_none() {
+        return Err(format!("{file} is not a pipeline"));
+    }
+    Ok(doc)
 }
 
 /// Resolve a workspace-relative path and refuse anything that escapes the
@@ -1682,6 +1722,16 @@ fn save_schedule_at(workspace: &Path, body: &Value) -> Result<Value, String> {
         Some(s) => s,
         None => interval.saturating_mul(60),
     };
+    // An enabled schedule with neither a cron nor a positive interval is not a
+    // schedule. The runner skips it, but the desktop scheduler computes
+    // `now + 0s` as its next run and fires it on every tick, forever. Refusing
+    // it here is better than either behaviour, and better than the console's
+    // empty interval box quietly becoming "run continuously".
+    if enabled && cron.is_empty() && seconds == 0 {
+        return Err(
+            "An enabled schedule needs a cron expression or an interval greater than zero".into(),
+        );
+    }
     let kind = if !cron.is_empty() {
         duckle_duckdb_engine::schedules::ScheduleKind::Cron { expr: cron }
     } else {
@@ -2031,8 +2081,10 @@ fn spawn_scheduler(state: Arc<State>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        connection_secret_cmd, migrate_legacy_schedules, normalize_cron, save_schedule_at,
+        connection_secret_cmd, console_auth, migrate_legacy_schedules, normalize_cron,
+        read_pipeline_file, save_schedule_at, RunGate, State,
     };
+    use std::sync::Mutex;
     use duckle_duckdb_engine::schedules::{self, ScheduleKind};
 
     /// The console and the desktop app now keep one store, so a schedule saved
@@ -2074,6 +2126,73 @@ mod tests {
         assert_eq!(list.len(), 1, "a second save duplicated the schedule");
         assert!(!list[0].enabled);
         assert!(matches!(&list[0].kind, ScheduleKind::Cron { expr } if expr == "0 9 * * 1"));
+    }
+
+    #[test]
+    fn an_enabled_schedule_with_no_cron_and_no_interval_is_refused() {
+        // The console's interval box left empty posts intervalSeconds: 0. The
+        // runner skips such a schedule, but the desktop scheduler computes
+        // `now + 0s` as the next run and fires it on every tick, forever.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let err = save_schedule_at(
+            ws,
+            &serde_json::json!({ "id": "nightly-load", "enabled": true, "intervalSeconds": 0 }),
+        )
+        .expect_err("an enabled schedule with no trigger must be refused");
+        assert!(err.contains("greater than zero"), "unhelpful message: {err}");
+
+        // Disabling it is fine - that is how the console turns a schedule off.
+        save_schedule_at(
+            ws,
+            &serde_json::json!({ "id": "nightly-load", "enabled": false, "intervalSeconds": 0 }),
+        )
+        .expect("a disabled schedule needs no trigger");
+    }
+
+    #[test]
+    fn the_pipeline_reader_refuses_anything_that_is_not_a_pipeline() {
+        // This route is rated for viewers, and the workspace also holds the
+        // console account hashes and the connection files. Confining to the
+        // workspace was the only check, so "any JSON under the workspace" was
+        // readable by the lowest role there is.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        // A saved connection: same workspace, same "it is JSON" shape, and it
+        // holds an encrypted credential payload. (The account file makes the
+        // same point but Console::configure rightly refuses to start against a
+        // fabricated Argon2 hash, so this is the cleaner fixture.)
+        std::fs::create_dir_all(ws.join("connections")).unwrap();
+        std::fs::write(
+            ws.join("connections").join("prod-db.json"),
+            serde_json::json!({ "name": "prod", "payload": "<ciphertext>" }).to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(ws.join("pipelines")).unwrap();
+        std::fs::write(
+            ws.join("pipelines").join("real.json"),
+            serde_json::json!({ "name": "real", "nodes": [], "edges": [] }).to_string(),
+        )
+        .unwrap();
+
+        // The server canonicalises the workspace at startup, and
+        // resolve_in_workspace compares canonical paths - on Windows that means
+        // a \?\ prefix on both sides or neither. A test holding the raw
+        // temp path would fail every lookup for the wrong reason.
+        let ws_canon = ws.canonicalize().unwrap();
+        let state = State {
+            workspace: ws_canon.clone(),
+            duckdb: std::path::PathBuf::from("duckdb"),
+            run_lock: RunGate::new(1),
+            running: Mutex::new(std::collections::HashSet::new()),
+            console: console_auth::Console::configure(&ws_canon, "127.0.0.1", None).unwrap(),
+            host: "127.0.0.1".into(),
+            tick_interval: std::time::Duration::from_secs(15),
+        };
+
+        let leaked = read_pipeline_file(&state, "connections/prod-db.json");
+        assert!(leaked.is_err(), "a stored connection was readable through the pipeline route");
+        assert!(read_pipeline_file(&state, "pipelines/real.json").is_ok(), "a real pipeline still reads");
     }
 
     /// An install that already had console schedules must keep firing across

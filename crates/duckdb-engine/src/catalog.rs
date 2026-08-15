@@ -324,25 +324,48 @@ pub struct Impact {
     pub unresolved: usize,
 }
 
+/// Folders that hold Duckle's own output rather than pipelines. Kept identical
+/// to the console's walk, because a pipeline either of them can open and the
+/// other cannot is a hole in whichever answer omits it.
+const NOT_PIPELINES: [&str; 7] =
+    ["runs", "logs", "connections", "node_modules", ".duckle", ".git", "target"];
+
+/// Every candidate pipeline file in the workspace.
+///
+/// This used to read `<workspace>/pipelines/*.json` and nothing else, while the
+/// console and the desktop walk the whole workspace and skip the folders above.
+/// Both of those support keeping pipelines in subfolders, so a workspace laid
+/// out that way had them silently missing from the graph - and a blast radius
+/// that quietly omits a pipeline is worse than no answer at all, because it
+/// looks like a complete one.
+pub fn discover_pipeline_files(workspace: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![workspace.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !NOT_PIPELINES.contains(&name) {
+                    stack.push(path);
+                }
+            } else if path.extension().and_then(|x| x.to_str()) == Some("json") {
+                out.push(path);
+            }
+        }
+    }
+    // A stable order, so a rebuild that changed nothing produces no diff.
+    out.sort();
+    out
+}
+
 /// Read every pipeline in the workspace and build the graph.
 pub fn build(workspace: &Path) -> Result<Catalog, String> {
-    let dir = workspace.join("pipelines");
     let mut catalog = Catalog::default();
     let mut assets: BTreeMap<String, Asset> = BTreeMap::new();
 
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        // No pipelines folder is an empty workspace, not a failure.
-        Err(_) => return Ok(catalog),
-    };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
-        .collect();
-    files.sort();
-
-    for path in files {
+    for path in discover_pipeline_files(workspace) {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let Ok(doc): Result<Value, _> = serde_json::from_str(&text) else { continue };
         let Some(nodes) = doc.get("nodes").and_then(|n| n.as_array()) else { continue };
@@ -404,14 +427,82 @@ pub fn build(workspace: &Path) -> Result<Catalog, String> {
 /// such as `${date}` are deliberately kept: a daily file is one asset with a
 /// date in its name, not a new asset every morning, and collapsing them is what
 /// makes a dated path joinable across pipelines.
+/// An address with the credential taken out of it.
+///
+/// Asset ids are names, and names get published. `GET /api/catalog` is rated
+/// for the **viewer** role, `.duckle/catalog.json` is meant to be committed,
+/// and the MCP workspace tools hand out the same strings. Two shipped shapes
+/// put a password in the very field that names the server: a `uri` like
+/// `mongodb://user:pass@host:27017`, and an ODBC `connectionString` ending
+/// `;UID=u;PWD=p`. Neither can be the name.
+///
+/// Removing it also makes the name *stabler*, which is the whole job of a join
+/// key: an id built from a password forks into a second asset the day that
+/// password is rotated, and every impact answer spanning the rotation is then
+/// wrong in a way nobody would think to check.
+///
+/// Two shapes are handled, because those are the two the connectors actually
+/// produce. A credential passed as a query parameter is not one of them: the
+/// `url` branch already drops the query string before calling this, and no
+/// shipped connector puts one in an `endpoint`.
+fn public_address(raw: &str) -> String {
+    // `KEY=value;KEY=value` - an ODBC or JDBC connection string. Segments
+    // naming a credential go entirely; what is left still names the server,
+    // which is all the graph needs. The scheme and separator checks keep a
+    // Hive-style path such as `/lake/dt=2026-08-15;part=1/x.parquet` out of
+    // here, since it is a path and not a DSN.
+    if !raw.contains("://")
+        && raw.contains(';')
+        && raw.contains('=')
+        && !raw.contains('/')
+        && !raw.contains('\\')
+    {
+        return raw
+            .split(';')
+            .filter(|seg| !seg.trim().is_empty())
+            .filter(|seg| !is_dsn_credential(seg.split('=').next().unwrap_or("").trim()))
+            .collect::<Vec<_>>()
+            .join(";");
+    }
+    // `scheme://userinfo@host/tail`, or the same without a scheme. The
+    // userinfo is only ever in the authority, so the search stops at the first
+    // '/': a path or a query may legitimately contain '@'.
+    let (prefix, rest) = match raw.split_once("://") {
+        Some((scheme, rest)) => (format!("{scheme}://"), rest),
+        None => (String::new(), raw),
+    };
+    let (authority, tail) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let authority = authority.rsplit_once('@').map(|(_, host)| host).unwrap_or(authority);
+    format!("{prefix}{authority}{tail}")
+}
+
+/// True for a connection-string key that holds a credential.
+///
+/// ODBC and JDBC spell these much shorter than a Duckle property key does, so
+/// the engine's own [`is_secret_prop_key`] does not recognise them. A login
+/// name is dropped along with the password on purpose: two pipelines reaching
+/// one database under different logins are reading one asset, and keeping the
+/// user in the name would split them.
+fn is_dsn_credential(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    matches!(k.as_str(), "pwd" | "uid" | "usr" | "user" | "username")
+        || crate::util::is_secret_prop_key(&k)
+}
+
 pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
     let s = |k: &str| -> Option<String> {
         props
             .get(k)
-            .and_then(|v| v.as_str())
-            .map(str::trim)
+            .and_then(|v| match v {
+                // A port is authored in the GUI as `kind: 'integer'`, so it
+                // arrives as a JSON number. Reading only strings dropped it,
+                // and two instances on one host then collapsed into one asset:
+                // db:5432/sales and db:5433/sales were the same name.
+                Value::Number(n) => Some(n.to_string()),
+                other => other.as_str().map(str::to_string),
+            })
+            .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-            .map(str::to_string)
     };
     // The connector family, used as the scheme when the target has no natural
     // one: `snk.postgres` -> `postgres`.
@@ -422,6 +513,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
     // family would give `mongodb://mongodb://...`. Use it as the whole prefix
     // when it does, and build one from the family when it does not.
     let prefixed = |authority: &str| -> String {
+        let authority = public_address(authority);
         if authority.contains("://") {
             authority.trim_end_matches('/').to_string()
         } else {
@@ -453,7 +545,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
     // slashes so the same file named from Windows and Linux agrees.
     if let Some(path) = s("path") {
         let kind = if path.contains("://") { "object" } else { "file" };
-        return Ok(Asset { id: normalise_path(&path), kind: kind.into() });
+        return Ok(Asset { id: normalise_path(&public_address(&path)), kind: kind.into() });
     }
 
     // Object stores that split the address into a bucket and a key.
@@ -509,12 +601,25 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset { id: addr(&authority(), &object), kind: "object".into() });
     }
 
+    // A path on a named server. FTP and SFTP give the host and the remote
+    // directory or file in separate required fields, so neither half is the
+    // address on its own: naming only the host made every directory on one
+    // server the same asset, and joined two pipelines that share nothing but
+    // the machine they log in to.
+    if let Some(remote) = s("remotePath").or_else(|| s("directory")) {
+        return Ok(Asset {
+            id: addr(&authority(), remote.trim_start_matches('/')),
+            kind: "file".into(),
+        });
+    }
+
     // A REST-shaped endpoint. Query strings are dropped: they are usually
     // paging or filter parameters, and keeping them would split one endpoint
     // into an asset per call.
     if let Some(url) = s("url") {
+        let without_query = url.split('?').next().unwrap_or(&url);
         return Ok(Asset {
-            id: url.split('?').next().unwrap_or(&url).trim_end_matches('/').to_string(),
+            id: public_address(without_query).trim_end_matches('/').to_string(),
             kind: "api".into(),
         });
     }
@@ -576,11 +681,23 @@ pub fn build_and_save(workspace: &Path) -> Result<Catalog, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let body = serde_json::to_string_pretty(&catalog).map_err(|e| e.to_string())?;
-    let tmp = p.with_extension("json.tmp");
+    // A temp name of this writer's own. One shared `catalog.json.tmp` meant two
+    // rebuilds - the console's POST /api/catalog and a `catalog build` in a
+    // terminal, which is an ordinary pairing - wrote the same file, so one
+    // could rename away the other's half-written bytes. No lock is needed
+    // beyond this: both runs derive the same graph from the same pipelines, so
+    // a complete last-writer-wins file is the right answer.
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = p.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    let _ = std::fs::remove_file(&p);
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    // Renamed straight over, with no unlink first: see write_atomically in
+    // schedules.rs for why removing the destination is both unnecessary and
+    // the thing that opens a window.
+    if let Err(e) = std::fs::rename(&tmp, &p) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
     Ok(catalog)
 }
 
@@ -627,6 +744,164 @@ mod tests {
         assert_eq!(reader.id, writer.id);
         assert_eq!(reader.id, "postgres://db.internal:5432/sales.public.orders");
         assert_eq!(reader.kind, "table");
+    }
+
+    /// An asset id is a published name, so it must not carry a password.
+    ///
+    /// `GET /api/catalog` is rated for the viewer role, `.duckle/catalog.json`
+    /// is committed, and the MCP tools return the same strings, so a password
+    /// spliced into a name reaches all three. Both shipped shapes are covered:
+    /// userinfo in a uri, and an ODBC connection string.
+    #[test]
+    fn an_asset_name_never_carries_the_credential_that_reached_it() {
+        // src.mongodb's own placeholder is mongodb://user:pass@host:27017.
+        let mongo = asset_of(
+            "src.mongodb",
+            &json!({ "uri": "mongodb://admin:hunter2@db.internal:27017", "database": "sales", "collection": "orders" }),
+        )
+        .unwrap();
+        assert!(!mongo.id.contains("hunter2"), "the password is in the asset name: {}", mongo.id);
+        assert_eq!(mongo.id, "mongodb://db.internal:27017/sales.orders");
+
+        // And the same server named without a credential is the SAME asset,
+        // which is the point: the name is a join key, so it cannot depend on
+        // who connected or on a password that will be rotated.
+        let plain = asset_of(
+            "snk.mongodb",
+            &json!({ "uri": "mongodb://db.internal:27017", "database": "sales", "collection": "orders" }),
+        )
+        .unwrap();
+        assert_eq!(mongo.id, plain.id, "rotating the password forked one asset into two");
+
+        // src.teradata's own placeholder ends ...;UID=...;PWD=...
+        let odbc = asset_of(
+            "src.teradata",
+            &json!({ "connectionString": "DRIVER={Teradata Database ODBC Driver 17.20};DBCNAME=td.internal;UID=etl;PWD=hunter2", "database": "sales", "tableName": "orders" }),
+        )
+        .unwrap();
+        assert!(!odbc.id.contains("hunter2"), "the password is in the asset name: {}", odbc.id);
+        assert!(!odbc.id.contains("UID=etl"), "the login is in the asset name: {}", odbc.id);
+        assert!(odbc.id.contains("DBCNAME=td.internal"), "the server was lost: {}", odbc.id);
+
+        // A REST endpoint reached with basic credentials in the URL.
+        let api = asset_of("src.rest", &json!({ "url": "https://svc:tok3n@api.example.com/v1/orders" })).unwrap();
+        assert_eq!(api.id, "https://api.example.com/v1/orders");
+
+        // And an sftp path, where the same shape appears in `path`.
+        let sftp = asset_of("src.xml", &json!({ "path": "sftp://etl:hunter2@files.internal/in/orders.xml" })).unwrap();
+        assert_eq!(sftp.id, "sftp://files.internal/in/orders.xml");
+    }
+
+    /// A pipeline the console can open must be a pipeline the graph can see.
+    ///
+    /// The catalog read `<workspace>/pipelines/*.json` and nothing else, while
+    /// the console and the desktop walk the workspace. A pipeline in a
+    /// subfolder was therefore missing from every impact answer, silently.
+    #[test]
+    fn pipelines_in_subfolders_are_in_the_graph_and_duckle_s_own_folders_are_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+
+        // The layout the flat scan saw.
+        write_pipeline(ws, "flat", json!([node("a", "snk.parquet", json!({ "path": "/lake/flat.parquet" }))]));
+
+        // A pipeline organised into a subfolder, which both editors support.
+        let nested = ws.join("pipelines").join("nightly");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            nested.join("load.json"),
+            json!({ "name": "load", "nodes": [node("a", "src.parquet", json!({ "path": "/lake/flat.parquet" }))], "edges": [] }).to_string(),
+        )
+        .unwrap();
+
+        // And one outside the pipelines folder entirely.
+        let other = ws.join("flows");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("export.json"),
+            json!({ "name": "export", "nodes": [node("a", "src.parquet", json!({ "path": "/lake/flat.parquet" }))], "edges": [] }).to_string(),
+        )
+        .unwrap();
+
+        // Duckle's own output must not be mistaken for pipelines. A run record
+        // has no nodes array, but .duckle holds documents that do.
+        let hidden = ws.join(".duckle");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(
+            hidden.join("catalog.json"),
+            json!({ "name": "not-a-pipeline", "nodes": [node("a", "snk.parquet", json!({ "path": "/lake/should-not-appear.parquet" }))], "edges": [] }).to_string(),
+        )
+        .unwrap();
+
+        let cat = build(ws).unwrap();
+        let ids: Vec<&str> = cat.pipelines.iter().map(|p| p.id.as_str()).collect();
+        assert!(ids.contains(&"flat"), "the flat pipeline was lost: {ids:?}");
+        assert!(ids.contains(&"load"), "a pipeline in a subfolder is missing from the graph: {ids:?}");
+        assert!(ids.contains(&"export"), "a pipeline outside pipelines/ is missing: {ids:?}");
+        assert!(!ids.contains(&"not-a-pipeline"), "walked into .duckle: {ids:?}");
+
+        // And the point of finding them: they join.
+        let hit = cat.impact("/lake/flat.parquet", None);
+        let reached: Vec<&str> = hit.pipelines.iter().map(|p| p.id.as_str()).collect();
+        assert!(
+            reached.contains(&"load") && reached.contains(&"export"),
+            "the blast radius omitted a pipeline that reads the asset: {reached:?}"
+        );
+    }
+
+    /// Two directories on one FTP server are two assets.
+    #[test]
+    fn an_ftp_path_is_named_not_just_the_server_it_sits_on() {
+        // src.ftp requires host + directory; snk.ftp requires host + remotePath.
+        // Naming only the host made every path on one server one asset, so two
+        // unrelated pipelines looked connected.
+        let inbox = asset_of("src.ftp", &json!({ "host": "files.internal", "directory": "/in/orders" })).unwrap();
+        let archive = asset_of("src.ftp", &json!({ "host": "files.internal", "directory": "/in/archive" })).unwrap();
+        assert_ne!(inbox.id, archive.id, "two directories on one server were named as one asset");
+        assert_eq!(inbox.id, "ftp://files.internal/in/orders");
+        assert_eq!(inbox.kind, "file");
+
+        // And a sink writing where a source reads is still the same asset.
+        let written = asset_of("snk.ftp", &json!({ "host": "files.internal", "remotePath": "/in/orders" })).unwrap();
+        assert_eq!(inbox.id, written.id, "a reader and a writer of one path disagree");
+    }
+
+    /// A path is not a connection string, however many '=' it contains.
+    #[test]
+    fn a_partitioned_path_is_left_alone() {
+        // Hive-style partition names are '=' separated and a path may contain
+        // ';'. Mistaking one for a DSN would rewrite the name of a real file.
+        let a = asset_of("src.parquet", &json!({ "path": "/lake/dt=2026-08-15;run=1/orders.parquet" })).unwrap();
+        assert_eq!(a.id, "/lake/dt=2026-08-15;run=1/orders.parquet");
+    }
+
+    /// The GUI writes a port as a number, and a number is still a port.
+    #[test]
+    fn two_instances_on_one_host_are_two_assets_even_when_the_port_is_a_number() {
+        // manifest-synth declares port as `kind: 'integer'`, so every
+        // GUI-authored node carries a JSON number here. Reading only strings
+        // dropped it, and both of these collapsed onto postgres://db/sales...
+        let a = asset_of(
+            "src.postgres",
+            &json!({ "host": "db", "port": 5432, "database": "sales", "schema": "public", "tableName": "orders" }),
+        )
+        .unwrap();
+        let b = asset_of(
+            "src.postgres",
+            &json!({ "host": "db", "port": 5433, "database": "sales", "schema": "public", "tableName": "orders" }),
+        )
+        .unwrap();
+        assert_eq!(a.id, "postgres://db:5432/sales.public.orders");
+        assert_ne!(a.id, b.id, "two instances on one host were named as one asset");
+
+        // A hand-written string port must still name the same asset as the
+        // number the GUI writes, or the two authoring paths would disagree.
+        let text = asset_of(
+            "src.postgres",
+            &json!({ "host": "db", "port": "5432", "database": "sales", "schema": "public", "tableName": "orders" }),
+        )
+        .unwrap();
+        assert_eq!(a.id, text.id);
     }
 
     #[test]

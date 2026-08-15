@@ -967,7 +967,9 @@ duckle-runner catalog orphans                                     # written here
 duckle-runner catalog owners                                      # what nobody has claimed
 ```
 
-`impact` is the blast radius: the pipelines that read an asset, the assets they write, everything downstream of those, and how many hops away each is. Assets that could not be named are **counted on every answer** rather than dropped, so a partial graph never looks complete.
+`impact` is the blast radius: the pipelines that read an asset, the assets they write, everything downstream of those, and how many hops away each is. Assets that could not be named are **counted on every answer** rather than dropped, so a partial graph never looks complete. An asset name nothing in the workspace uses exits non-zero, including under `--json`, so a mistyped name in a CI gate fails instead of reporting an empty blast radius.
+
+`build` walks the whole workspace, skipping Duckle's own folders (`runs`, `logs`, `connections`, `.duckle`), so pipelines kept in subfolders are included. Asset names never carry a credential: a `mongodb://user:pass@host` uri or an ODBC connection string is reduced to the address before it becomes a name, which also keeps the name stable when the password is rotated.
 
 Add `<workspace>/owners.json` and it also tells you who to notify. Rules are globs and the **first match wins**, so a narrow rule above a broad one carves out an exception:
 

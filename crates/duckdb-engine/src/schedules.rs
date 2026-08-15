@@ -146,12 +146,14 @@ fn write_atomically(workspace: &Path, list: &[Schedule]) -> Result<(), String> {
     let body = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
     let tmp = p.with_extension("json.tmp");
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    // Windows refuses a rename onto an existing file, so clear the way first.
-    // The store lock is what keeps this from being a window another writer can
-    // fall into; a reader that lands here sees a missing file, which reads as
-    // an empty store for one poll rather than as corruption.
-    #[cfg(windows)]
-    let _ = std::fs::remove_file(&p);
+    // No unlink first. This used to call remove_file on Windows, justified by
+    // "Windows refuses a rename onto an existing file", which is not true of
+    // this rename: std::fs::rename is MoveFileExW with MOVEFILE_REPLACE_EXISTING,
+    // and it replaces the destination even while a reader holds it open. The
+    // unlink bought nothing and cost the guarantee the function exists for -
+    // it opened a window where the store was simply absent, which `load` reads
+    // as an empty schedule list, and if the rename then failed the store was
+    // gone for good.
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
@@ -235,5 +237,66 @@ mod tests {
 
         let after = load(&ws).unwrap();
         assert_eq!(after.len(), 8, "concurrent writers lost updates");
+    }
+
+    /// The store is never absent, not even for an instant.
+    ///
+    /// `write_atomically` used to unlink the destination before renaming over
+    /// it, on the premise that Windows refuses a rename onto an existing file.
+    /// It does not: `std::fs::rename` is `MoveFileExW` with
+    /// `MOVEFILE_REPLACE_EXISTING`. The unlink bought nothing and cost the
+    /// guarantee the function is named for - a reader landing in that window
+    /// sees no file and reads it as an empty schedule list, and a rename that
+    /// then failed would have left the store gone for good.
+    ///
+    /// This asserts the premise directly, because it is the premise that was
+    /// wrong, and then that a reader running flat out beside a writer never
+    /// observes the store missing or short.
+    #[test]
+    fn a_rename_replaces_the_store_without_ever_unlinking_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        update(&ws, |v| v.push(interval("p0", 60))).unwrap();
+        let store = schedules_path(&ws);
+        assert!(store.exists());
+
+        // The premise, measured rather than assumed: a rename onto a file that
+        // already exists succeeds, and succeeds while a reader holds it open.
+        let held = std::fs::File::open(&store).unwrap();
+        let side = store.with_extension("json.probe");
+        std::fs::write(&side, std::fs::read(&store).unwrap()).unwrap();
+        std::fs::rename(&side, &store).expect("rename onto an existing store failed");
+        drop(held);
+
+        // And the property that matters: a reader beside a writer never sees
+        // the store vanish. With the unlink present this fails within a few
+        // hundred iterations on Windows.
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen_missing = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = {
+            let (ws, stop, seen) = (ws.clone(), stop.clone(), seen_missing.clone());
+            std::thread::spawn(move || {
+                let path = schedules_path(&ws);
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if !path.exists() {
+                        seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            })
+        };
+        for i in 0..300 {
+            update(&ws, |v| {
+                v.clear();
+                v.push(interval(&format!("p{i}"), 60));
+            })
+            .unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap();
+        assert_eq!(
+            seen_missing.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the store was observably absent during a write"
+        );
     }
 }

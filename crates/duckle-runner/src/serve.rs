@@ -1260,37 +1260,22 @@ fn sign_in(stream: &mut TcpStream, state: &State, req: &Request) -> Result<(), S
 /// array), skipping bookkeeping folders. Returns (absolute path, id, value).
 fn discover_pipelines(workspace: &Path) -> Vec<(PathBuf, String, Value)> {
     let mut out = Vec::new();
-    let skip = ["runs", "logs", "connections", "node_modules", ".duckle", ".git", "target"];
-    let mut stack = vec![workspace.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let rd = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
+    // One walk, shared with the catalog. Each keeping its own copy of the
+    // folders to skip is how the two came to disagree: the console could open
+    // a pipeline in a subfolder that the workspace graph could not see, so the
+    // blast radius quietly omitted it.
+    for path in duckle_duckdb_engine::catalog::discover_pipeline_files(workspace) {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
             Err(_) => continue,
         };
-        for entry in rd.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !skip.contains(&name) {
-                    stack.push(path);
-                }
-                continue;
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let text = match std::fs::read_to_string(&path) {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            let v: Value = match serde_json::from_str(&text) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if v.get("nodes").and_then(|n| n.as_array()).is_some() {
-                let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                out.push((path, id, v));
-            }
+        let v: Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("nodes").and_then(|n| n.as_array()).is_some() {
+            let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            out.push((path, id, v));
         }
     }
     out.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));

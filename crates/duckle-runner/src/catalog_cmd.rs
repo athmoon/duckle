@@ -91,13 +91,23 @@ pub fn run() -> Result<i32, String> {
             let cat = load_or_build(&workspace)?;
             let owners = catalog::load_owners(&workspace)?;
             let hit = cat.impact(asset, Some(&owners));
+            // An asset nobody names is almost always a typo, and saying
+            // "nothing is affected" would read as reassurance rather than as a
+            // miss. Checked before the JSON branch as well, because that is the
+            // one a CI job reads: `catalog impact <typo> --json` printed an
+            // empty blast radius and exited 0, so a mistyped asset name passed
+            // the gate it was added to enforce.
+            let named = cat.assets.iter().any(|a| &a.id == asset);
             if as_json {
+                if !named {
+                    eprintln!(
+                        "No pipeline names '{asset}'. Run `catalog assets` to see the names in use."
+                    );
+                }
                 println!("{}", serde_json::to_string_pretty(&hit).map_err(|e| e.to_string())?);
-                return Ok(0);
+                return Ok(if named { 0 } else { 1 });
             }
-            // An asset nobody names is almost always a typo, and saying "nothing
-            // is affected" would read as reassurance rather than as a miss.
-            if !cat.assets.iter().any(|a| &a.id == asset) {
+            if !named {
                 println!("No pipeline names '{asset}'. Run `catalog assets` to see the names in use.");
                 return Ok(1);
             }

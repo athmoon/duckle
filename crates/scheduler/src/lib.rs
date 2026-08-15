@@ -338,6 +338,38 @@ impl Scheduler {
         Ok(result)
     }
 
+    /// Fire a schedule and make sure the outcome is recorded whichever way it
+    /// goes.
+    ///
+    /// `run_now` only records after the pipeline has actually executed, so
+    /// every `?` before that point - a pipeline file that has been renamed or
+    /// deleted, a context that will not resolve, no workspace - produced a log
+    /// line and nothing else. No alert, no `last_run_at`, and a schedule that
+    /// reads as though it never fired at all. That is the same silence the
+    /// runner's scheduler had, and it is worse here because the desktop is
+    /// where someone would go looking for the reason.
+    async fn fire_and_record(&self, id: &str, why: &str) {
+        let started = Utc::now();
+        let Err(e) = self.run_now(id).await else {
+            return;
+        };
+        warn!("{} run {} failed: {}", why, id, e);
+        // A run that never started still took time and still failed, which is
+        // exactly what an operator needs to see against the schedule.
+        let elapsed = Utc::now().signed_duration_since(started).num_milliseconds().max(0) as u64;
+        let result = RunResult {
+            status: "error".into(),
+            duration_ms: elapsed,
+            nodes: Default::default(),
+            preview: Vec::new(),
+            category: Some(
+                duckle_duckdb_engine::error_category::categorize_error(&e).to_string(),
+            ),
+            error: Some(e),
+        };
+        self.record_run(id, started, &result);
+    }
+
     fn record_run(&self, id: &str, started: DateTime<Utc>, result: &RunResult) {
         let mut g = self.inner.lock().expect("scheduler poisoned");
         let pipeline_id = g.schedules.iter().find(|s| s.id == id).map(|s| s.pipeline_id.clone());
@@ -422,9 +454,7 @@ impl Scheduler {
                                 return;
                             }
                         };
-                        if let Err(e) = me2.run_now(&id).await {
-                            warn!("File-watch run {} failed: {}", id, e);
-                        }
+                        me2.fire_and_record(&id, "File-watch").await;
                     });
                 }
             });
@@ -482,9 +512,7 @@ impl Scheduler {
                         return;
                     }
                 };
-                if let Err(e) = me.run_now(&id).await {
-                    warn!("Scheduled run {} failed: {}", id, e);
-                }
+                me.fire_and_record(&id, "Scheduled").await;
             });
         }
     }
@@ -804,5 +832,70 @@ mod tests {
         assert_eq!(held, "nightly-load", "the lock was not keyed on the pipeline");
         assert_ne!(a[0], held, "the schedule id and pipeline id must differ here");
         drop(first);
+    }
+
+    /// A run that never gets as far as starting still has to be reported.
+    ///
+    /// `run_now` records only after the pipeline has executed, so every early
+    /// return - a pipeline file renamed or deleted out from under a schedule,
+    /// a context that will not resolve - used to leave a `warn!` in the log and
+    /// nothing anywhere a person looks: the schedule kept its old green status,
+    /// `last_run_at` stayed where it was, run history gained no entry and no
+    /// alert went out. A schedule that stopped working looked like one that was
+    /// working. This drives the failure through the fire path both triggers now
+    /// use and asserts every one of those surfaces sees it.
+    #[tokio::test]
+    async fn a_schedule_whose_pipeline_is_gone_reports_a_failed_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        let sched = Scheduler::new(DuckdbEngine::new(PathBuf::from("duckdb")));
+        sched.set_workspace(Some(ws.clone()));
+        let id = sched
+            .upsert(Schedule {
+                id: String::new(),
+                // No such file in the workspace: this is the pipeline someone
+                // renamed without touching the schedule that points at it.
+                pipeline_id: "nightly-load".into(),
+                name: "nightly".into(),
+                enabled: true,
+                kind: ScheduleKind::Interval { seconds: 3600 },
+                last_run_at: None,
+                last_run_status: None,
+                last_run_duration_ms: None,
+                last_run_error: None,
+                next_run_at: None,
+            })
+            .expect("schedule rejected")
+            .id;
+
+        sched.fire_and_record(&id, "Test").await;
+
+        let after = sched.list().into_iter().find(|s| s.id == id).expect("schedule vanished");
+        assert_eq!(after.last_run_status.as_deref(), Some("error"));
+        assert!(after.last_run_at.is_some(), "the fire left no last_run_at");
+        assert!(
+            after.last_run_error.is_some(),
+            "the failure was not kept against the schedule"
+        );
+
+        // The same failure has to survive a restart, because the console reads
+        // the store rather than this process's memory.
+        let reread = schedules::load(&ws).expect("schedules did not persist");
+        let stored = reread.iter().find(|s| s.id == id).expect("schedule not on disk");
+        assert_eq!(stored.last_run_status.as_deref(), Some("error"));
+
+        // And it has to reach run history, which is what the Runs view reads
+        // and what the metrics textfile is derived from.
+        let history = ws.join("runs").join("nightly-load.json");
+        let text = std::fs::read_to_string(&history)
+            .unwrap_or_else(|e| panic!("no run history at {}: {e}", history.display()));
+        let records: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+        let last = records.last().expect("run history is empty");
+        assert_eq!(last["status"], "error");
+        assert_eq!(last["trigger"], "scheduled");
+        assert!(
+            last["error"].as_str().unwrap_or("").contains("nightly-load"),
+            "the record does not say which pipeline could not be loaded: {last}"
+        );
     }
 }

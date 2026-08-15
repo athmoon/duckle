@@ -908,13 +908,90 @@ To run and monitor pipelines on a server with a browser instead of the desktop a
 duckle-runner serve --port 8080 --workspace /path/to/workspace
 ```
 
-Open `http://localhost:8080`. The panel has three views:
+Open `http://localhost:8080`. The panel has four views:
 
-- **Operations** - run history across every pipeline (status, duration, rows, errors) with expandable per-pipeline run logs and optional auto-refresh.
-- **Pipelines** - every pipeline in the workspace with its last status and an editable interval schedule.
-- **Run** - trigger any pipeline on demand and see its per-node result.
+- **Overview** - every pipeline with its last status, duration and next scheduled run, and a Run button.
+- **Runs** - run history across every pipeline (status, duration, rows, errors) with expandable per-pipeline run logs and optional auto-refresh.
+- **Schedules** - an editable cron or interval schedule per pipeline, showing what is running now and what is due next.
+- **Catalog** - everything the workspace reads and writes, who owns it, and what is written but never read. See [Workspace catalog](#workspace-catalog-what-reads-and-writes-what).
 
-Runs execute in-process through the same engine, are written to the same run history (`<workspace>/runs/`) and logs (`<workspace>/logs/`), and a built-in scheduler triggers any pipeline whose interval has elapsed - so the server itself runs your schedules, no OS cron needed. There is **no authentication**: bind it to `127.0.0.1` (the default) or a trusted network, and put it behind a reverse proxy if you need TLS or a login. Use `--host 0.0.0.0` to accept remote connections.
+Runs execute in-process through the same engine, are written to the same run history (`<workspace>/runs/`) and logs (`<workspace>/logs/`), and a built-in scheduler triggers any pipeline whose schedule has elapsed - so the server itself runs your schedules, no OS cron needed.
+
+#### Sign-in and roles
+
+The console can run any pipeline in the workspace, and a pipeline can run shell and SQL, so reaching it is equivalent to running code on the host. On `127.0.0.1` (the default) it is open, because anyone who can reach it is already on the machine. **Any other `--host` refuses to start without a credential:**
+
+```bash
+DUCKLE_CONSOLE_TOKEN=<secret> duckle-runner serve --host 0.0.0.0 --port 8080
+```
+
+For more than one person, give each their own token and role. The token is printed once and stored only as an Argon2id hash in `<workspace>/.duckle/console-users.json`:
+
+```bash
+duckle-runner console add-user reporting --role viewer
+duckle-runner console add-user ops       --role operator
+duckle-runner console list
+```
+
+| Role | Can |
+|---|---|
+| `viewer` | Read the dashboard, run history, logs, schedules and catalog. |
+| `operator` | Everything a viewer can, plus run pipelines and change schedules. |
+| `admin` | Everything an operator can, plus connections, credentials and the workspace itself. |
+
+A browser exchanges the token for a session cookie, so the browser never stores the credential; an API client sends `Authorization: Bearer <token>`. Every state-changing request, and every refusal, is appended to `<workspace>/logs/audit.ndjson` with who, what, when and the outcome. The same accounts and roles cover `duckle-runner web`.
+
+Still put it behind a reverse proxy if you need TLS.
+
+### Workspace catalog (what reads and writes what)
+
+Every other lineage view in Duckle answers about **one** pipeline. The catalog answers about the whole workspace, by joining pipelines through the assets they name: two pipelines that read and write the same table are connected whether or not anyone drew a line between them.
+
+```bash
+duckle-runner catalog build                                       # scan every pipeline
+duckle-runner catalog assets                                      # every table, file, topic and endpoint
+duckle-runner catalog impact postgres://db:5432/sales.public.orders
+duckle-runner catalog orphans                                     # written here, read by nobody
+duckle-runner catalog owners                                      # what nobody has claimed
+```
+
+`impact` is the blast radius: the pipelines that read an asset, the assets they write, everything downstream of those, and how many hops away each is. Assets that could not be named are **counted on every answer** rather than dropped, so a partial graph never looks complete.
+
+Add `<workspace>/owners.json` and it also tells you who to notify. Rules are globs and the **first match wins**, so a narrow rule above a broad one carves out an exception:
+
+```json
+{
+  "assets": [
+    { "match": "/lake/raw/pii_*", "owner": "Privacy Office", "contact": "privacy@example.com" },
+    { "match": "/lake/raw/*",     "owner": "Data Platform",  "contact": "data@example.com" }
+  ],
+  "pipelines": [{ "match": "*-ingest-*", "owner": "Ingest Squad" }]
+}
+```
+
+The same answers are available in the console's Catalog view and over MCP as `workspace_impact`.
+
+### Alerting (tell someone when a run fails)
+
+`snk.email` and `snk.rest` are pipeline *nodes* - they need wiring into every pipeline and cannot fire when a pipeline dies before reaching them. `<workspace>/alerts.json` watches the runs themselves, for both the desktop scheduler and the server:
+
+```json
+{
+  "rules": [
+    { "match": "nightly-*", "channel": "webhook", "url": "${ENV:SLACK_WEBHOOK}", "cooldownMinutes": 15 },
+    { "match": "*", "channel": "email", "smtpHost": "smtp.example.com",
+      "from": "duckle@example.com", "to": ["oncall@example.com"] }
+  ]
+}
+```
+
+The webhook payload carries a `text` field as well as structured fields, so Slack, Teams and Discord render it directly. Three behaviours are deliberate:
+
+- **Repeat suppression.** A five-minute schedule that starts failing would otherwise send 288 messages a day. `cooldownMinutes` (default 15) bounds it per pipeline and event.
+- **The all-clear.** A success after a failure is its own `recovery` event and **ignores the cooldown**, so nobody is left thinking an outage is still running. Ordinary successes are silent unless you add `"on": ["success"]`.
+- **It never breaks a run.** Delivery happens after the run is recorded, is time-bounded, and an unreachable channel is logged rather than raised.
+
+A schedule whose pipeline file has been renamed or deleted also raises an alert, instead of silently doing nothing.
 
 ---
 

@@ -15,8 +15,9 @@
 //! collide on the shared workspace env), and append the same run history
 //! (`<workspace>/runs/<id>.json`) and NDJSON logs (`<workspace>/logs/<id>/`)
 //! the desktop and runner already write. A background scheduler triggers any
-//! pipeline whose interval has elapsed. No authentication: bind it to a
-//! trusted network or localhost.
+//! pipeline whose interval has elapsed. Reaching it means being able to run
+//! any pipeline in the workspace, so it is open only on loopback and refuses
+//! to start on any other host without a credential: see console_auth.
 
 use duckle_duckdb_engine::{append_run_record, load_run_history, DuckdbEngine, PipelineDoc, RunRecord};
 use serde_json::{json, Value};
@@ -80,8 +81,13 @@ fn parse_serve_args() -> Result<ServeArgs, String> {
                      --port <n>             Port (default 8080)\n    \
                      --workspace <dir>      Workspace root holding pipelines, runs/, logs/ (default: current dir)\n    \
                      --duckdb <path>        DuckDB CLI (default: DUCKLE_DUCKDB_BIN, sibling bin/duckdb, or PATH)\n    \
-                     --tick-interval <secs> Scheduler poll cadence in seconds (default 15; also DUCKLE_TICK_INTERVAL)\n\n\
-                     No authentication. Bind to localhost or a trusted network."
+                     --tick-interval <secs> Scheduler poll cadence in seconds (default 15; also DUCKLE_TICK_INTERVAL)\n    \
+                     --token <secret>       Shared sign-in token (also DUCKLE_CONSOLE_TOKEN)\n\n\
+                     On 127.0.0.1 with no accounts the console is open, because reaching it\n\
+                     means already being on the machine. Any other --host REFUSES TO START\n\
+                     without a credential: pass --token, set DUCKLE_CONSOLE_TOKEN, or give\n\
+                     people their own with `duckle-runner console add-user <name> --role ...`.\n\
+                     Put it behind a reverse proxy if you need TLS."
                 );
                 std::process::exit(0);
             }
@@ -290,8 +296,10 @@ fn parse_web_args() -> Result<WebArgs, String> {
             "-h" | "--help" => {
                 println!(
                     "duckle-runner web - serve the Duckle editor as a web app (spike)\n\n\
-                     USAGE:\n    duckle-runner web --dist <dir> [--host <ip>] [--port <n>] [--workspace <dir>]\n\n\
-                     No authentication. Bind to localhost or a trusted network."
+                     USAGE:\n    duckle-runner web --dist <dir> [--host <ip>] [--port <n>] [--workspace <dir>] [--token <secret>]\n\n\
+                     Same accounts and roles as `duckle-runner serve`: open on 127.0.0.1\n\
+                     with no accounts, and REFUSES TO START on any other --host without a\n\
+                     credential (--token, DUCKLE_CONSOLE_TOKEN, or `console add-user`)."
                 );
                 std::process::exit(0);
             }
@@ -872,7 +880,29 @@ struct Request {
     body: Vec<u8>,
 }
 
+/// How long a single read may stall before the connection is abandoned.
+///
+/// Generous per read, not per request, so a slow client on a bad link is fine.
+/// Without any deadline a caller could open a socket, send one byte and park
+/// the thread serving it forever - and since every connection gets its own
+/// `std::thread::spawn` with no ceiling, a handful of those is the whole
+/// server. It matters because this runs before anyone is identified: it is the
+/// one part of the console an unauthenticated caller always reaches.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The largest request body that will be buffered.
+///
+/// `Content-Length` is the caller's own claim and was believed without limit,
+/// so a declared and delivered 4 GiB was read into memory before anything
+/// looked at who was asking. Pipeline documents and file writes are far below
+/// this; anything above it is not a console request.
+const MAX_BODY: usize = 32 << 20;
+
 fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
+    // Both directions: a client that stops reading must not pin the thread on
+    // a blocked write either.
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
     // Read until the end of headers (\r\n\r\n), then the body by Content-Length.
     let mut buf = Vec::with_capacity(2048);
     let mut tmp = [0u8; 2048];
@@ -919,6 +949,9 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
                 cookie = Some(v.trim().to_string());
             }
         }
+    }
+    if content_length > MAX_BODY {
+        return Err(format!("request body too large ({content_length} bytes)"));
     }
     let mut body = buf[header_end + 4..].to_vec();
     while body.len() < content_length {
@@ -1990,10 +2023,41 @@ fn execute_one(
 /// "0 9 * * *" means 9am local, matching how the dashboard displays run times
 /// (#132). Both keep next-run state in-memory, so a restart re-arms from the
 /// next occurrence with no surprise burst of catch-up runs.
+/// What this tick should do with a cron schedule, and what to arm next.
+///
+/// Returned rather than performed, so the decision can be tested without a
+/// thread, a workspace and a wall clock.
+///
+/// The armed occurrence is remembered together with the expression it came
+/// from. Keyed by schedule id alone, an edited cron expression did nothing
+/// until the OLD occurrence came round: a schedule moved from 03:00 to 09:00
+/// skipped 09:00 entirely and then fired at 03:00 the next morning, at the one
+/// time it had just been moved away from.
+fn cron_decision(
+    armed: Option<&(String, chrono::DateTime<chrono::Local>)>,
+    expr: &str,
+    sched: &cron::Schedule,
+    now: chrono::DateTime<chrono::Local>,
+) -> (bool, Option<(String, chrono::DateTime<chrono::Local>)>) {
+    let next_after_now = || sched.after(&now).next().map(|t| (expr.to_string(), t));
+    match armed {
+        // Armed from this very expression, and its moment has come.
+        Some((e, at)) if e == expr && now >= *at => (true, next_after_now()),
+        // Armed from this expression, not due yet. Left exactly as it is:
+        // re-arming here would push the occurrence away on every tick.
+        Some((e, at)) if e == expr => (false, Some((e.clone(), *at))),
+        // Never seen before, or the expression changed underneath us. Arm what
+        // it says NOW, and do not fire: the edit is not itself an occurrence.
+        _ => (false, next_after_now()),
+    }
+}
+
 fn spawn_scheduler(state: Arc<State>) {
     std::thread::spawn(move || {
         let mut last_fired: HashMap<String, Instant> = HashMap::new();
-        let mut cron_next: HashMap<String, chrono::DateTime<chrono::Local>> = HashMap::new();
+        // The armed occurrence AND the expression it came from. See cron_decision.
+        let mut cron_next: HashMap<String, (String, chrono::DateTime<chrono::Local>)> =
+            HashMap::new();
         loop {
             std::thread::sleep(state.tick_interval);
             let scheds = load_schedules(&state);
@@ -2017,14 +2081,13 @@ fn spawn_scheduler(state: Arc<State>) {
                                 cron_next.remove(id);
                             }
                             Some(sched) => {
-                                let now = chrono::Local::now();
-                                let due = matches!(cron_next.get(id), Some(next) if now >= *next);
-                                if cron_next.get(id).is_none() {
-                                    // First sighting: arm the next occurrence, don't fire.
-                                    if let Some(next) = sched.after(&now).next() {
-                                        cron_next.insert(id.clone(), next);
-                                    }
-                                } else if due {
+                                let (fire, rearm) = cron_decision(
+                                    cron_next.get(id),
+                                    cron,
+                                    &sched,
+                                    chrono::Local::now(),
+                                );
+                                if fire {
                                     match pipes.get(id) {
                                         Some(path) => {
                                             let file = rel(&state.workspace, path);
@@ -2032,9 +2095,17 @@ fn spawn_scheduler(state: Arc<State>) {
                                         }
                                         None => report_missing_pipeline(&state, id),
                                     }
-                                    // Re-arm from now so we don't double-fire this minute.
-                                    cron_next
-                                        .insert(id.clone(), sched.after(&now).next().unwrap_or(now));
+                                }
+                                match rearm {
+                                    Some(next) => {
+                                        cron_next.insert(id.clone(), next);
+                                    }
+                                    // No future occurrence at all. Forgetting
+                                    // it leaves the schedule armed by nothing
+                                    // rather than due every tick.
+                                    None => {
+                                        cron_next.remove(id);
+                                    }
                                 }
                             }
                         }
@@ -2086,8 +2157,9 @@ fn spawn_scheduler(state: Arc<State>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        connection_secret_cmd, console_auth, migrate_legacy_schedules, normalize_cron,
-        read_pipeline_file, save_schedule_at, RunGate, State,
+        connection_secret_cmd, console_auth, cron_decision, migrate_legacy_schedules,
+        normalize_cron, read_pipeline_file, read_request, save_schedule_at, RunGate, State,
+        MAX_BODY,
     };
     use std::sync::Mutex;
     use duckle_duckdb_engine::schedules::{self, ScheduleKind};
@@ -2313,5 +2385,105 @@ mod tests {
         let back = connection_secret_cmd(tmp.path(), "connection_decrypt_payload", &body)
             .expect("lenient");
         assert!(back.contains("hunter2"), "legacy plaintext must still load");
+    }
+
+    /// Editing a cron expression has to take effect before the old one fires.
+    ///
+    /// The armed occurrence was keyed by schedule id alone, so an edit changed
+    /// nothing until the OLD occurrence came round. A schedule moved from
+    /// 03:00 to 09:00 skipped 09:00 entirely and then fired at 03:00 the next
+    /// morning: not merely late, but firing at the one time it had just been
+    /// moved away from.
+    #[test]
+    fn an_edited_cron_expression_is_armed_from_the_new_one() {
+        use chrono::{Datelike, TimeZone, Timelike};
+        let parse = |e: &str| {
+            normalize_cron(e).and_then(|x| x.parse::<cron::Schedule>().ok()).expect("bad cron")
+        };
+        let at = |h: u32, m: u32| {
+            chrono::Local.with_ymd_and_hms(2026, 8, 15, h, m, 0).single().expect("ambiguous local time")
+        };
+
+        // 03:00 daily, first seen at 08:00: arm tomorrow, do not fire.
+        let daily_3am = parse("0 3 * * *");
+        let (fire, armed) = cron_decision(None, "0 3 * * *", &daily_3am, at(8, 0));
+        assert!(!fire, "a schedule fired the moment it was first seen");
+        let armed = armed.expect("nothing was armed");
+        assert_eq!(armed.0, "0 3 * * *");
+        assert_eq!(armed.1.hour(), 3, "armed at the wrong hour");
+
+        // Now it is edited to 09:00. The next tick must re-arm from the NEW
+        // expression rather than keep waiting for tomorrow's 03:00.
+        let daily_9am = parse("0 9 * * *");
+        let (fire, rearmed) = cron_decision(Some(&armed), "0 9 * * *", &daily_9am, at(8, 0));
+        assert!(!fire, "the edit itself fired a run");
+        let rearmed = rearmed.expect("nothing was armed after the edit");
+        assert_eq!(rearmed.0, "0 9 * * *", "still armed by the old expression");
+        assert_eq!(rearmed.1.hour(), 9, "did not re-arm from the edited expression");
+        assert_eq!(rearmed.1.day(), 15, "the edit was pushed to tomorrow");
+
+        // And at 09:00 it fires, then arms the following day.
+        let (fire, next) = cron_decision(Some(&rearmed), "0 9 * * *", &daily_9am, at(9, 0));
+        assert!(fire, "the edited schedule did not fire at its new time");
+        let next = next.expect("nothing was armed after firing");
+        assert_eq!(next.1.day(), 16, "re-armed on the same day, so it would fire twice");
+
+        // An unchanged expression that is not due yet is left exactly alone,
+        // or the occurrence would be pushed away on every tick and never come.
+        let (fire, held) = cron_decision(Some(&next), "0 9 * * *", &daily_9am, at(9, 1));
+        assert!(!fire);
+        assert_eq!(held.unwrap().1, next.1, "an armed occurrence was moved by a tick");
+    }
+
+    /// The first thing an unauthenticated caller reaches must be bounded.
+    ///
+    /// `read_request` runs before anyone is identified, on a thread spawned per
+    /// connection with no ceiling. It had no read deadline, so one byte and
+    /// silence parked that thread for the life of the process, and it believed
+    /// whatever Content-Length it was handed, so a declared body was buffered
+    /// whole before anything looked at who was asking.
+    #[test]
+    fn an_unidentified_caller_cannot_park_a_thread_or_name_its_own_body_size() {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // An outsized Content-Length is refused before a byte of it is read.
+        let sender = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            let _ = write!(
+                c,
+                "POST /api/run HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n",
+                MAX_BODY + 1
+            );
+            // Deliberately never sends the body: the refusal must not depend
+            // on the caller actually delivering what it claimed.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        let err = match read_request(&mut server) {
+            Err(e) => e,
+            Ok(_) => panic!("an unbounded body was accepted"),
+        };
+        assert!(err.contains("too large"), "wrong refusal: {err}");
+        sender.join().unwrap();
+
+        // And an ordinary request leaves the socket with a deadline on it, so
+        // no later read on this connection can block forever either.
+        let sender = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            let _ = write!(c, "GET /api/summary HTTP/1.1\r\nHost: x\r\n\r\n");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        let req = read_request(&mut server).expect("an ordinary request was refused");
+        assert_eq!(req.path, "/api/summary");
+        assert!(
+            server.read_timeout().unwrap().is_some(),
+            "the connection has no read deadline, so a stalled caller pins the thread"
+        );
+        sender.join().unwrap();
     }
 }

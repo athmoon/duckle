@@ -18,6 +18,18 @@
 pub fn categorize_error(msg: &str) -> &'static str {
     let m = msg.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| m.contains(n));
+    /// `needle` as a whole word, so a short one is not swallowed by a longer
+    /// identifier. `_` counts as part of a word, since `timeout_ms` is one name
+    /// rather than a message about a timeout.
+    fn has_word(haystack: &str, needle: &str) -> bool {
+        let bytes = haystack.as_bytes();
+        let wordish = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        haystack.match_indices(needle).any(|(i, _)| {
+            let before = i == 0 || !wordish(bytes[i - 1]);
+            let end = i + needle.len();
+            before && (end == bytes.len() || !wordish(bytes[end]))
+        })
+    }
 
     if has(&["cancelled", "canceled by user"]) {
         return "cancelled";
@@ -25,13 +37,16 @@ pub fn categorize_error(msg: &str) -> &'static str {
     if has(&["timed out", "timeout", "deadline exceeded"]) {
         return "timeout";
     }
-    if has(&[
-        "out of memory",
-        "memory limit",
-        "failed to allocate",
-        "cannot allocate",
-        "oom",
-    ]) {
+    if has(&["out of memory", "memory limit", "failed to allocate", "cannot allocate"])
+        // "oom" only as a whole word. As a substring it is inside rooms,
+        // zoom_level, bloom_filters and boomerang, so `Table with name rooms
+        // does not exist` was reported as an out-of-memory failure - which is
+        // the one category that sends somebody to look at the machine rather
+        // than at their SQL. The other needles here are left as substrings
+        // deliberately: driver exceptions arrive glued together, and matching
+        // those is worth more than the collisions long words cannot have.
+        || has_word(&m, "oom")
+    {
         return "oom";
     }
     if has(&["no space left", "disk full", "too many open files", "quota exceeded"]) {
@@ -160,7 +175,29 @@ mod tests {
         }
     }
 
+    /// A table called `rooms` is not an out-of-memory failure.
+    ///
+    /// "oom" was matched as a bare substring, so rooms, zoom_level,
+    /// bloom_filters and boomerang all landed in the one category that sends
+    /// somebody to look at the machine instead of at their SQL. The genuine
+    /// message never needed that needle: it matches "out of memory" and
+    /// "failed to allocate" on its own.
     #[test]
+    fn an_ordinary_name_containing_oom_is_not_an_out_of_memory_error() {
+        for msg in [
+            "Catalog Error: Table with name rooms does not exist!",
+            "Binder Error: Referenced column \"zoom_level\" not found",
+            "Catalog Error: Table with name bloom_filters does not exist!",
+            "Parser Error: syntax error at or near \"boomerang\"",
+        ] {
+            assert_ne!(categorize_error(msg), "oom", "misread as out of memory: {msg}");
+        }
+        // And the real thing is still caught, spelled either way.
+        assert_eq!(categorize_error("Out of Memory Error: failed to allocate 4GB"), "oom");
+        assert_eq!(categorize_error("worker killed: OOM"), "oom");
+        assert_eq!(categorize_error("process exited (oom-killer)"), "oom");
+    }
+
     fn timeout_beats_network() {
         // "connection timed out" mentions both; timeout is the actionable bucket.
         assert_eq!(categorize_error("connection timed out"), "timeout");

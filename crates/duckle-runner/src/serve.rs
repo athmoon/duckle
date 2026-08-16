@@ -374,6 +374,18 @@ pub fn run_web() -> Result<(), String> {
     } else {
         eprintln!("duckle-runner: sign-in required");
     }
+    // A store that will not open is not a store with nothing in it. Saying nothing here
+    // would be the exact failure this notice exists to prevent, so an unreadable one is
+    // reported rather than counted as zero.
+    match duckle_duckdb_engine::schedules::load(&workspace) {
+        Ok(schedules) => {
+            eprintln!("{}", scheduler_notice(schedules.iter().filter(|s| s.enabled).count()))
+        }
+        Err(e) => eprintln!(
+            "duckle-runner: WARNING: the schedule store could not be read ({e}). \
+             Whatever is in it will not run here either; the editor does not run schedules."
+        ),
+    }
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
@@ -421,7 +433,10 @@ fn handle_web(mut stream: TcpStream, state: &WebState) -> Result<(), String> {
     if req.method == "POST" && req.path.starts_with("/api/") && !guard_local(&req, &state.host) {
         return respond_403(&mut stream, "blocked: cross-origin or non-local request");
     }
-    if req.method == "POST" && req.path == "/api/session" {
+    if is_public_route(&req.method, &req.path) {
+        if req.path == HEALTH_PATH {
+            return respond(&mut stream, "200 OK", "text/plain; charset=utf-8", b"ok");
+        }
         return web_sign_in(&mut stream, state, &req);
     }
     // Parse the route ONCE, here, and let both the gate and the dispatcher use
@@ -979,6 +994,44 @@ fn header_host(s: &str) -> &str {
     s.rsplit_once(':').map(|(h, _)| h).unwrap_or(s)
 }
 
+/// What to tell an operator starting the editor, about schedules it will not run.
+///
+/// The scheduler lives in `serve`, not in the editor. That is easy to miss and expensive
+/// when missed: the published image's entrypoint is the editor, so the ordinary way to
+/// deploy Duckle in a container produces a console where schedules sit looking armed, and
+/// nothing ever fires them. There is no error, because nothing failed.
+///
+/// So say it at startup, and say it louder when the workspace already has schedules that
+/// are about to be silently ignored.
+fn scheduler_notice(enabled_schedules: usize) -> String {
+    if enabled_schedules == 0 {
+        "duckle-runner: note: the editor does not run schedules; `duckle-runner serve` does"
+            .to_string()
+    } else {
+        format!(
+            "duckle-runner: WARNING: {} enabled schedule(s) in this workspace will NOT run. \
+             The editor does not run the scheduler. Restart with `duckle-runner serve` to \
+             run them on a cron.",
+            enabled_schedules
+        )
+    }
+}
+
+/// The liveness route. Unauthenticated by design, and it answers with two bytes.
+pub const HEALTH_PATH: &str = "/healthz";
+
+/// The routes an unauthenticated caller may reach, in one place so the console and the
+/// editor cannot drift apart on it.
+///
+/// It stays this short deliberately. Signing in cannot require being signed in, and an
+/// orchestrator has to be able to ask whether the process is alive without holding a
+/// credential: every route needing one means a Kubernetes HTTP probe gets 401 and the pod
+/// is marked unhealthy forever. `/healthz` answers `ok` and nothing else, so it can say the
+/// process is up without telling an anonymous caller anything about what is in it.
+pub fn is_public_route(method: &str, path: &str) -> bool {
+    matches!((method, path), ("POST", "/api/session") | ("GET", HEALTH_PATH))
+}
+
 fn is_loopback_host(h: &str) -> bool {
     matches!(h, "127.0.0.1" | "localhost" | "::1")
 }
@@ -1111,8 +1164,10 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
         return respond_403(&mut stream, "blocked: cross-origin or non-local request");
     }
 
-    // Signing in is the one thing an unauthenticated caller may do.
-    if route == ("POST", "/api/session") {
+    if is_public_route(&req.method, &req.path) {
+        if req.path == HEALTH_PATH {
+            return respond(&mut stream, "200 OK", "text/plain; charset=utf-8", b"ok");
+        }
         return sign_in(&mut stream, state, &req);
     }
 
@@ -2178,12 +2233,62 @@ fn spawn_scheduler(state: Arc<State>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        connection_secret_cmd, console_auth, cron_decision, migrate_legacy_schedules,
-        normalize_cron, read_pipeline_file, read_request, save_schedule_at, RunGate, State,
-        MAX_BODY,
+        connection_secret_cmd, console_auth, cron_decision, is_public_route, scheduler_notice,
+        migrate_legacy_schedules, normalize_cron, read_pipeline_file, read_request,
+        save_schedule_at, RunGate, State, HEALTH_PATH, MAX_BODY,
     };
     use std::sync::Mutex;
     use duckle_duckdb_engine::schedules::{self, ScheduleKind};
+
+    /// An orchestrator has to be able to ask whether the process is alive without holding
+    /// a credential. Every route requiring one meant a Kubernetes HTTP probe got 401 and
+    /// the pod was reported unhealthy for as long as it ran.
+    #[test]
+    fn liveness_can_be_checked_without_signing_in() {
+        assert!(is_public_route("GET", HEALTH_PATH));
+    }
+
+    /// The other half, and the more important one: opening a hole for probes must not open
+    /// one for anything else.
+    #[test]
+    fn nothing_else_is_reachable_without_signing_in() {
+        for (method, path) in [
+            ("GET", "/"),
+            ("GET", "/api/pipeline"),
+            ("GET", "/api/catalog"),
+            ("GET", "/api/audit"),
+            ("POST", "/api/run"),
+            ("POST", "/api/schedule"),
+            ("DELETE", "/api/session"),
+            ("GET", "/healthz/../api/audit"),
+            ("POST", HEALTH_PATH),
+        ] {
+            assert!(
+                !is_public_route(method, path),
+                "{method} {path} must require a credential"
+            );
+        }
+    }
+
+    /// Deployed from the published image the entrypoint is the editor, so an operator who
+    /// has armed schedules and sees nothing fire gets no error to explain it. Naming the
+    /// count is the difference between a note and a warning worth acting on.
+    #[test]
+    fn armed_schedules_are_named_when_the_editor_will_not_run_them() {
+        let n = scheduler_notice(3);
+        assert!(n.contains("3"), "the count must appear: {n}");
+        assert!(n.contains("NOT run"), "it must say they will not run: {n}");
+        assert!(n.contains("serve"), "it must say what to run instead: {n}");
+    }
+
+    /// With nothing armed there is nothing to alarm anyone about, but the difference
+    /// between the two modes is still worth stating once.
+    #[test]
+    fn an_empty_workspace_gets_a_note_rather_than_a_warning() {
+        let n = scheduler_notice(0);
+        assert!(!n.contains("WARNING"), "nothing is at risk yet: {n}");
+        assert!(n.contains("serve"), "it must still say which mode schedules: {n}");
+    }
 
     /// The console and the desktop app now keep one store, so a schedule saved
     /// here has to be a record the desktop reads, in the file the desktop reads.

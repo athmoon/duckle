@@ -89,5 +89,8 @@ ENV DUCKLE_DUCKDB_BIN=/usr/local/bin/duckdb \
     DUCKLE_PYTHON_BIN=/usr/bin/python3
 VOLUME ["/workspace"]
 EXPOSE 8080
+# /healthz needs no credential and says only "ok", so orchestrators can check
+# liveness without holding a token and without learning anything.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 ENTRYPOINT ["duckle-runner", "web", "--host", "0.0.0.0", "--port", "8080", \
             "--dist", "/app/dist-web", "--workspace", "/workspace"]

@@ -147,8 +147,8 @@
     </div>
 
     <div class="warn">
-      <b>There is no health endpoint.</b>
-      <p>Every route requires authentication, so an HTTP probe with no credential gets a 401 and Kubernetes marks the pod unhealthy. Use a <code>tcpSocket</code> probe on 8080 instead. The manifests below already do.</p>
+      <b>Probe <code>/healthz</code>, and nothing else.</b>
+      <p><code>GET /healthz</code> is the one route that needs no credential. It answers <code>ok</code> and says nothing about the workspace, so an orchestrator can check liveness without holding a token. Every other route returns 401 without one, so pointing a probe at <code>/</code> marks the pod unhealthy forever.</p>
     </div>
   </div>
 </section>
@@ -298,12 +298,11 @@ spec:
           volumeMounts:
             - { name: workspace, mountPath: /workspace }
             - { name: spill,     mountPath: /spill }
-          # No unauthenticated health route exists, so probe the socket.
           readinessProbe:
-            tcpSocket: { port: 8080 }
+            httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 5
           livenessProbe:
-            tcpSocket: { port: 8080 }
+            httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 20
       volumes:
         - name: spill

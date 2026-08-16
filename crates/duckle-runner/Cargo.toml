@@ -28,6 +28,11 @@ sha2 = "0.10"
 # Console account tokens. A token can be chosen by a person, so it is hashed
 # as a password rather than as key material. Already in the workspace lock.
 argon2 = "0.5"
+# Console accounts, sessions and API keys. SQLite rather than a JSON file: the
+# stores are read on every request and written concurrently by `serve` and
+# `web`, which is what a transactional store is for. rusqlite (bundled) is
+# already declared in the workspace and adds no second SQLite to the binary.
+rusqlite = { workspace = true }
 base64 = "0.22"
 getrandom = "0.3"
 ed25519-dalek = "2"

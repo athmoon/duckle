@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod audit;
+mod auth_store;
 mod catalog_cmd;
 mod branch;
 mod build;

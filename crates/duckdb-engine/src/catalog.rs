@@ -98,6 +98,77 @@ pub struct Catalog {
     /// Nodes this module could not name a target for. Never empty-by-omission:
     /// see the module docs.
     pub unresolved: Vec<Unresolved>,
+    /// What the workspace looked like when this was built, so a saved graph can
+    /// say whether it still describes the pipelines. Absent on a graph written
+    /// before this existed, which is treated as "cannot tell" - see [`is_stale`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_from: Option<BuiltFrom>,
+}
+
+/// A cheap fingerprint of the pipeline files a graph was built from.
+///
+/// The catalog is derived, and the console serves the SAVED copy rather than
+/// rescanning on every poll - which is right, because rescanning reads every
+/// pipeline in the workspace. The cost of that is a graph that can quietly
+/// describe pipelines as they were an hour ago, and a blast radius computed
+/// from a stale graph is exactly the wrong answer to trust.
+///
+/// So the build records what it read. Comparing is `stat` only - no file is
+/// opened - which is what keeps the check cheap enough to make on every read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltFrom {
+    pub files: usize,
+    /// Milliseconds since the epoch, of the newest file. Millisecond
+    /// resolution because a second is long enough to save two edits in.
+    pub newest_mtime: Option<i64>,
+    pub total_bytes: u64,
+}
+
+/// Fingerprint the workspace's pipeline files as they are right now.
+pub fn fingerprint(workspace: &Path) -> BuiltFrom {
+    let mut files = 0usize;
+    let mut newest: Option<i64> = None;
+    let mut total = 0u64;
+    for path in discover_pipeline_files(workspace) {
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        files += 1;
+        total += meta.len();
+        if let Ok(m) = meta.modified() {
+            if let Ok(d) = m.duration_since(std::time::UNIX_EPOCH) {
+                let ms = d.as_millis() as i64;
+                newest = Some(newest.map_or(ms, |n: i64| n.max(ms)));
+            }
+        }
+    }
+    BuiltFrom { files, newest_mtime: newest, total_bytes: total }
+}
+
+/// Whether a saved graph still describes the workspace.
+///
+/// A graph with no fingerprint - written before this existed - is reported
+/// stale. That is the safe direction: rebuilding an up-to-date graph costs a
+/// scan, while serving a stale one costs a wrong answer to "what breaks if I
+/// change this".
+///
+/// The check is deliberately not perfect. Two edits that leave the file count,
+/// the total size and the newest timestamp all unchanged would slip through,
+/// which needs a same-length edit inside the same millisecond. Catching that
+/// would mean hashing every file on every read, and then the check would cost
+/// what it exists to avoid.
+pub fn is_stale(workspace: &Path, catalog: &Catalog) -> bool {
+    match &catalog.built_from {
+        None => true,
+        Some(built) => *built != fingerprint(workspace),
+    }
+}
+
+/// The saved graph if it still describes the workspace, else a fresh one.
+pub fn load_or_rebuild(workspace: &Path) -> Result<Catalog, String> {
+    match load(workspace)? {
+        Some(c) if !is_stale(workspace, &c) => Ok(c),
+        _ => build_and_save(workspace),
+    }
 }
 
 /// One ownership rule: a glob over names, and who answers for what it matches.
@@ -419,7 +490,9 @@ pub fn build(workspace: &Path) -> Result<Catalog, String> {
         let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         docs.push((id, doc));
     }
-    Ok(build_from_documents(&docs))
+    let mut catalog = build_from_documents(&docs);
+    catalog.built_from = Some(fingerprint(workspace));
+    Ok(catalog)
 }
 
 /// Build the graph from pipelines already in hand.
@@ -874,6 +947,60 @@ mod tests {
         // And an sftp path, where the same shape appears in `path`.
         let sftp = asset_of("src.xml", &json!({ "path": "sftp://etl:hunter2@files.internal/in/orders.xml" })).unwrap();
         assert_eq!(sftp.id, "sftp://files.internal/in/orders.xml");
+    }
+
+    /// A saved graph knows whether it still describes the workspace.
+    ///
+    /// The console serves the saved copy rather than rescanning on every poll,
+    /// which is right - rescanning reads every pipeline - but it means the
+    /// graph can quietly describe pipelines as they were an hour ago. A blast
+    /// radius computed from a stale graph is precisely the wrong answer to
+    /// trust, so the graph records what it was built from.
+    #[test]
+    fn a_saved_graph_notices_when_the_pipelines_have_moved_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_pipeline(ws, "one", json!([node("k", "snk.parquet", json!({ "path": "/lake/a.parquet" }))]));
+
+        let built = build_and_save(ws).unwrap();
+        assert!(built.built_from.is_some(), "the build recorded nothing about its inputs");
+        assert!(!is_stale(ws, &built), "a graph is stale the moment it is built");
+
+        // A new pipeline: the file count moves.
+        write_pipeline(ws, "two", json!([node("s", "src.parquet", json!({ "path": "/lake/a.parquet" }))]));
+        assert!(is_stale(ws, &built), "adding a pipeline did not make the graph stale");
+
+        // Rebuilding settles it, and picks up the new pipeline.
+        let fresh = load_or_rebuild(ws).unwrap();
+        assert!(!is_stale(ws, &fresh));
+        assert_eq!(fresh.pipelines.len(), 2);
+
+        // An edit that changes the file's size is caught too.
+        write_pipeline(
+            ws,
+            "two",
+            json!([node("s", "src.parquet", json!({ "path": "/lake/somewhere/else/entirely.parquet" }))]),
+        );
+        assert!(is_stale(ws, &fresh), "editing a pipeline did not make the graph stale");
+    }
+
+    /// A graph written before fingerprints existed is treated as stale.
+    ///
+    /// The safe direction: rebuilding an up-to-date graph costs a scan, while
+    /// serving a stale one costs a wrong answer to a governance question.
+    #[test]
+    fn a_graph_that_cannot_say_what_it_was_built_from_is_not_trusted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_pipeline(ws, "one", json!([node("k", "snk.parquet", json!({ "path": "/lake/a.parquet" }))]));
+        let mut old = build_and_save(ws).unwrap();
+        old.built_from = None;
+        assert!(is_stale(ws, &old), "a graph with no fingerprint was trusted");
+
+        // ...and load_or_rebuild replaces it rather than serving it.
+        std::fs::write(catalog_path(ws), serde_json::to_string(&old).unwrap()).unwrap();
+        let got = load_or_rebuild(ws).unwrap();
+        assert!(got.built_from.is_some());
     }
 
     /// The graph can be derived from documents, not only from disk.

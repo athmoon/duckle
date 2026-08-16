@@ -633,6 +633,10 @@ function renderCatalog(){
   // Say out loud when the graph is partial. A blast radius that hides its own
   // gaps is the one that gets trusted and then turns out to have missed a node.
   const notes = [`${assets.length} assets across ${c.pipelines || 0} pipelines`];
+  // The graph is derived and this view serves the saved copy, so it can be
+  // describing pipelines as they were an hour ago. Rebuilding is an Operator
+  // action, so the view says so rather than silently doing it.
+  if(c.stale) notes.push('<b style="color:var(--amber)">pipelines have changed since this was built - press Rescan</b>');
   if(c.orphans && c.orphans.length) notes.push(`${c.orphans.length} written but never read`);
   if(c.externals && c.externals.length) notes.push(`${c.externals.length} read but produced elsewhere`);
   if(!c.hasOwners) notes.push('no owners.json, so nothing has an owner');

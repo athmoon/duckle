@@ -230,8 +230,9 @@ fn report_unresolved(cat: &Catalog) {
 /// Use the saved graph, building one if there is none yet, so the first
 /// question anyone asks does not fail on a missing file.
 fn load_or_build(workspace: &PathBuf) -> Result<Catalog, String> {
-    match catalog::load(workspace)? {
-        Some(c) => Ok(c),
-        None => catalog::build_and_save(workspace),
-    }
+    // Rebuilds when the saved graph no longer describes the workspace, not only
+    // when it is missing. Answering "what breaks if I change this" from a graph
+    // built before the last three pipelines were edited is worse than taking
+    // the second to rescan.
+    catalog::load_or_rebuild(workspace)
 }

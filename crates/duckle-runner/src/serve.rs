@@ -1588,6 +1588,12 @@ fn api_catalog(state: &State) -> Value {
         },
         Err(e) => return json!({ "error": e }),
     };
+    // Reported, not repaired. This route is rated for the VIEWER role and
+    // rebuilding writes a file, so a viewer must not be able to trigger one by
+    // opening a tab. The Rescan button is Operator and does the rebuild; this
+    // just stops the view from quietly presenting an out-of-date graph as
+    // current, which is the wrong answer to "what breaks if I change this".
+    let stale = catalog::is_stale(&state.workspace, &cat);
     let owners = catalog::load_owners(&state.workspace).unwrap_or_default();
     let assets: Vec<Value> = cat
         .assets
@@ -1604,6 +1610,7 @@ fn api_catalog(state: &State) -> Value {
         .collect();
     json!({
         "assets": assets,
+        "stale": stale,
         "pipelines": cat.pipelines.len(),
         "orphans": cat.orphans().iter().map(|a| &a.id).collect::<Vec<_>>(),
         "externals": cat.externals().iter().map(|a| &a.id).collect::<Vec<_>>(),

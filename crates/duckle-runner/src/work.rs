@@ -29,52 +29,11 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use duckle_duckdb_engine::{batch, runlock, DuckdbEngine};
-
-/// One recorded attempt, appended after the fact.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct LedgerLine {
-    v: u32,
-    index: usize,
-    status: String,
-    at: String,
-    /// Which worker ran it. Free text, for reading a ledger after the fact.
-    worker: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-fn ledger_path(workspace: &Path, batch_id: &str) -> PathBuf {
-    batch::batches_dir(workspace).join(format!("{batch_id}.ledger.ndjson"))
-}
-
-/// Which items of a batch are already finished.
-///
-/// Only successes count as done. A failed attempt is left claimable so another
-/// worker, or the same one on a later pass, tries again - a batch where one
-/// transient network error permanently consumed an item would be worse than
-/// useless. The redrive of a genuinely broken item is a human decision, and
-/// the ledger keeps the failures so there is something to look at.
-fn finished(workspace: &Path, batch_id: &str) -> std::collections::HashSet<usize> {
-    let mut done = std::collections::HashSet::new();
-    let Ok(text) = std::fs::read_to_string(ledger_path(workspace, batch_id)) else {
-        return done;
-    };
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(l) = serde_json::from_str::<LedgerLine>(line) {
-            if l.v == 1 && l.status == "ok" {
-                done.insert(l.index);
-            }
-        }
-    }
-    done
-}
+use duckle_duckdb_engine::batch::{self, LedgerLine};
+use duckle_duckdb_engine::{runlock, DuckdbEngine};
 
 fn record(workspace: &Path, batch_id: &str, line: &LedgerLine) -> Result<(), String> {
-    let p = ledger_path(workspace, batch_id);
+    let p = batch::ledger_path(workspace, batch_id);
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -207,7 +166,7 @@ pub fn run() -> Result<i32, String> {
                 path.display()
             );
         }
-        let done = finished(&workspace, &batch_id);
+        let done = batch::finished(&workspace, &batch_id);
 
         for item in &items {
             if done.contains(&item.index) {
@@ -320,7 +279,7 @@ mod tests {
         record(ws, "b1", &line(1, "error")).unwrap();
         record(ws, "b1", &line(2, "ok")).unwrap();
 
-        let done = finished(ws, "b1");
+        let done = batch::finished(ws, "b1");
         assert!(done.contains(&0) && done.contains(&2));
         assert!(!done.contains(&1), "a failed item must stay claimable");
         assert_eq!(done.len(), 2);
@@ -333,13 +292,13 @@ mod tests {
         let ws = tmp.path();
         std::fs::create_dir_all(batch::batches_dir(ws)).unwrap();
         record(ws, "b1", &line(0, "ok")).unwrap();
-        let p = ledger_path(ws, "b1");
+        let p = batch::ledger_path(ws, "b1");
         let mut raw = std::fs::read_to_string(&p).unwrap();
         raw.push_str("{\"v\":1,\"index\":9,\"stat");
         std::fs::write(&p, raw).unwrap();
         record(ws, "b1", &line(1, "ok")).unwrap();
 
-        let done = finished(ws, "b1");
+        let done = batch::finished(ws, "b1");
         assert!(done.contains(&0) && done.contains(&1), "a torn line hid a finished item");
     }
 

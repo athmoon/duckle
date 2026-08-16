@@ -150,6 +150,7 @@
     <button data-tab="runs"><span class="ico">≡</span> Runs</button>
     <button data-tab="schedules"><span class="ico">◷</span> Schedules</button>
     <button data-tab="catalog"><span class="ico">◈</span> Catalog</button>
+    <button data-tab="batches"><span class="ico">▤</span> Batches</button>
     <button data-tab="audit" id="nav-audit" class="hidden"><span class="ico">⛉</span> Audit</button>
   </nav>
   <div class="side-foot">
@@ -252,6 +253,21 @@
         </table>
       </div>
       <div id="cat-empty" class="empty hidden"><div class="big">◈</div>No assets found. Are there pipelines in this workspace?</div>
+    </section>
+
+    <section id="tab-batches" class="hidden">
+      <div class="sub" style="margin-bottom:14px">
+        Work queued by a For Each set to "Queue for workers". Nothing runs until a worker picks it up:
+        <code>duckle-runner work --workspace &lt;dir&gt;</code>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <table>
+          <thead><tr><th>Batch</th><th>Progress</th><th>Running</th><th>Failed</th><th>Last activity</th><th></th></tr></thead>
+          <tbody id="batch-body"></tbody>
+        </table>
+      </div>
+      <div id="batch-empty" class="empty hidden"><div class="big">▤</div>No batches queued.</div>
+      <div id="batch-detail" style="margin-top:16px"></div>
     </section>
 
     <section id="tab-audit" class="hidden">
@@ -365,14 +381,16 @@ const TITLES={overview:['Overview','Pipelines grouped by job, with their latest 
   runs:['Runs','Every execution across all pipelines, newest first.'],
   schedules:['Schedules','Run a pipeline on an interval. The console runs schedules itself while it is open.'],
   catalog:['Catalog','What this workspace reads and writes, and who owns it.'],
+  batches:['Batches','Queued work, and how far the workers have got.'],
   audit:['Audit','Who did what through this console, and who was turned away.']};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
   const tab=b.dataset.tab;
-  for(const t of ['overview','runs','schedules','catalog','audit']) $('tab-'+t).classList.toggle('hidden', t!==tab);
+  for(const t of ['overview','runs','schedules','catalog','batches','audit']) $('tab-'+t).classList.toggle('hidden', t!==tab);
   $('page-title').textContent=TITLES[tab][0]; $('page-sub').textContent=TITLES[tab][1];
   if(tab==='runs') renderRuns(); if(tab==='schedules') renderSchedules();
   if(tab==='catalog') loadCatalog();
+  if(tab==='batches') loadBatches();
   if(tab==='audit') loadAudit();
 });
 
@@ -635,6 +653,62 @@ function renderCatalog(){
       <td>${rcell}</td>
     </tr>`;
   }).join('');
+}
+
+// ── Batches ──
+// Loaded on demand. A batch's "running" count comes from asking the run lock,
+// not from a heartbeat: a worker that died is not running, and there is no
+// lease that could have gone stale.
+async function loadBatches(){
+  const r = await api('/api/batches') || {};
+  if(r.error) toast(r.error, 'err');
+  const rows = r.batches || [];
+  $('batch-empty').classList.toggle('hidden', rows.length > 0);
+  $('batch-body').innerHTML = rows.map(b => {
+    const pct = b.items ? Math.round(b.done / b.items * 100) : 0;
+    const stalled = b.failed > 0;
+    return `<tr>
+      <td><code style="font-size:12px">${esc(b.id)}</code>${b.unreadable ? `<div class="col-k" style="color:var(--amber)">${b.unreadable} unreadable line(s)</div>` : ''}</td>
+      <td><b>${b.done}</b> / ${b.items}<div class="rate"><i style="width:${pct}%"></i></div></td>
+      <td>${b.running ? `<span class="pill p-run">${b.running}</span>` : '<span class="muted">-</span>'}</td>
+      <td>${stalled ? `<span class="pill p-err">${b.failed}</span>` : '<span class="muted">0</span>'}</td>
+      <td class="col-v">${b.lastActivity ? relTime(b.lastActivity) : '<span class="muted">not started</span>'}</td>
+      <td style="text-align:right">
+        <button class="btn" onclick="openBatch('${esc(b.id)}')">Details</button>
+        ${stalled && canOperate() ? `<button class="btn" onclick="redriveBatch('${esc(b.id)}',this)">Retry failed</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function openBatch(id){
+  const r = await api('/api/batch?id=' + encodeURIComponent(id)) || {};
+  if(r.error){ toast(r.error, 'err'); return; }
+  const recent = r.recent || [];
+  $('batch-detail').innerHTML = `<div class="card" style="padding:14px">
+    <b>${esc(id)}</b>
+    <div class="sub" style="margin:6px 0 10px">Most recent attempts first. A failed item stays claimable and is retried on a later pass.</div>
+    ${recent.length ? `<table><thead><tr><th>Item</th><th>Status</th><th>Worker</th><th>When</th><th>Error</th></tr></thead><tbody>` +
+      recent.map(l => `<tr>
+        <td>${l.index}</td>
+        <td>${l.status === 'ok' ? '<span class="pill p-ok">ok</span>' : '<span class="pill p-err">failed</span>'}</td>
+        <td class="col-v">${esc(l.worker || '')}</td>
+        <td class="col-v">${relTime(l.at)}</td>
+        <td style="color:var(--red)">${esc(l.error || '')}</td>
+      </tr>`).join('') + '</tbody></table>'
+      : '<div class="muted">Nothing has run yet.</div>'}
+  </div>`;
+}
+
+// Clears recorded FAILURES so those items are claimable again. Successes are
+// kept, so a retry never re-runs work that is already done.
+async function redriveBatch(id, btn){
+  btn.disabled = true; btn.textContent = 'Retrying...';
+  const r = await api('/api/batch/redrive', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ id }) }) || {};
+  if(r.error) toast(r.error, 'err');
+  else toast(`${r.cleared || 0} failed item(s) will be tried again`);
+  await loadBatches();
 }
 
 // ── Audit ──

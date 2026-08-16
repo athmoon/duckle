@@ -337,6 +337,8 @@ pub fn requirement(method: &str, path: &str) -> (Role, &'static str) {
         ("GET", "/api/log") => (Role::Viewer, "log.read"),
         ("GET", "/api/schedules") => (Role::Viewer, "schedules.read"),
         ("GET", "/api/catalog") => (Role::Viewer, "catalog.read"),
+        ("GET", "/api/batches") => (Role::Viewer, "batches.read"),
+        ("GET", "/api/batch") => (Role::Viewer, "batch.read"),
         ("GET", "/api/params") => (Role::Viewer, "params.read"),
         ("GET", "/api/whoami") => (Role::Viewer, "session.whoami"),
         // Reading this log names people and the things they reached for, so it
@@ -356,6 +358,10 @@ pub fn requirement(method: &str, path: &str) -> (Role, &'static str) {
         // read, so it is not an admin act; it does write a file, so it is not a
         // viewer one either.
         ("POST", "/api/catalog") => (Role::Operator, "catalog.rebuild"),
+        // Redrive clears recorded FAILURES so unfinished items are tried
+        // again. It causes work to happen, so it sits with running a
+        // pipeline rather than with reading one.
+        ("POST", "/api/batch/redrive") => (Role::Operator, "batch.redrive"),
 
         // Anything unrecognised needs the highest role. A route added later
         // without a line here is locked down rather than left open.
@@ -410,6 +416,12 @@ mod tests {
         assert_eq!(requirement("GET", "/api/catalog").0, Role::Viewer);
         assert_eq!(requirement("POST", "/api/catalog").0, Role::Operator);
         assert_eq!(requirement("POST", "/api/schedules").0, Role::Operator);
+        // Reading queued work is a read; retrying failed items causes work to
+        // happen, so it sits with running a pipeline rather than reading one.
+        assert_eq!(requirement("GET", "/api/batches").0, Role::Viewer);
+        assert_eq!(requirement("GET", "/api/batch").0, Role::Viewer);
+        assert_eq!(requirement("POST", "/api/batch/redrive").0, Role::Operator);
+        assert_eq!(requirement("POST", "/api/batch/redrive").1, "batch.redrive");
         // The important one: a route nobody thought about is admin-only, so
         // adding an endpoint cannot accidentally publish it.
         assert_eq!(requirement("POST", "/api/some-future-thing").0, Role::Admin);

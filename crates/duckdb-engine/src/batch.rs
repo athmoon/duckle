@@ -133,6 +133,157 @@ pub fn read(path: &Path) -> Result<(Vec<WorkItem>, usize), EngineError> {
     Ok((items, skipped))
 }
 
+/// One recorded attempt, appended by a worker after the fact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerLine {
+    pub v: u32,
+    pub index: usize,
+    /// "ok" or "error".
+    pub status: String,
+    pub at: String,
+    /// Which worker ran it, for reading a ledger after the fact.
+    pub worker: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub fn ledger_path(workspace: &Path, batch_id: &str) -> PathBuf {
+    batches_dir(workspace).join(format!("{batch_id}.ledger.ndjson"))
+}
+
+/// Every readable ledger line for a batch, oldest first.
+///
+/// Lives here rather than in the worker because the console reads the same
+/// file to show progress. Two readers of one format is how a format drifts.
+pub fn ledger(workspace: &Path, batch_id: &str) -> Vec<LedgerLine> {
+    let Ok(text) = std::fs::read_to_string(ledger_path(workspace, batch_id)) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<LedgerLine>(l).ok())
+        .filter(|l| l.v == 1)
+        .collect()
+}
+
+/// Which items are finished.
+///
+/// Only successes count. Treating a failure as done would let one transient
+/// network error permanently consume an item, so a failed item stays claimable
+/// and its failure stays in the ledger to look at.
+pub fn finished(workspace: &Path, batch_id: &str) -> std::collections::HashSet<usize> {
+    ledger(workspace, batch_id)
+        .into_iter()
+        .filter(|l| l.status == "ok")
+        .map(|l| l.index)
+        .collect()
+}
+
+/// A batch as an operator needs to see it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchStatus {
+    pub id: String,
+    pub items: usize,
+    pub done: usize,
+    /// Items whose most recent attempt failed and which are still to be retried.
+    pub failed: usize,
+    pub pending: usize,
+    /// Items being run right now, counted by asking the run lock rather than by
+    /// trusting a heartbeat: a worker that died is not "running", and there is
+    /// no lease to have gone stale.
+    pub running: usize,
+    /// RFC3339 of the newest ledger line, or None when nothing has run.
+    pub last_activity: Option<String>,
+    /// Lines that could not be read, so a partial view never reads as complete.
+    pub unreadable: usize,
+}
+
+/// Summarise every batch in the workspace, newest id last.
+pub fn statuses(workspace: &Path) -> Vec<BatchStatus> {
+    let dir = batches_dir(workspace);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("ndjson"))
+        .filter(|p| !p.to_string_lossy().contains(".ledger."))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+    ids.sort();
+    ids.into_iter().map(|id| status(workspace, &id)).collect()
+}
+
+/// Summarise one batch.
+pub fn status(workspace: &Path, batch_id: &str) -> BatchStatus {
+    let (items, unreadable) = read(&batch_path(workspace, batch_id)).unwrap_or_default();
+    let lines = ledger(workspace, batch_id);
+    let done: std::collections::HashSet<usize> =
+        lines.iter().filter(|l| l.status == "ok").map(|l| l.index).collect();
+    // A failure only counts while the item has not since succeeded.
+    let failed: std::collections::HashSet<usize> = lines
+        .iter()
+        .filter(|l| l.status != "ok")
+        .map(|l| l.index)
+        .filter(|i| !done.contains(i))
+        .collect();
+    let running = items
+        .iter()
+        .filter(|i| !done.contains(&i.index))
+        .filter(|i| {
+            // Asking the lock IS the liveness check: if it is held, some live
+            // process has it, and if that process died the kernel already let
+            // it go. Taking it here and dropping it immediately is safe
+            // because a worker re-checks the ledger after it claims.
+            let key = format!("{}-{}", batch_id, i.index);
+            crate::runlock::try_acquire_nested(workspace, "batch", &key).is_none()
+        })
+        .count();
+    let last_activity = lines.iter().map(|l| l.at.clone()).max();
+    BatchStatus {
+        id: batch_id.to_string(),
+        items: items.len(),
+        done: done.len(),
+        failed: failed.len(),
+        pending: items.len().saturating_sub(done.len()),
+        running,
+        last_activity,
+        unreadable,
+    }
+}
+
+/// Forget the recorded failures for a batch, so its unfinished items are tried
+/// again. Successes are kept, so a redrive never re-runs work that is done.
+///
+/// Rewrites the ledger rather than appending, because "this failure no longer
+/// counts" cannot be expressed by adding a line.
+pub fn redrive(workspace: &Path, batch_id: &str) -> Result<usize, EngineError> {
+    let _guard = crate::runlock::lock_store(workspace, &format!("ledger-{batch_id}"))
+        .map_err(EngineError::Config)?;
+    let lines = ledger(workspace, batch_id);
+    let kept: Vec<&LedgerLine> = lines.iter().filter(|l| l.status == "ok").collect();
+    let dropped = lines.len() - kept.len();
+    if dropped == 0 {
+        return Ok(0);
+    }
+    let mut out = String::new();
+    for l in kept {
+        out.push_str(&serde_json::to_string(l).map_err(|e| EngineError::Config(e.to_string()))?);
+        out.push('\n');
+    }
+    let p = ledger_path(workspace, batch_id);
+    let tmp = p.with_extension(format!("ndjson.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, out)
+        .map_err(|e| EngineError::Config(format!("redrive: {}: {e}", tmp.display())))?;
+    if let Err(e) = std::fs::rename(&tmp, &p) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(EngineError::Config(format!("redrive: {}: {e}", p.display())));
+    }
+    Ok(dropped)
+}
+
 /// What a batch will write, and whether its items can safely run at once.
 ///
 /// A queued batch is about to be spread across workers. That is only safe when

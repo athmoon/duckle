@@ -511,6 +511,14 @@ sink rather than an append) and a repeat costs time, not correctness. A failed
 item stays claimable and is retried on a later pass, with the failure kept in
 the ledger.
 
+The console has a **Batches** view: progress per batch, how many items are
+running right now, how many failed, and the recent attempts with the worker
+that ran each one. "Running" is answered by asking the run lock rather than by
+trusting a heartbeat, so a worker that died is not counted as running and there
+is no lease that could have gone stale. **Retry failed** clears the recorded
+failures so those items are claimable again, keeping the successes so a retry
+never repeats finished work.
+
 Measured on one machine: three workers against a twelve-item batch took four
 items each, with no item run twice. Several machines against one shared
 filesystem is the design intent and is **not yet measured**, so treat it as
@@ -980,12 +988,13 @@ To run and monitor pipelines on a server with a browser instead of the desktop a
 duckle-runner serve --port 8080 --workspace /path/to/workspace
 ```
 
-Open `http://localhost:8080`. The panel has five views:
+Open `http://localhost:8080`. The panel has six views:
 
 - **Overview** - every pipeline with its last status, duration and next scheduled run, and a Run button.
 - **Runs** - run history across every pipeline (status, duration, rows, errors) with expandable per-pipeline run logs and optional auto-refresh.
 - **Schedules** - an editable cron or interval schedule per pipeline, showing what is running now and what is due next.
 - **Catalog** - everything the workspace reads and writes, who owns it, and what is written but never read. See [Workspace catalog](#workspace-catalog-what-reads-and-writes-what).
+- **Batches** - work queued for workers: progress, what is running now, what failed, and a retry for the failures.
 - **Audit** - who signed in, what they changed and who was turned away. Admin only, and shown only to admins.
 
 Runs execute in-process through the same engine, are written to the same run history (`<workspace>/runs/`) and logs (`<workspace>/logs/`), and a built-in scheduler triggers any pipeline whose schedule has elapsed - so the server itself runs your schedules, no OS cron needed.

@@ -1172,6 +1172,37 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
         ("GET", "/api/runs") => respond_json(&mut stream, &api_runs(state, req.query.get("id").map(|s| s.as_str()))),
         ("GET", "/api/log") => respond_json(&mut stream, &api_log(state, &req.query)),
         ("GET", "/api/catalog") => respond_json(&mut stream, &api_catalog(state)),
+        ("GET", "/api/batches") => respond_json(
+            &mut stream,
+            &json!({ "batches": duckle_duckdb_engine::batch::statuses(&state.workspace) }),
+        ),
+        ("GET", "/api/batch") => match req.query.get("id") {
+            Some(id) => {
+                let status = duckle_duckdb_engine::batch::status(&state.workspace, id);
+                let ledger = duckle_duckdb_engine::batch::ledger(&state.workspace, id);
+                // Newest first: an operator opening a batch is looking for what
+                // just went wrong, not for how it started.
+                let mut recent: Vec<_> = ledger.into_iter().collect();
+                recent.reverse();
+                recent.truncate(200);
+                respond_json(&mut stream, &json!({ "status": status, "recent": recent }))
+            }
+            None => respond_err(&mut stream, "400 Bad Request", "missing id"),
+        },
+        ("POST", "/api/batch/redrive") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            match body.get("id").and_then(|v| v.as_str()) {
+                Some(id) => match duckle_duckdb_engine::batch::redrive(&state.workspace, id) {
+                    Ok(cleared) => respond_json(
+                        &mut stream,
+                        &json!({ "ok": true, "cleared": cleared,
+                                 "status": duckle_duckdb_engine::batch::status(&state.workspace, id) }),
+                    ),
+                    Err(e) => respond_err(&mut stream, "400 Bad Request", &e.to_string()),
+                },
+                None => respond_err(&mut stream, "400 Bad Request", "missing id"),
+            }
+        }
         ("GET", "/api/audit") => {
             let filter = audit::Filter {
                 actor: req.query.get("actor").cloned(),

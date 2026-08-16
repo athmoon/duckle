@@ -28,6 +28,32 @@ pub struct RunRecord {
     /// Coarse error bucket (see error_category) - present only on failure.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub category: Option<String>,
+    /// What this run actually read and wrote, by asset name.
+    ///
+    /// Run history already says a pipeline ran; this says which data moved,
+    /// which is what turns "the catalog knows /lake/orders.parquet exists" into
+    /// "and it was last written 20 minutes ago, by nightly-load, 4.1M rows".
+    /// Freshness is the first question anyone asks of a catalog entry and the
+    /// one a static graph cannot answer.
+    ///
+    /// Defaulted, so every run record written before this still parses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetTouch>,
+}
+
+/// One asset a run touched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetTouch {
+    /// The catalog's name for it, so this joins straight to the asset graph.
+    pub id: String,
+    /// "read" or "write", matching catalog::Direction.
+    pub direction: String,
+    /// Rows the node reported. Absent when the node reported none, which is
+    /// not the same as zero - a failed run has counts for nothing after the
+    /// point it stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u64>,
 }
 
 impl RunRecord {
@@ -49,7 +75,42 @@ impl RunRecord {
             trigger: trigger.to_string(),
             error: result.error.clone(),
             category: result.category.clone(),
+            assets: Vec::new(),
         }
+    }
+
+    /// Like [`from_result`], naming the assets the run touched.
+    ///
+    /// The names come from the saved catalog rather than from re-deriving them
+    /// here, so a run record and the asset graph always agree - two ways of
+    /// naming one table is how a catalog ends up with two entries for it. The
+    /// catalog's touches are keyed by node id, which is also how the run
+    /// reports its row counts, so the two join without either side guessing.
+    ///
+    /// A workspace with no catalog yet records no assets rather than failing:
+    /// run history must never depend on a derived file being present.
+    pub fn from_result_in(
+        workspace: &Path,
+        pipeline_id: &str,
+        result: &RunResult,
+        trigger: &str,
+    ) -> Self {
+        let mut record = Self::from_result(result, trigger);
+        let Ok(Some(catalog)) = crate::catalog::load(workspace) else {
+            return record;
+        };
+        for touch in catalog.touches.iter().filter(|t| t.pipeline_id == pipeline_id) {
+            let rows = result.nodes.get(&touch.node_id).and_then(|n| n.rows);
+            record.assets.push(AssetTouch {
+                id: touch.asset.clone(),
+                direction: match touch.direction {
+                    crate::catalog::Direction::Read => "read".into(),
+                    crate::catalog::Direction::Write => "write".into(),
+                },
+                rows,
+            });
+        }
+        record
     }
 }
 
@@ -184,6 +245,7 @@ mod tests {
             trigger: "manual".into(),
             error: (status == "error").then(|| "Binder Error: column gone".into()),
             category: (status == "error").then(|| "schema".into()),
+            assets: Vec::new(),
         }
     }
 

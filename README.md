@@ -1085,6 +1085,14 @@ would otherwise each define differently. Every one of those is optional, so an
 rather than in a file of their own because they are authored, reviewed and
 committed alongside ownership, and a second file would drift from this one.
 
+Every run records **which assets it read and wrote**, with row counts, under the
+same names the graph uses - so the catalog can answer the first question anyone
+actually asks of an entry: *is this current?* A table nobody has written for
+three weeks is the interesting one, and no amount of structure reveals that.
+Only successful runs count towards freshness: a failed run may have written
+nothing, or half of something, and showing either as the last write would make
+a broken load look like a fresh table.
+
 Assets also carry the **columns** the pipelines declare, unioned across every
 node that touches them - a pipeline reading three columns of a table another
 writes twenty to does not make the table three columns wide. They come from the

@@ -452,7 +452,8 @@ fn record_history(
     trigger: &str,
 ) {
     if let (Some(id), Some(ws)) = (pipeline_id, workspace_path) {
-        let record = RunRecord::from_result(result, trigger);
+        let record =
+            RunRecord::from_result_in(std::path::Path::new(ws), id, result, trigger);
         if let Err(e) = append_run_record(std::path::Path::new(ws), id, record) {
             tracing::warn!("Failed to record run history: {}", e);
         }

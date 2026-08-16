@@ -453,7 +453,7 @@ impl Scheduler {
         // cannot cost a run its history entry, and it never raises: see
         // duckle_duckdb_engine::alerts::notify.
         if let (Some(path), Some(pid)) = (workspace, pipeline_id) {
-            let record = RunRecord::from_result(result, "scheduled");
+            let record = RunRecord::from_result_in(&path, &pid, result, "scheduled");
             let _ = append_run_record(&path, &pid, record);
             duckle_duckdb_engine::alerts::notify(&path, &pid, result);
         }

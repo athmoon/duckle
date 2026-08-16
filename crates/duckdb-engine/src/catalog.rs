@@ -163,6 +163,72 @@ pub fn is_stale(workspace: &Path, catalog: &Catalog) -> bool {
     }
 }
 
+/// When an asset was last written, and by what.
+///
+/// The static graph says an asset exists and who touches it. This says whether
+/// it is current, which is the first thing anyone actually asks of a catalog
+/// entry - a table nobody has written for three weeks is the interesting one,
+/// and no amount of structure reveals that.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Freshness {
+    /// RFC3339 of the newest SUCCESSFUL run that wrote it.
+    pub last_written_at: String,
+    pub pipeline_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u64>,
+}
+
+/// Freshness for every asset any recorded run has written.
+///
+/// Reads run history, which is per pipeline, so this is one pass over the runs
+/// folder rather than a query per asset.
+///
+/// Only successful runs count. A failed run may have written nothing, or half
+/// of something, and reporting either as "last written" would make a broken
+/// load look like a fresh table - the exact reading a freshness column exists
+/// to prevent.
+pub fn freshness(workspace: &Path) -> BTreeMap<String, Freshness> {
+    let mut out: BTreeMap<String, Freshness> = BTreeMap::new();
+    let runs = workspace.join("runs");
+    let Ok(entries) = std::fs::read_dir(&runs) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let pipeline_id =
+            path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(records) = serde_json::from_str::<Vec<crate::history::RunRecord>>(&text) else {
+            continue;
+        };
+        for record in records.iter().filter(|r| r.status == "ok") {
+            for touch in record.assets.iter().filter(|a| a.direction == "write") {
+                let better = match out.get(&touch.id) {
+                    // History is appended in order, but two pipelines writing
+                    // one asset are two files, so compare rather than assume.
+                    Some(existing) => record.at > existing.last_written_at,
+                    None => true,
+                };
+                if better {
+                    out.insert(
+                        touch.id.clone(),
+                        Freshness {
+                            last_written_at: record.at.clone(),
+                            pipeline_id: pipeline_id.clone(),
+                            rows: touch.rows,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The saved graph if it still describes the workspace, else a fresh one.
 pub fn load_or_rebuild(workspace: &Path) -> Result<Catalog, String> {
     match load(workspace)? {
@@ -947,6 +1013,75 @@ mod tests {
         // And an sftp path, where the same shape appears in `path`.
         let sftp = asset_of("src.xml", &json!({ "path": "sftp://etl:hunter2@files.internal/in/orders.xml" })).unwrap();
         assert_eq!(sftp.id, "sftp://files.internal/in/orders.xml");
+    }
+
+    /// The catalog can say when an asset was last written, and by what.
+    ///
+    /// A static graph says an asset exists and who touches it. Freshness is the
+    /// first thing anyone actually asks of a catalog entry - a table nobody has
+    /// written for three weeks is the interesting one, and no amount of
+    /// structure reveals that.
+    #[test]
+    fn an_asset_reports_when_it_was_last_written_and_by_which_pipeline() {
+        use crate::history::{AssetTouch, RunRecord};
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::create_dir_all(ws.join("runs")).unwrap();
+
+        let record = |at: &str, status: &str, asset: &str, dir: &str, rows: Option<u64>| RunRecord {
+            at: at.into(),
+            status: status.into(),
+            duration_ms: 10,
+            rows: rows.unwrap_or(0),
+            node_count: 1,
+            trigger: "scheduled".into(),
+            error: None,
+            category: None,
+            assets: vec![AssetTouch { id: asset.into(), direction: dir.into(), rows }],
+        };
+
+        std::fs::write(
+            ws.join("runs").join("nightly-load.json"),
+            serde_json::to_string(&vec![
+                record("2026-08-01T02:00:00Z", "ok", "/lake/orders.parquet", "write", Some(1_000)),
+                record("2026-08-16T02:00:00Z", "ok", "/lake/orders.parquet", "write", Some(4_100_000)),
+                // A LATER failure must not present itself as the last write: a
+                // failed run may have written nothing, or half of something.
+                record("2026-08-16T03:00:00Z", "error", "/lake/orders.parquet", "write", None),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        // A reader of the same asset says nothing about its freshness.
+        std::fs::write(
+            ws.join("runs").join("report.json"),
+            serde_json::to_string(&vec![record(
+                "2026-08-16T09:00:00Z",
+                "ok",
+                "/lake/orders.parquet",
+                "read",
+                Some(4_100_000),
+            )])
+            .unwrap(),
+        )
+        .unwrap();
+
+        let fresh = freshness(ws);
+        let orders = fresh.get("/lake/orders.parquet").expect("no freshness for a written asset");
+        assert_eq!(orders.last_written_at, "2026-08-16T02:00:00Z", "a failed run was taken as the last write");
+        assert_eq!(orders.pipeline_id, "nightly-load");
+        assert_eq!(orders.rows, Some(4_100_000));
+        assert_eq!(fresh.len(), 1, "a read was counted as a write");
+    }
+
+    /// Run records written before assets existed still parse.
+    #[test]
+    fn an_old_run_record_without_assets_still_loads() {
+        let old = r#"[{"at":"2026-08-01T02:00:00Z","status":"ok","duration_ms":10,
+                       "rows":5,"node_count":2,"trigger":"manual"}]"#;
+        let records: Vec<crate::history::RunRecord> = serde_json::from_str(old).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].assets.is_empty());
     }
 
     /// A saved graph knows whether it still describes the workspace.

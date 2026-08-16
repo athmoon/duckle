@@ -2044,7 +2044,11 @@ fn execute_one(
     let engine = DuckdbEngine::new(state.duckdb.clone());
     let result = engine.execute_pipeline_named(&doc, &id);
 
-    let _ = append_run_record(&state.workspace, &id, RunRecord::from_result(&result, trigger));
+    let _ = append_run_record(
+        &state.workspace,
+        &id,
+        RunRecord::from_result_in(&state.workspace, &id, &result, trigger),
+    );
     // After the run is recorded, so an unreachable channel can never cost a
     // run its history entry, and never changes the outcome reported below.
     duckle_duckdb_engine::alerts::notify(&state.workspace, &id, &result);

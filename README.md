@@ -55,6 +55,8 @@ Nothing here depends on a person's machine being switched on:
 - **The console has roles and an audit log,** so more than one person can operate it and you can see who did what.
 - **Secrets are not in the pipeline file.** They resolve from the environment or an encrypted per-workspace store at run time.
 
+Working recipes for **AWS (EC2, ECS, EKS)**, **Azure (VM, Container Apps, AKS)** and **Google Cloud (Compute Engine, GKE)**, with manifests and the mistakes worth avoiding, are at **[duckle.org/deploy](https://duckle.org/deploy.html)**. Two worth knowing before you start: the console refuses to start on a non-loopback bind without a credential, and the scheduler runs in `serve`, not in the editor image's default `web` entrypoint.
+
 ### Scaling it
 
 `duckle-runner serve` is an ordinary service. Run it on EC2, EKS, a VM or a container next to everything else you operate, and scale it the way you scale any service:

@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Deploy Duckle on AWS, Azure or GCP - Duckle</title>
+<meta name="description" content="Deploy Duckle on your own cloud: EC2, ECS and EKS on AWS, VM, Container Apps and AKS on Azure, Compute Engine and GKE on Google Cloud. Working manifests, systemd units and the mistakes that cost an afternoon." />
+<meta name="keywords" content="deploy ETL, self-hosted ETL, Duckle on EKS, Duckle on AWS, ETL on Kubernetes, self-hosted data pipelines, ETL EC2, ETL AKS, ETL GKE, docker ETL, scheduled data pipelines" />
+<meta property="og:title" content="Deploy Duckle on your own cloud" />
+<meta property="og:description" content="EC2, ECS and EKS on AWS. VM, Container Apps and AKS on Azure. Compute Engine and GKE on Google Cloud. Working manifests and the three things that stop people." />
+<meta property="og:image" content="https://duckle.org/assets/img/og-card.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://duckle.org/deploy.html" />
+<meta property="og:site_name" content="Duckle" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Deploy Duckle on your own cloud" />
+<meta name="twitter:description" content="EC2, ECS and EKS on AWS. VM, Container Apps and AKS on Azure. Compute Engine and GKE on Google Cloud. Working manifests and the three things that stop people." />
+<meta name="twitter:image" content="https://duckle.org/assets/img/og-card.png" />
+<meta name="robots" content="index, follow" />
+<link rel="canonical" href="https://duckle.org/deploy.html" />
+<meta name="theme-color" content="#07090f" />
+<link rel="icon" href="assets/img/duckle-mark.v4.svg" />
+<link rel="apple-touch-icon" href="assets/img/duckle-mark.v4.svg" />
+<link rel="manifest" href="site.webmanifest" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/css/site.v16.css" />
+<style>
+  .dep-toc { display:flex; flex-wrap:wrap; gap:8px; margin:20px 0 0; }
+  .dep-toc a { font-size:.86rem; padding:6px 12px; border:1px solid var(--border); border-radius:999px; text-decoration:none; color:var(--ink-2); background:var(--bg-2); }
+  .dep-toc a:hover { color:var(--ink); border-color:var(--accent); }
+  .dep-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; margin-top:22px; }
+  .dep-card { border:1px solid var(--border); border-radius:var(--radius-sm); padding:18px 20px; background:var(--bg-2); }
+  .dep-card h4 { margin:0 0 6px; font-size:1rem; }
+  .dep-card p { margin:0; color:var(--ink-2); font-size:.92rem; line-height:1.55; }
+  .dep-step { border-left:2px solid var(--border); padding:2px 0 2px 20px; margin:26px 0; }
+  .dep-step > h4 { margin:0 0 10px; font-size:1.02rem; }
+  .warn { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:var(--radius-sm); padding:14px 18px; margin:18px 0; background:var(--bg-2); }
+  .warn b { color:var(--ink); }
+  .warn p { margin:6px 0 0; color:var(--ink-2); font-size:.93rem; line-height:1.6; }
+  .dep-table { width:100%; border-collapse:collapse; margin:16px 0; font-size:.9rem; display:block; overflow-x:auto; }
+  .dep-table th, .dep-table td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
+  .dep-table th { color:var(--ink); font-weight:600; white-space:nowrap; }
+  .dep-table td { color:var(--ink-2); }
+  .dep-table code { white-space:nowrap; }
+  .cloud-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-top:8px; }
+  .cloud-head h2 { margin:0; }
+  .cloud-head span { color:var(--ink-2); font-size:.92rem; }
+  h3.dep-h3 { margin:34px 0 6px; font-size:1.15rem; }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html"><img class="logo-light" src="assets/img/duckle-mark.v4.svg" alt="" /><img class="logo-dark" src="assets/img/duckle-mark.v4.svg" alt="" /><span class="bw"><span class="bn">Duckle</span><span class="by">by SlothFlowLabs</span></span></a>
+    <nav class="nav-links" id="navLinks">
+      <a href="index.html#product">Product</a>
+      <a href="use-cases.html">Use cases</a>
+      <a href="deploy.html">Deploy</a>
+      <a href="index.html#integrations">Integrations</a>
+      <a href="docs/index.html">Docs</a>
+      <a href="learn.html">Learn</a>
+    </nav>
+    <div class="nav-right">
+      <button class="icon-btn theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">
+        <svg class="moon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
+      <a class="btn btn-outline hide-sm" href="index.html#download">Download</a>
+      <a class="btn btn-primary btn-pill hide-sm js-contact" href="#contact">Contact Us</a>
+      <button class="icon-btn nav-toggle" id="navToggle" aria-label="Open menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+    </div>
+  </div>
+</header>
+
+<section class="section">
+  <div class="wrap">
+    <div class="eyebrow">Deployment</div>
+    <h1>Run Duckle on your own cloud</h1>
+    <p class="lead">You author on a laptop and ship the same workspace to a server. Duckle is one binary and a directory, so deployment is ordinary: a systemd unit on a VM, a container on ECS or Container Apps, or a StatefulSet on Kubernetes. Below are the working shapes for AWS, Azure and Google Cloud, plus the three things that stop people on their first attempt.</p>
+
+    <div class="dep-toc">
+      <a href="#modes">Two server modes</a>
+      <a href="#stoppers">Three stoppers</a>
+      <a href="#reference">Reference</a>
+      <a href="#aws">AWS</a>
+      <a href="#azure">Azure</a>
+      <a href="#gcp">Google Cloud</a>
+      <a href="#scaling">Scaling</a>
+      <a href="#hardening">Hardening</a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="modes">
+  <div class="wrap">
+    <h2>Two server modes, and only one of them schedules</h2>
+    <p class="muted">This is the single most common surprise, so it goes first.</p>
+
+    <table class="dep-table">
+      <tr><th>Command</th><th>What it is</th><th>Scheduler</th></tr>
+      <tr>
+        <td><code>duckle-runner serve</code></td>
+        <td>The management console. Pipelines, runs, schedules, catalog, batches, audit log. This is what you deploy to operate Duckle.</td>
+        <td><b>Yes.</b> Cron fires in-process on a 15s tick.</td>
+      </tr>
+      <tr>
+        <td><code>duckle-runner web</code></td>
+        <td>The full editor in a browser: the same canvas as the desktop app, for authoring on a remote box.</td>
+        <td><b>No.</b> Nothing fires on a timer.</td>
+      </tr>
+      <tr>
+        <td><code>duckle-runner work</code></td>
+        <td>A worker that drains queued batch items. Run as many as you like, on as many hosts as you like.</td>
+        <td>N/A. Pulls work, does not schedule it.</td>
+      </tr>
+    </table>
+
+    <div class="warn">
+      <b>The published image defaults to <code>web</code>, not <code>serve</code>.</b>
+      <p><code>ghcr.io/slothflowlabs/duckle-web</code> has an entrypoint of <code>duckle-runner web</code>. Run it unchanged and you get the editor with no scheduler, and every cron you configure will sit there and never fire. If you want scheduled pipelines, override the command to <code>serve</code>. Every example on this page does.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="stoppers">
+  <div class="wrap">
+    <h2>Three things that will stop you</h2>
+
+    <div class="dep-grid">
+      <div class="dep-card">
+        <h4>1. It refuses to start without a credential</h4>
+        <p>On <code>127.0.0.1</code> the console is open, because reaching it means already being on the machine. Bind to any other address and it <b>will not start</b> until you pass <code>--token</code>, set <code>DUCKLE_CONSOLE_TOKEN</code>, or create accounts. That is deliberate: a bind that cannot be authenticated should fail rather than serve and warn.</p>
+      </div>
+      <div class="dep-card">
+        <h4>2. There is no TLS</h4>
+        <p>Duckle speaks plain HTTP on port 8080. Terminate TLS in front of it: an ALB, Application Gateway, a Google load balancer, or an ingress controller. Never expose 8080 to the internet directly.</p>
+      </div>
+      <div class="dep-card">
+        <h4>3. The workspace must be persistent</h4>
+        <p>Everything lives in the workspace directory: pipelines, <code>runs/</code>, <code>logs/</code>, <code>state/</code> watermarks, <code>batches/</code>, and the encryption keys under <code>.duckle/keys/</code>. Lose it and you lose incremental state and every saved secret. It is a volume, not scratch space.</p>
+      </div>
+    </div>
+
+    <div class="warn">
+      <b>There is no health endpoint.</b>
+      <p>Every route requires authentication, so an HTTP probe with no credential gets a 401 and Kubernetes marks the pod unhealthy. Use a <code>tcpSocket</code> probe on 8080 instead. The manifests below already do.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="reference">
+  <div class="wrap">
+    <h2>Reference</h2>
+
+    <h3 class="dep-h3">Image and ports</h3>
+    <pre><code>ghcr.io/slothflowlabs/duckle-web:latest    # runner + DuckDB CLI + editor bundle
+port 8080                                 # plain HTTP, no TLS
+volume /workspace                         # pipelines, state, logs, keys</code></pre>
+
+    <h3 class="dep-h3">Environment</h3>
+    <table class="dep-table">
+      <tr><th>Variable</th><th>Meaning</th></tr>
+      <tr><td><code>DUCKLE_CONSOLE_TOKEN</code></td><td>Shared sign-in token. Required for any non-loopback bind unless you have created accounts.</td></tr>
+      <tr><td><code>DUCKLE_THREADS</code></td><td>Caps engine parallelism. Unset means every core on the box, which is usually what you want.</td></tr>
+      <tr><td><code>DUCKLE_MAX_CONCURRENT_RUNS</code></td><td>How many pipelines run at once. Defaults to 1, so an unattended server stays predictable.</td></tr>
+      <tr><td><code>DUCKLE_TICK_INTERVAL</code></td><td>Scheduler poll cadence in seconds. Default 15.</td></tr>
+      <tr><td><code>DUCKLE_TEMP_DIR</code></td><td>Spill directory for queries larger than memory. Point it at fast local disk.</td></tr>
+      <tr><td><code>DUCKLE_DUCKDB_BIN</code></td><td>DuckDB CLI path. Already set inside the image.</td></tr>
+    </table>
+
+    <h3 class="dep-h3">Accounts and roles</h3>
+    <p class="muted">A shared token is fine to get running. For more than one person, give them their own, and the audit log will name them.</p>
+    <pre><code>duckle-runner console add-user alice --role admin    --workspace /workspace
+duckle-runner console add-user bob   --role operator --workspace /workspace
+duckle-runner console add-user carol --role viewer   --workspace /workspace</code></pre>
+    <p class="muted"><b>viewer</b> reads. <b>operator</b> runs pipelines and changes when they run. <b>admin</b> touches credentials and the workspace itself. Tokens are printed once and stored only as an Argon2 hash.</p>
+  </div>
+</section>
+
+<section class="section" id="aws">
+  <div class="wrap">
+    <div class="cloud-head"><h2>AWS</h2><span>EC2 for one box, ECS for a managed container, EKS when you already run Kubernetes</span></div>
+
+    <h3 class="dep-h3">EC2, the straightforward one</h3>
+    <p class="muted">A compute-optimised instance with local NVMe is the sweet spot: the engine is parallel, so cores turn directly into throughput, and spill wants fast disk. <code>c7i.4xlarge</code> or <code>m7i.2xlarge</code> is a sensible start; go wider before you go clever.</p>
+
+    <div class="dep-step">
+      <h4>User data</h4>
+      <pre><code>#!/bin/bash
+set -euo pipefail
+
+dnf install -y docker &amp;&amp; systemctl enable --now docker
+mkdir -p /srv/duckle
+
+# Token from Secrets Manager, never baked into the instance or the image.
+TOKEN=$(aws secretsmanager get-secret-value \
+  --secret-id duckle/console-token --query SecretString --output text)
+
+cat &gt;/etc/systemd/system/duckle.service &lt;&lt;UNIT
+[Unit]
+Description=Duckle console
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+Environment=DUCKLE_CONSOLE_TOKEN=${TOKEN}
+Environment=DUCKLE_MAX_CONCURRENT_RUNS=4
+ExecStartPre=-/usr/bin/docker rm -f duckle
+ExecStart=/usr/bin/docker run --rm --name duckle \\
+  -p 127.0.0.1:8080:8080 \\
+  -v /srv/duckle:/workspace \\
+  -e DUCKLE_CONSOLE_TOKEN \\
+  -e DUCKLE_MAX_CONCURRENT_RUNS \\
+  --entrypoint duckle-runner \\
+  ghcr.io/slothflowlabs/duckle-web:latest \\
+  serve --host 0.0.0.0 --port 8080 --workspace /workspace
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload &amp;&amp; systemctl enable --now duckle</code></pre>
+      <p class="muted">Note <code>-p 127.0.0.1:8080:8080</code>: the container is reachable from the instance only. Put an ALB in front with an ACM certificate and a target group on 8080, and keep the security group closed to everything else.</p>
+    </div>
+
+    <div class="dep-step">
+      <h4>Storage</h4>
+      <p class="muted">Put <code>/srv/duckle</code> on a dedicated gp3 EBS volume so the workspace survives instance replacement, and snapshot it. If you attach EFS instead, read the note on network filesystems under <a href="#scaling">Scaling</a> first.</p>
+    </div>
+
+    <h3 class="dep-h3">ECS on Fargate</h3>
+    <p class="muted">Managed containers with no instance to patch. Fargate has no local disk worth using, so the workspace goes on EFS.</p>
+    <pre><code>{
+  "family": "duckle",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "4096", "memory": "16384",
+  "volumes": [{
+    "name": "workspace",
+    "efsVolumeConfiguration": { "fileSystemId": "fs-0abc123", "transitEncryption": "ENABLED" }
+  }],
+  "containerDefinitions": [{
+    "name": "duckle",
+    "image": "ghcr.io/slothflowlabs/duckle-web:latest",
+    "entryPoint": ["duckle-runner"],
+    "command": ["serve", "--host", "0.0.0.0", "--port", "8080", "--workspace", "/workspace"],
+    "portMappings": [{ "containerPort": 8080 }],
+    "mountPoints": [{ "sourceVolume": "workspace", "containerPath": "/workspace" }],
+    "secrets": [{
+      "name": "DUCKLE_CONSOLE_TOKEN",
+      "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:duckle/console-token"
+    }]
+  }]
+}</code></pre>
+    <p class="muted">Keep the service at <b>desired count 1</b>. See <a href="#scaling">Scaling</a> for why, and for how to add capacity instead.</p>
+
+    <h3 class="dep-h3">EKS</h3>
+    <p class="muted">A StatefulSet rather than a Deployment, because the workspace is state and the identity is stable.</p>
+    <pre><code>apiVersion: v1
+kind: Secret
+metadata: { name: duckle-console, namespace: data }
+stringData:
+  token: "REPLACE_ME"        # or use External Secrets / IRSA + Secrets Manager
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: duckle, namespace: data }
+spec:
+  serviceName: duckle
+  replicas: 1                # one scheduler. See Scaling.
+  selector: { matchLabels: { app: duckle } }
+  template:
+    metadata: { labels: { app: duckle } }
+    spec:
+      containers:
+        - name: duckle
+          image: ghcr.io/slothflowlabs/duckle-web:latest
+          command: ["duckle-runner"]
+          args: ["serve", "--host", "0.0.0.0", "--port", "8080", "--workspace", "/workspace"]
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: DUCKLE_CONSOLE_TOKEN
+              valueFrom: { secretKeyRef: { name: duckle-console, key: token } }
+            - name: DUCKLE_MAX_CONCURRENT_RUNS
+              value: "4"
+            - name: DUCKLE_TEMP_DIR
+              value: /spill
+          resources:
+            requests: { cpu: "4", memory: 16Gi }
+            limits:   { cpu: "8", memory: 32Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: spill,     mountPath: /spill }
+          # No unauthenticated health route exists, so probe the socket.
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 20
+      volumes:
+        - name: spill
+          emptyDir: { sizeLimit: 100Gi }
+  volumeClaimTemplates:
+    - metadata: { name: workspace }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources: { requests: { storage: 100Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: duckle, namespace: data }
+spec:
+  selector: { app: duckle }
+  ports: [{ port: 80, targetPort: 8080 }]</code></pre>
+    <p class="muted">Front it with an ingress that terminates TLS. <code>DUCKLE_TEMP_DIR</code> pointed at an <code>emptyDir</code> keeps spill off the persistent volume, where it would otherwise compete with your data for space.</p>
+  </div>
+</section>
+
+<section class="section" id="azure">
+  <div class="wrap">
+    <div class="cloud-head"><h2>Azure</h2><span>A VM, Container Apps for managed, AKS when you already run Kubernetes</span></div>
+
+    <h3 class="dep-h3">Virtual Machine</h3>
+    <p class="muted">Same shape as EC2. <code>Standard_D8s_v5</code> or an <code>F</code>-series if the work is compute-heavy. Attach a Premium SSD for the workspace and use the ephemeral temp disk for spill.</p>
+    <pre><code># Token from Key Vault, using the VM's managed identity.
+TOKEN=$(az keyvault secret show --vault-name my-vault \
+  --name duckle-console-token --query value -o tsv)
+
+docker run -d --restart=always --name duckle \
+  -p 127.0.0.1:8080:8080 \
+  -v /srv/duckle:/workspace \
+  -v /mnt/spill:/spill \
+  -e DUCKLE_CONSOLE_TOKEN="$TOKEN" \
+  -e DUCKLE_TEMP_DIR=/spill \
+  --entrypoint duckle-runner \
+  ghcr.io/slothflowlabs/duckle-web:latest \
+  serve --host 0.0.0.0 --port 8080 --workspace /workspace</code></pre>
+    <p class="muted">Publish it through Application Gateway or an Azure Front Door origin for TLS.</p>
+
+    <h3 class="dep-h3">Container Apps</h3>
+    <div class="warn">
+      <b>Set minimum replicas to 1.</b>
+      <p>Container Apps scales to zero by default. The scheduler runs inside the process, so a scaled-to-zero app fires nothing and wakes only on an HTTP request. Pin <code>minReplicas: 1</code> and <code>maxReplicas: 1</code>, or your crons quietly stop.</p>
+    </div>
+    <pre><code>az containerapp create \
+  --name duckle --resource-group data --environment data-env \
+  --image ghcr.io/slothflowlabs/duckle-web:latest \
+  --min-replicas 1 --max-replicas 1 \
+  --cpu 4 --memory 16Gi \
+  --target-port 8080 --ingress external \
+  --secrets console-token=keyvaultref:https://my-vault.vault.azure.net/secrets/duckle-console-token,identityref:system \
+  --env-vars DUCKLE_CONSOLE_TOKEN=secretref:console-token DUCKLE_MAX_CONCURRENT_RUNS=4 \
+  --command duckle-runner \
+  --args serve --host 0.0.0.0 --port 8080 --workspace /workspace
+
+# Mount an Azure Files share at /workspace so state survives a revision.
+az containerapp update --name duckle --resource-group data \
+  --yaml volume-mount.yaml</code></pre>
+
+    <h3 class="dep-h3">AKS</h3>
+    <p class="muted">The EKS manifest above works unchanged. Swap the storage class:</p>
+    <pre><code>storageClassName: managed-csi-premium     # instead of gp3</code></pre>
+    <p class="muted">Use Workload Identity with the Secrets Store CSI driver to bring <code>DUCKLE_CONSOLE_TOKEN</code> in from Key Vault rather than a Kubernetes Secret.</p>
+  </div>
+</section>
+
+<section class="section" id="gcp">
+  <div class="wrap">
+    <div class="cloud-head"><h2>Google Cloud</h2><span>Compute Engine, GKE, and a warning about Cloud Run</span></div>
+
+    <h3 class="dep-h3">Compute Engine</h3>
+    <p class="muted"><code>c3-standard-8</code> upward, with a Local SSD for spill. A container-optimised image keeps the host minimal.</p>
+    <pre><code>gcloud compute instances create-with-container duckle \
+  --machine-type=c3-standard-8 \
+  --container-image=ghcr.io/slothflowlabs/duckle-web:latest \
+  --container-command=duckle-runner \
+  --container-arg=serve --container-arg=--host --container-arg=0.0.0.0 \
+  --container-arg=--port --container-arg=8080 \
+  --container-arg=--workspace --container-arg=/workspace \
+  --container-mount-disk=mount-path=/workspace,name=duckle-ws \
+  --container-env=DUCKLE_MAX_CONCURRENT_RUNS=4 \
+  --disk=name=duckle-ws,auto-delete=no \
+  --no-address</code></pre>
+    <p class="muted">Read the token from Secret Manager on boot rather than passing it on the command line, where it would land in instance metadata.</p>
+
+    <h3 class="dep-h3">Cloud Run</h3>
+    <div class="warn">
+      <b>Cloud Run is the wrong home for the scheduler.</b>
+      <p>Instances are reclaimed when idle and CPU is throttled outside a request, so an in-process cron will not fire reliably no matter what minimum instance count you set. If you want serverless on Google Cloud, invert it: keep pipelines in a bucket or repo, and have <b>Cloud Scheduler</b> trigger a <b>Cloud Run Job</b> that runs <code>duckle-runner --pipeline p.json</code> once and exits. Cloud Run Jobs are built for exactly that, and Duckle exits with a real status code and NDJSON logs. Use Compute Engine or GKE when you want the console and its scheduler.</p>
+    </div>
+
+    <h3 class="dep-h3">GKE</h3>
+    <p class="muted">The EKS manifest works as-is. Swap the storage class:</p>
+    <pre><code>storageClassName: premium-rwo             # instead of gp3</code></pre>
+    <p class="muted">Bind the pod's service account to a Google service account with Workload Identity so the pipelines themselves can reach BigQuery or GCS without a key file.</p>
+  </div>
+</section>
+
+<section class="section" id="scaling">
+  <div class="wrap">
+    <h2>Scaling</h2>
+    <p class="muted">Duckle scales up before it scales out, and that goes a long way: the engine is parallel and uses every core you give it, so a larger instance is a faster pipeline with no change to the pipeline.</p>
+
+    <div class="warn">
+      <b>Run one console replica, not three.</b>
+      <p>The scheduler lives in the <code>serve</code> process and claims each due schedule so nothing else takes it. That claim relies on the filesystem behaving, which local disk does and some network filesystems do not. Two replicas over an NFS mount without working lock support means both believe they won the claim and every schedule runs twice. Keep <code>replicas: 1</code> and add capacity the way below.</p>
+    </div>
+
+    <h3 class="dep-h3">Adding capacity properly</h3>
+    <table class="dep-table">
+      <tr><th>You want</th><th>Do this</th></tr>
+      <tr><td>A single pipeline to finish faster</td><td>A bigger instance. The engine takes all cores by default.</td></tr>
+      <tr><td>More pipelines at the same time</td><td>Raise <code>DUCKLE_MAX_CONCURRENT_RUNS</code> on the console.</td></tr>
+      <tr><td>A wide fan-out spread over machines</td><td>Queue the batch, then run <code>duckle-runner work</code> on as many hosts as you like. Each worker claims items under a lock, so nothing runs twice.</td></tr>
+      <tr><td>To process more than one machine can hold</td><td>Turn on pushdown. The query runs verbatim inside the source database and Duckle keeps the scheduling, lineage, data quality and alerting.</td></tr>
+    </table>
+
+    <p class="muted">Workers as a Kubernetes Deployment, which <i>can</i> scale freely because they pull work rather than schedule it:</p>
+    <pre><code>apiVersion: apps/v1
+kind: Deployment
+metadata: { name: duckle-workers, namespace: data }
+spec:
+  replicas: 6                # scale this freely
+  selector: { matchLabels: { app: duckle-worker } }
+  template:
+    metadata: { labels: { app: duckle-worker } }
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/slothflowlabs/duckle-web:latest
+          command: ["duckle-runner"]
+          args: ["work", "--workspace", "/workspace"]
+          volumeMounts: [{ name: workspace, mountPath: /workspace }]
+      volumes:
+        - name: workspace
+          persistentVolumeClaim: { claimName: duckle-shared }</code></pre>
+
+    <div class="warn">
+      <b>If workers share a network filesystem, prove the locks work first.</b>
+      <p>Workers coordinate with OS advisory locks. On a filesystem that silently ignores them, every worker takes every item and the whole batch runs as many times as you have workers. <code>duckle-runner work</code> refuses to start when it detects this, and you can check deliberately with <code>--check</code>. Do that once per cluster before trusting a fan-out.</p>
+    </div>
+
+    <p class="muted">The one thing Duckle does not do is split a single query across a cluster. When a job needs that, push it down into the system that has it.</p>
+  </div>
+</section>
+
+<section class="section" id="hardening">
+  <div class="wrap">
+    <h2>Before you call it production</h2>
+    <div class="dep-grid">
+      <div class="dep-card">
+        <h4>Give people their own accounts</h4>
+        <p>A shared token is fine on day one, but the audit log can only name a person if the person has an account. <code>console add-user</code> with <code>viewer</code>, <code>operator</code> or <code>admin</code>.</p>
+      </div>
+      <div class="dep-card">
+        <h4>Terminate TLS in front</h4>
+        <p>ALB, Application Gateway, a Google load balancer or an ingress controller. Port 8080 is plain HTTP and should never face the internet.</p>
+      </div>
+      <div class="dep-card">
+        <h4>Back up the workspace</h4>
+        <p>Snapshot the volume. It carries incremental watermarks and the encryption keys under <code>.duckle/keys/</code>: losing those means full reloads and re-entered secrets.</p>
+      </div>
+      <div class="dep-card">
+        <h4>Keep secrets out of the image</h4>
+        <p>Secrets Manager, Key Vault or Secret Manager, injected at run time. Never bake a token into a layer and never commit <code>.duckle/keys/</code>.</p>
+      </div>
+      <div class="dep-card">
+        <h4>Put the workspace in git</h4>
+        <p>Pipelines are plain files. Review them in a pull request and roll them back like code, so a pipeline outlives whoever wrote it.</p>
+      </div>
+      <div class="dep-card">
+        <h4>Point spill at fast local disk</h4>
+        <p><code>DUCKLE_TEMP_DIR</code> on NVMe or an <code>emptyDir</code>, not on the persistent volume where it competes with your data for space.</p>
+      </div>
+    </div>
+
+    <p class="muted" style="margin-top:26px;">Something here not match what you hit? <a href="https://github.com/slothflowlabs/duckle/issues">Open an issue</a> or ask in <a href="https://discord.com/invite/rUeAStJbWb">Discord</a>. Deployment notes age faster than code, and we would rather hear about it.</p>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="legal">
+      <span>&copy; 2026 Duckle by SlothFlowLabs. MIT OR Apache-2.0.</span>
+      <span><a href="index.html">Home</a> &middot; <a href="https://github.com/slothflowlabs/duckle" target="_blank" rel="noopener">GitHub</a> &middot; Built on DuckDB &middot; Not affiliated with DuckDB Labs
+    </div>
+  </div>
+</footer>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

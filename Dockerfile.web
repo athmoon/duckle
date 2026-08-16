@@ -1,11 +1,24 @@
 # Duckle Web Editor (#75 phase 2) - the full Duckle studio as a self-hosted web
-# app. Single-tenant, no auth: bind behind a reverse proxy or on a trusted
-# network. Local-first: your data + pipelines stay in the mounted workspace; the
+# app. Local-first: your data + pipelines stay in the mounted workspace; the
 # engine runs in the container, nothing is sent to any Duckle-hosted service.
 #
+# The entrypoint binds 0.0.0.0, which REFUSES TO START without a credential, so
+# a token is not optional here. Serve plain HTTP behind a reverse proxy for TLS.
+#
 #   docker build -f Dockerfile.web -t duckle-web .
-#   docker run -p 8080:8080 -v /path/to/workspace:/workspace duckle-web
+#   docker run -p 8080:8080 -v /path/to/workspace:/workspace \
+#     -e DUCKLE_CONSOLE_TOKEN=<secret> duckle-web
 #   open http://localhost:8080
+#
+# This is the EDITOR, and the editor does not schedule anything: the scheduler
+# lives in `duckle-runner serve`. For a deployment that runs pipelines on a cron,
+# override the entrypoint:
+#
+#   docker run -p 8080:8080 -v /path/to/workspace:/workspace \
+#     -e DUCKLE_CONSOLE_TOKEN=<secret> --entrypoint duckle-runner duckle-web \
+#     serve --host 0.0.0.0 --port 8080 --workspace /workspace
+#
+# See website/deploy.html for AWS, Azure and Google Cloud recipes.
 
 # 1) Build the browser edition of the frontend (DUCKLE_WEB aliases invoke() to
 #    the HTTP command bridge and outputs to dist-web).

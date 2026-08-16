@@ -61,6 +61,20 @@ Working recipes for **AWS (EC2, ECS, EKS)**, **Azure (VM, Container Apps, AKS)**
 - The **scheduler runs in `serve`**, not in the editor. Start the editor with schedules armed and it now says so rather than leaving you to wonder why nothing fired.
 - **`GET /healthz`** needs no credential and answers `ok`, so a Kubernetes probe or a load balancer can check liveness without holding a token. Every other route is authenticated, so pointing a probe anywhere else reports the pod unhealthy forever.
 
+### Deploying a pipeline to a running server
+
+`POST /api/deploy` lands a pipeline on a server from wherever it was authored, with the schedule it should eventually run on:
+
+```bash
+curl -X POST https://duckle.internal/api/deploy \
+  -H "Authorization: Bearer $DUCKLE_TOKEN" \
+  -d '{"name":"orders-load",
+       "pipeline": '"$(cat orders-load.json)"',
+       "schedule":{"intervalMinutes":30}}'
+```
+
+Two things are deliberate. **The schedule arrives disabled**, so a cadence someone set while testing on a laptop cannot start firing the moment it reaches production; enabling it is a separate call. And **deploying needs `admin` while enabling needs `operator`**, because a deployed pipeline runs shell and SQL on that host: shipping the code and starting it are two acts, and the audit log records both with the name of whoever did them.
+
 ### Scaling it
 
 `duckle-runner serve` is an ordinary service. Run it on EC2, EKS, a VM or a container next to everything else you operate, and scale it the way you scale any service:

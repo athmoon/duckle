@@ -1327,6 +1327,13 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
                 Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
             }
         }
+        ("POST", "/api/deploy") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            match deploy_into(&state.workspace, &body) {
+                Ok(v) => respond_json(&mut stream, &v),
+                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+            }
+        }
         ("GET", "/api/params") => match req.query.get("file") {
             Some(f) => match discover_pipeline_params(state, f) {
                 Ok(names) => respond_json(&mut stream, &json!({ "params": names })),
@@ -1617,6 +1624,82 @@ fn read_pipeline_file(state: &State, file: &str) -> Result<Value, String> {
         return Err(format!("{file} is not a pipeline"));
     }
     Ok(doc)
+}
+
+/// Where a deployed pipeline is allowed to land.
+///
+/// [`resolve_in_workspace`] cannot be used here: it canonicalises, which needs the file to
+/// exist, and the whole point of a deploy is that it may not. So the check is lexical, and
+/// it is strict on purpose. This takes a name off the network and turns it into a path
+/// that gets written, which is the shape of every directory-traversal bug ever filed.
+fn deploy_target(workspace: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a deployment needs a name".into());
+    }
+    // A drive letter or a leading separator is an absolute path in disguise.
+    if name.starts_with('/') || name.starts_with('\\') || name.chars().nth(1) == Some(':') {
+        return Err(format!("{name} is not a name inside the workspace"));
+    }
+    let mut path = workspace.to_path_buf();
+    for part in name.split(['/', '\\']) {
+        if part.is_empty() || part == "." || part == ".." {
+            return Err(format!("{name} is not a name inside the workspace"));
+        }
+        path.push(part);
+    }
+    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        path.set_extension("json");
+    }
+    Ok(path)
+}
+
+/// Land a pipeline an author sent, and the schedule it should eventually run on.
+///
+/// Split out from the handler so a test drives the same code the route runs.
+fn deploy_into(workspace: &Path, body: &Value) -> Result<Value, String> {
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or("a deployment needs a name")?
+        .trim()
+        .to_string();
+    let pipeline = body.get("pipeline").ok_or("a deployment needs a pipeline")?;
+    // The same rule the reader uses, for the same reason: the workspace also holds account
+    // hashes and connection payloads, and a deploy writes a file into it. A pipeline is the
+    // thing with a `nodes` array; anything else is refused whatever it is called.
+    if pipeline.get("nodes").and_then(Value::as_array).is_none() {
+        return Err(format!("{name} is not a pipeline"));
+    }
+
+    let target = deploy_target(workspace, &name)?;
+    let replaced = target.exists();
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(pipeline).map_err(|e| e.to_string())?;
+    // Through a temporary file in the same directory, then rename over: a scheduler tick
+    // landing mid-write must never read half a pipeline.
+    let tmp = target.with_extension("json.deploying");
+    std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &target).map_err(|e| format!("install {}: {e}", target.display()))?;
+
+    // A schedule travels with the pipeline but arrives switched off. A cadence set while
+    // testing on a laptop must not start firing the moment it reaches production; turning
+    // it on is a separate act, and a deliberate one, needing only the operator role while
+    // deploying the code needs admin.
+    let scheduled = match body.get("schedule") {
+        Some(sched) if !sched.is_null() => {
+            let mut s = sched.clone();
+            s["id"] = json!(name);
+            s["enabled"] = json!(false);
+            save_schedule_at(workspace, &s)?;
+            json!({ "saved": true, "enabled": false })
+        }
+        _ => Value::Null,
+    };
+
+    Ok(json!({ "deployed": name, "replaced": replaced, "schedule": scheduled }))
 }
 
 /// Resolve a workspace-relative path and refuse anything that escapes the
@@ -2267,13 +2350,112 @@ fn spawn_scheduler(state: Arc<State>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        connection_secret_cmd, console_auth, cookie_attributes, cron_decision, is_public_route,
-        scheduler_notice,
+        connection_secret_cmd, console_auth, cookie_attributes, cron_decision, deploy_into,
+        deploy_target, is_public_route, scheduler_notice,
         migrate_legacy_schedules, normalize_cron, read_pipeline_file, read_request,
         save_schedule_at, RunGate, State, HEALTH_PATH, MAX_BODY,
     };
     use std::sync::Mutex;
     use duckle_duckdb_engine::schedules::{self, ScheduleKind};
+
+    fn pipeline() -> serde_json::Value {
+        serde_json::json!({ "name": "Orders", "nodes": [], "edges": [] })
+    }
+
+    /// The point of the whole feature: a pipeline authored somewhere else arrives and is
+    /// there afterwards.
+    #[test]
+    fn a_deployed_pipeline_lands_in_the_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+
+        let out = deploy_into(ws, &serde_json::json!({
+            "name": "orders-load",
+            "pipeline": pipeline(),
+        }))
+        .expect("deploys");
+
+        assert_eq!(out["replaced"], false, "nothing was there before");
+        let landed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ws.join("orders-load.json")).expect("written"),
+        )
+        .unwrap();
+        assert_eq!(landed["name"], "Orders");
+    }
+
+    /// Sourav's call: a schedule travels with the pipeline but arrives switched off, so a
+    /// cadence someone set while testing on a laptop cannot start firing in production the
+    /// moment it lands. Turning it on is a separate, deliberate act.
+    #[test]
+    fn a_deployed_schedule_arrives_disabled_even_when_it_was_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+
+        deploy_into(ws, &serde_json::json!({
+            "name": "orders-load",
+            "pipeline": pipeline(),
+            "schedule": { "enabled": true, "intervalMinutes": 30 },
+        }))
+        .expect("deploys");
+
+        let saved = schedules::load(ws).expect("store readable");
+        assert_eq!(saved.len(), 1, "the schedule should travel");
+        assert!(!saved[0].enabled, "it must arrive switched off");
+    }
+
+    /// Deploying again is an update, and saying so is the difference between a deploy and
+    /// an accident.
+    #[test]
+    fn deploying_over_an_existing_pipeline_says_it_replaced_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let body = serde_json::json!({ "name": "orders-load", "pipeline": pipeline() });
+
+        deploy_into(ws, &body).expect("first");
+        let second = deploy_into(ws, &body).expect("second");
+        assert_eq!(second["replaced"], true);
+    }
+
+    /// This route takes a name off the network and writes a file at it, which is the shape
+    /// of every directory traversal bug ever filed.
+    #[test]
+    fn a_deployment_cannot_be_written_outside_the_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        for name in [
+            "../escaped",
+            "../../etc/cron",
+            "nested/../../out",
+            "/abs/path",
+            r"\abs\path",
+            r"C:\Windows\evil",
+            "",
+            "   ",
+        ] {
+            assert!(
+                deploy_target(ws, name).is_err(),
+                "{name:?} was accepted as a deployment target"
+            );
+        }
+        // A plain name and a nested one are both fine.
+        assert!(deploy_target(ws, "orders").is_ok());
+        assert!(deploy_target(ws, "team/orders.json").is_ok());
+    }
+
+    /// A deploy writes into the workspace, which also holds account hashes and connection
+    /// payloads. Only something that is actually a pipeline may be written.
+    #[test]
+    fn a_body_that_is_not_a_pipeline_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let err = deploy_into(ws, &serde_json::json!({
+            "name": "console-users",
+            "pipeline": { "label": "not a pipeline" },
+        }))
+        .expect_err("must refuse");
+        assert!(err.contains("not a pipeline"), "unhelpful refusal: {err}");
+        assert!(!ws.join("console-users.json").exists(), "it was written anyway");
+    }
 
     /// Behind a proxy that terminates TLS the browser is on https, and a session cookie
     /// that is not marked Secure can be sent in clear to anything that reaches the console

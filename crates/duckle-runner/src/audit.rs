@@ -363,6 +363,15 @@ pub fn requirement(method: &str, path: &str) -> (Role, &'static str) {
         // pipeline rather than with reading one.
         ("POST", "/api/batch/redrive") => (Role::Operator, "batch.redrive"),
 
+        // Landing a pipeline is not the same as running one that is already
+        // there. A deployed pipeline runs shell and SQL on this host, so
+        // deploying is handing someone code execution, which is the
+        // workspace-touching category rather than the operating one. The
+        // schedule it brings arrives disabled, and switching that on is
+        // `schedule.write` above, so shipping the code and starting it are
+        // deliberately two acts needing two different roles.
+        ("POST", "/api/deploy") => (Role::Admin, "pipeline.deploy"),
+
         // Anything unrecognised needs the highest role. A route added later
         // without a line here is locked down rather than left open.
         _ => (Role::Admin, "unknown"),

@@ -1054,6 +1054,7 @@ Every other lineage view in Duckle answers about **one** pipeline. The catalog a
 
 ```bash
 duckle-runner catalog lint                                        # CI gate, exits 1 on findings
+duckle-runner catalog diff main                                   # what this branch does to the graph
 duckle-runner catalog build                                       # scan every pipeline
 duckle-runner catalog assets                                      # every table, file, topic and endpoint
 duckle-runner catalog impact postgres://db:5432/sales.public.orders
@@ -1119,6 +1120,15 @@ name. Unowned assets are reported but only fail under `--strict`: most
 workspaces have a long tail nobody will ever claim, and failing CI over it on
 day one is how a useful check gets deleted from the pipeline instead of acted
 on.
+
+`catalog diff <rev>` answers what a change does to the graph, which is the
+question a review of a data platform actually asks: which assets appear, which
+disappear, and - the one that matters most - which are still there but have
+lost every pipeline that **wrote** them. A deleted asset is loud, because
+something errors. An asset nothing writes any more is silent: no error, no
+missing file, the table simply stops moving and whoever reads it finds out
+weeks later. The revision is read straight from git's object store, so nothing
+is checked out and it is safe to run on a dirty worktree.
 
 The console's Catalog view now shows the same facts as the desktop screen -
 description, tags, columns and freshness - because both are assembled by one

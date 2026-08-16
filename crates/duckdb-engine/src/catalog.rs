@@ -163,6 +163,122 @@ pub fn is_stale(workspace: &Path, catalog: &Catalog) -> bool {
     }
 }
 
+/// Build the graph as it was at a git revision, without touching the worktree.
+///
+/// This is what the pure builder was split out for. Reviewing a change to a
+/// data platform means asking "what does this branch do to the graph" - which
+/// asset disappears, which pipeline stops writing the table three others read -
+/// and that question cannot be answered by a tool that can only see the files
+/// currently on disk.
+///
+/// Nothing is checked out and nothing is written: the file contents come
+/// straight from the object store, so this is safe to run on a dirty worktree
+/// and safe to run while somebody else is editing.
+pub fn build_at_revision(workspace: &Path, rev: &str) -> Result<Catalog, String> {
+    let listed = git(workspace, &["ls-tree", "-r", "--name-only", rev, "--", "."])?;
+    let mut docs: Vec<(String, Value)> = Vec::new();
+    for rel in listed.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        // Same rules as the on-disk walk, so a revision's graph and the current
+        // one are built from the same idea of what a pipeline file is.
+        let path = Path::new(rel);
+        if path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if NOT_PIPELINE_FILES.contains(&name) {
+            continue;
+        }
+        if path.components().any(|c| {
+            c.as_os_str().to_str().map(|s| NOT_PIPELINES.contains(&s)).unwrap_or(false)
+        }) {
+            continue;
+        }
+        // `<rev>:./<path>` resolves relative to this directory, so a workspace
+        // that is a subdirectory of the repository works without the caller
+        // knowing where the repository root is.
+        let Ok(text) = git(workspace, &["show", &format!("{rev}:./{rel}")]) else { continue };
+        let Ok(doc): Result<Value, _> = serde_json::from_str(&text) else { continue };
+        if doc.get("nodes").and_then(|n| n.as_array()).is_none() {
+            continue;
+        }
+        let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        docs.push((id, doc));
+    }
+    // No fingerprint: this graph describes a revision, not the worktree, so
+    // asking whether it is "stale" against the files on disk is meaningless.
+    Ok(build_from_documents(&docs))
+}
+
+fn git(workspace: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git: {e}. A revision can only be read from a git workspace."))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {}: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// What changed between two graphs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogDiff {
+    pub assets_added: Vec<String>,
+    pub assets_removed: Vec<String>,
+    pub pipelines_added: Vec<String>,
+    pub pipelines_removed: Vec<String>,
+    /// An asset that still exists but has lost every pipeline that wrote it.
+    /// The most interesting line in a review: nothing errors, the table simply
+    /// stops being updated, and whoever reads it finds out weeks later.
+    pub no_longer_written: Vec<String>,
+}
+
+impl CatalogDiff {
+    pub fn is_empty(&self) -> bool {
+        self.assets_added.is_empty()
+            && self.assets_removed.is_empty()
+            && self.pipelines_added.is_empty()
+            && self.pipelines_removed.is_empty()
+            && self.no_longer_written.is_empty()
+    }
+}
+
+/// Compare two graphs, `before` and `after`.
+pub fn diff(before: &Catalog, after: &Catalog) -> CatalogDiff {
+    let ids = |c: &Catalog| -> std::collections::BTreeSet<String> {
+        c.assets.iter().map(|a| a.id.clone()).collect()
+    };
+    let pipes = |c: &Catalog| -> std::collections::BTreeSet<String> {
+        c.pipelines.iter().map(|p| p.id.clone()).collect()
+    };
+    let (a0, a1) = (ids(before), ids(after));
+    let (p0, p1) = (pipes(before), pipes(after));
+
+    // Still there, but nobody writes it any more. This is the change that does
+    // not announce itself: no error, no missing file, just a table that quietly
+    // stops moving.
+    let no_longer_written = a1
+        .iter()
+        .filter(|id| !before.producers(id).is_empty() && after.producers(id).is_empty())
+        .cloned()
+        .collect();
+
+    CatalogDiff {
+        assets_added: a1.difference(&a0).cloned().collect(),
+        assets_removed: a0.difference(&a1).cloned().collect(),
+        pipelines_added: p1.difference(&p0).cloned().collect(),
+        pipelines_removed: p0.difference(&p1).cloned().collect(),
+        no_longer_written,
+    }
+}
+
 /// An ownership rule that will never fire, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1267,6 +1383,81 @@ mod tests {
         // A real pipeline still does.
         write_pipeline(ws, "second", json!([node("s", "src.parquet", json!({ "path": "/lake/a.parquet" }))]));
         assert!(is_stale(ws, &built), "adding a pipeline no longer registers");
+    }
+
+    /// The change that does not announce itself.
+    ///
+    /// An asset that disappears is loud - something errors. An asset that is
+    /// still there but has lost every pipeline that WROTE it is silent: no
+    /// error, no missing file, the table just stops moving and whoever reads it
+    /// finds out weeks later. That is the line a review needs most.
+    #[test]
+    fn a_diff_names_the_asset_nothing_writes_any_more() {
+        let writer = |path: &str| {
+            json!({ "name": "writer", "nodes": [node("k", "snk.parquet", json!({ "path": path }))], "edges": [] })
+        };
+        let reader = json!({ "name": "reader", "nodes": [node("s", "src.parquet", json!({ "path": "/lake/orders.parquet" }))], "edges": [] });
+        let legacy = json!({ "name": "legacy", "nodes": [node("k", "snk.parquet", json!({ "path": "/lake/legacy.parquet" }))], "edges": [] });
+
+        let before = build_from_documents(&[
+            ("writer".into(), writer("/lake/orders.parquet")),
+            ("reader".into(), reader.clone()),
+            ("legacy".into(), legacy),
+        ]);
+        // The change: legacy deleted, and writer now writes somewhere else.
+        let after = build_from_documents(&[
+            ("writer".into(), writer("/lake/orders_v2.parquet")),
+            ("reader".into(), reader),
+        ]);
+
+        let d = diff(&before, &after);
+        assert_eq!(d.pipelines_removed, vec!["legacy"]);
+        assert_eq!(d.assets_added, vec!["/lake/orders_v2.parquet"]);
+        assert_eq!(d.assets_removed, vec!["/lake/legacy.parquet"]);
+        // The quiet one: still named by the reader, but nothing writes it.
+        assert_eq!(d.no_longer_written, vec!["/lake/orders.parquet"]);
+        assert!(!d.is_empty());
+
+        // Comparing a graph with itself reports nothing, or every review would
+        // be noise and the real findings would be scrolled past.
+        assert!(diff(&after, &after).is_empty());
+    }
+
+    /// A graph can be built from a git revision without touching the worktree.
+    #[test]
+    fn a_revision_is_read_from_git_not_from_the_files_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").arg("-C").arg(ws).args(args).output()
+        };
+        // No git, no test - reported rather than silently passing.
+        if git(&["init", "-q", "."]).map(|o| !o.status.success()).unwrap_or(true) {
+            eprintln!("skipping: git is not available");
+            return;
+        }
+        let _ = git(&["config", "user.email", "t@t"]);
+        let _ = git(&["config", "user.name", "t"]);
+
+        write_pipeline(ws, "load", json!([node("k", "snk.parquet", json!({ "path": "/lake/committed.parquet" }))]));
+        let _ = git(&["add", "-A"]);
+        let _ = git(&["commit", "-qm", "base"]);
+
+        // Now change the worktree WITHOUT committing.
+        write_pipeline(ws, "load", json!([node("k", "snk.parquet", json!({ "path": "/lake/uncommitted.parquet" }))]));
+
+        let at_head = build_at_revision(ws, "HEAD").expect("could not read the revision");
+        let ids: Vec<&str> = at_head.assets.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["/lake/committed.parquet"], "it read the worktree, not the revision");
+
+        // ...and the worktree still says what it says, untouched.
+        let now = build(ws).unwrap();
+        assert_eq!(now.assets[0].id, "/lake/uncommitted.parquet");
+
+        // A revision describes a revision, so asking whether it is stale
+        // against the files on disk is meaningless and it records no
+        // fingerprint at all.
+        assert!(at_head.built_from.is_none());
     }
 
     /// A rule that matches nothing fails silently, so it has to be reported.

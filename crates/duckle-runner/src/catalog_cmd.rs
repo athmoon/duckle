@@ -20,7 +20,12 @@ pub fn run() -> Result<i32, String> {
              duckle-runner catalog impact  <asset> [--workspace <dir>] [--json]\n    \
              duckle-runner catalog orphans [--workspace <dir>]\n    \
              duckle-runner catalog owners  [--workspace <dir>]\n    \
-             duckle-runner catalog lint    [--workspace <dir>] [--strict]\n\n\
+             duckle-runner catalog lint    [--workspace <dir>] [--strict]\n    \
+             duckle-runner catalog diff    <rev> [--workspace <dir>] [--json]\n\n\
+             diff answers what a change does to the graph: which assets appear or\n\
+             disappear, and which are still there but have lost every pipeline that\n\
+             wrote them - the change that does not announce itself, because nothing\n\
+             errors and the table simply stops moving. Nothing is checked out.\n\n\
              lint is the CI gate: it exits 1 when it finds something, and reports\n\
              owners.json rules that match nothing (a typo means a team is simply\n\
              never told), patterns that will not compile, and nodes the graph could\n\
@@ -185,6 +190,44 @@ pub fn run() -> Result<i32, String> {
                 );
             }
             report_unresolved(&cat);
+            Ok(0)
+        }
+        "diff" => {
+            let rev = positional
+                .first()
+                .ok_or("diff needs a revision, e.g. `catalog diff main` or `catalog diff HEAD~1`")?;
+            let before = catalog::build_at_revision(&workspace, rev)?;
+            let after = load_or_build(&workspace)?;
+            let d = catalog::diff(&before, &after);
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?);
+                return Ok(0);
+            }
+            if d.is_empty() {
+                println!("No change to the workspace graph since {rev}.");
+                return Ok(0);
+            }
+            println!("Against {rev}:");
+            for i in &d.pipelines_added {
+                println!("  + pipeline {i}");
+            }
+            for i in &d.pipelines_removed {
+                println!("  - pipeline {i}");
+            }
+            for i in &d.assets_added {
+                println!("  + asset    {i}");
+            }
+            for i in &d.assets_removed {
+                println!("  - asset    {i}");
+            }
+            if !d.no_longer_written.is_empty() {
+                println!("
+Still here, but nothing writes them any more:");
+                for id in &d.no_longer_written {
+                    println!("  {id}  ({} pipeline(s) still read it)", after.consumers(id).len());
+                }
+            }
+            report_unresolved(&after);
             Ok(0)
         }
         "lint" => {

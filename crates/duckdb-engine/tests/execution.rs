@@ -5829,6 +5829,12 @@ fn foreach_dispatch_queue_writes_a_batch_and_runs_nothing() {
     // and the children must NOT have run, because a run that quietly did the
     // work anyway would double-load the moment a worker picked the batch up.
     let engine = engine_or_skip!();
+    // DUCKLE_WORKSPACE is process-global and cargo runs these in parallel, so
+    // setting it without this guard reaches into whatever test happens to be
+    // running alongside. That is what this one did: it passed alone and broke
+    // the DuckLake CDC test in CI, which reads its saved snapshot from the same
+    // variable and found somebody else's workspace.
+    let _env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
     std::env::set_var("DUCKLE_WORKSPACE", ws);

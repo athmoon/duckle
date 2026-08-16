@@ -1069,12 +1069,28 @@ Add `<workspace>/owners.json` and it also tells you who to notify. Rules are glo
 ```json
 {
   "assets": [
-    { "match": "/lake/raw/pii_*", "owner": "Privacy Office", "contact": "privacy@example.com" },
+    { "match": "/lake/raw/pii_*", "owner": "Privacy Office", "contact": "privacy@example.com",
+      "description": "Landing zone for regulated source tables.", "tags": ["raw", "pii"] },
     { "match": "/lake/raw/*",     "owner": "Data Platform",  "contact": "data@example.com" }
   ],
-  "pipelines": [{ "match": "*-ingest-*", "owner": "Ingest Squad" }]
+  "pipelines": [{ "match": "*-ingest-*", "owner": "Ingest Squad" }],
+  "terms": { "active customer": "Ordered in the last 90 days." }
 }
 ```
+
+The same file carries the human half of the catalog: an optional `description`
+and `tags` per rule, and a workspace `terms` glossary for the words three teams
+would otherwise each define differently. Every one of those is optional, so an
+`owners.json` written before they existed still loads unchanged. They live here
+rather than in a file of their own because they are authored, reviewed and
+committed alongside ownership, and a second file would drift from this one.
+
+Assets also carry the **columns** the pipelines declare, unioned across every
+node that touches them - a pipeline reading three columns of a table another
+writes twenty to does not make the table three columns wide. They come from the
+schema a node already carries, so building the graph still opens no source and
+needs no credentials. No declared columns means none are *known*, which the
+catalog does not confuse with the asset having none.
 
 The same answers are available in the console's Catalog view and over MCP as `workspace_impact`.
 

@@ -46,6 +46,17 @@ pub struct Asset {
     pub id: String,
     /// Broad family: file, table, topic, collection or api.
     pub kind: String,
+    /// Columns, as far as the pipelines declare them.
+    ///
+    /// Taken from the `schema` a node carries rather than by opening the data,
+    /// so building the graph still touches no source and needs no credentials.
+    /// The union across every node that touches the asset, because one pipeline
+    /// may read three columns of a table another writes twenty to, and the
+    /// asset has all twenty. Empty means nobody declared any, which is not the
+    /// same as the asset having none - the catalog cannot tell those apart and
+    /// does not pretend to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<String>,
 }
 
 /// One pipeline touching one asset, at one node.
@@ -99,6 +110,16 @@ pub struct OwnerRule {
     pub owner: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<String>,
+    /// What this data is, in a sentence, for whoever finds it and does not
+    /// already know. Carried on the same rule as ownership because they are
+    /// authored together and a second file would drift from this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Free labels: `pii`, `gold`, `deprecated`. Matched exactly, lowercased,
+    /// so a catalog can filter by them without inventing a taxonomy nobody
+    /// asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// Who owns what, as authored by a human.
@@ -114,6 +135,12 @@ pub struct Owners {
     pub assets: Vec<OwnerRule>,
     #[serde(default)]
     pub pipelines: Vec<OwnerRule>,
+    /// Shared vocabulary: term -> what it means here. A workspace where three
+    /// teams each define "active customer" differently is the problem a
+    /// glossary exists for, and it lives beside ownership because both are the
+    /// same kind of hand-authored, reviewable, committed fact.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub terms: BTreeMap<String, String>,
 }
 
 impl Owners {
@@ -126,7 +153,7 @@ impl Owners {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.assets.is_empty() && self.pipelines.is_empty()
+        self.assets.is_empty() && self.pipelines.is_empty() && self.terms.is_empty()
     }
 }
 
@@ -360,17 +387,54 @@ pub fn discover_pipeline_files(workspace: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The columns a node declares, if any.
+///
+/// Accepts both shapes the editor has written: objects with a `name`, and bare
+/// strings. A node that declares nothing yields nothing, which the catalog
+/// reports as "no columns known" rather than as "no columns".
+fn declared_columns(node: &Value) -> Vec<String> {
+    node.get("data")
+        .and_then(|d| d.get("schema"))
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    c.get("name").and_then(|n| n.as_str()).or_else(|| c.as_str()).map(String::from)
+                })
+                .filter(|c: &String| !c.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Read every pipeline in the workspace and build the graph.
 pub fn build(workspace: &Path) -> Result<Catalog, String> {
-    let mut catalog = Catalog::default();
-    let mut assets: BTreeMap<String, Asset> = BTreeMap::new();
-
+    let mut docs: Vec<(String, Value)> = Vec::new();
     for path in discover_pipeline_files(workspace) {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let Ok(doc): Result<Value, _> = serde_json::from_str(&text) else { continue };
+        if doc.get("nodes").and_then(|n| n.as_array()).is_none() {
+            continue;
+        }
+        let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        docs.push((id, doc));
+    }
+    Ok(build_from_documents(&docs))
+}
+
+/// Build the graph from pipelines already in hand.
+///
+/// Split from [`build`] so the graph can be derived from documents that are not
+/// the ones currently on disk - a git revision, an in-memory edit, a test - and
+/// so the derivation itself is testable without a workspace. `build` is now
+/// only the disk walk.
+pub fn build_from_documents(docs: &[(String, Value)]) -> Catalog {
+    let mut catalog = Catalog::default();
+    let mut assets: BTreeMap<String, Asset> = BTreeMap::new();
+
+    for (pipeline_id, doc) in docs {
         let Some(nodes) = doc.get("nodes").and_then(|n| n.as_array()) else { continue };
-        let pipeline_id =
-            path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let pipeline_id = pipeline_id.clone();
         let name = doc
             .get("name")
             .and_then(|n| n.as_str())
@@ -403,7 +467,18 @@ pub fn build(workspace: &Path) -> Result<Catalog, String> {
                         asset: asset.id.clone(),
                         direction,
                     });
-                    assets.entry(asset.id.clone()).or_insert(asset);
+                    // Columns come from what the node declares, so building the
+                    // graph still opens no source and needs no credentials.
+                    // Unioned across every node touching the asset: a pipeline
+                    // reading three columns of a table another writes twenty to
+                    // does not make the table three columns wide.
+                    let declared = declared_columns(node);
+                    let entry = assets.entry(asset.id.clone()).or_insert(asset);
+                    for c in declared {
+                        if !entry.columns.contains(&c) {
+                            entry.columns.push(c);
+                        }
+                    }
                 }
                 Err(reason) => catalog.unresolved.push(Unresolved {
                     pipeline_id: pipeline_id.clone(),
@@ -416,7 +491,7 @@ pub fn build(workspace: &Path) -> Result<Catalog, String> {
     }
 
     catalog.assets = assets.into_values().collect();
-    Ok(catalog)
+    catalog
 }
 
 /// Name the thing a source or sink node points at.
@@ -545,7 +620,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
     // slashes so the same file named from Windows and Linux agrees.
     if let Some(path) = s("path") {
         let kind = if path.contains("://") { "object" } else { "file" };
-        return Ok(Asset { id: normalise_path(&public_address(&path)), kind: kind.into() });
+        return Ok(Asset { id: normalise_path(&public_address(&path)), kind: kind.into(), columns: Vec::new() });
     }
 
     // Object stores that split the address into a bucket and a key.
@@ -553,6 +628,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset {
             id: addr(&bucket, key.trim_start_matches('/')),
             kind: "object".into(),
+            columns: Vec::new(),
         });
     }
 
@@ -561,6 +637,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset {
             id: addr(first_host(&brokers), &topic),
             kind: "topic".into(),
+            columns: Vec::new(),
         });
     }
 
@@ -569,6 +646,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset {
             id: addr(&authority(), &index),
             kind: "index".into(),
+            columns: Vec::new(),
         });
     }
 
@@ -578,6 +656,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset {
             id: addr(&authority(), &format!("{db}{collection}")),
             kind: "collection".into(),
+            columns: Vec::new(),
         });
     }
 
@@ -593,12 +672,13 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset {
             id: addr(&authority(), &qualified),
             kind: "table".into(),
+            columns: Vec::new(),
         });
     }
 
     // SaaS objects, where the object name is the whole target.
     if let Some(object) = s("object").or_else(|| s("objectName")) {
-        return Ok(Asset { id: addr(&authority(), &object), kind: "object".into() });
+        return Ok(Asset { id: addr(&authority(), &object), kind: "object".into(), columns: Vec::new() });
     }
 
     // A path on a named server. FTP and SFTP give the host and the remote
@@ -610,6 +690,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset {
             id: addr(&authority(), remote.trim_start_matches('/')),
             kind: "file".into(),
+            columns: Vec::new(),
         });
     }
 
@@ -621,6 +702,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset {
             id: public_address(without_query).trim_end_matches('/').to_string(),
             kind: "api".into(),
+            columns: Vec::new(),
         });
     }
 
@@ -632,10 +714,11 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
         return Ok(Asset {
             id: addr(&authority(), &database),
             kind: "database".into(),
+            columns: Vec::new(),
         });
     }
     if !authority().is_empty() {
-        return Ok(Asset { id: prefixed(&authority()), kind: "database".into() });
+        return Ok(Asset { id: prefixed(&authority()), kind: "database".into(), columns: Vec::new() });
     }
     // Services whose whole address is an account, project or repository, with
     // nothing finer named. Coarse on purpose: naming the service still links
@@ -645,6 +728,7 @@ pub fn asset_of(component_id: &str, props: &Value) -> Result<Asset, String> {
             return Ok(Asset {
                 id: prefixed(first_host(&v)),
                 kind: "service".into(),
+            columns: Vec::new(),
             });
         }
     }
@@ -790,6 +874,111 @@ mod tests {
         // And an sftp path, where the same shape appears in `path`.
         let sftp = asset_of("src.xml", &json!({ "path": "sftp://etl:hunter2@files.internal/in/orders.xml" })).unwrap();
         assert_eq!(sftp.id, "sftp://files.internal/in/orders.xml");
+    }
+
+    /// The graph can be derived from documents, not only from disk.
+    ///
+    /// Splitting the walk from the derivation is what lets the same graph be
+    /// built for a git revision, an unsaved edit, or a test - and it is what
+    /// makes the derivation testable at all without laying out a workspace.
+    #[test]
+    fn a_graph_can_be_built_from_documents_in_hand() {
+        let docs = vec![
+            (
+                "writer".to_string(),
+                json!({ "name": "writer", "nodes": [
+                    node("k", "snk.parquet", json!({ "path": "/lake/orders.parquet" }))
+                ], "edges": [] }),
+            ),
+            (
+                "reader".to_string(),
+                json!({ "name": "reader", "nodes": [
+                    node("s", "src.parquet", json!({ "path": "/lake/orders.parquet" }))
+                ], "edges": [] }),
+            ),
+        ];
+        let cat = build_from_documents(&docs);
+        assert_eq!(cat.pipelines.len(), 2);
+        assert_eq!(cat.assets.len(), 1, "the two pipelines did not join on one asset");
+        let wrote: Vec<&str> = cat.producers("/lake/orders.parquet").iter().map(|t| t.pipeline_id.as_str()).collect();
+        let read: Vec<&str> = cat.consumers("/lake/orders.parquet").iter().map(|t| t.pipeline_id.as_str()).collect();
+        assert_eq!(wrote, vec!["writer"]);
+        assert_eq!(read, vec!["reader"]);
+    }
+
+    /// An asset carries the columns the pipelines declare, unioned.
+    ///
+    /// A pipeline reading three columns of a table another writes twenty to
+    /// does not make the table three columns wide, so the union is the only
+    /// honest answer. Read from the node's declared schema, so building the
+    /// graph still opens no source and needs no credentials.
+    #[test]
+    fn an_asset_gathers_the_columns_every_pipeline_declares() {
+        let with_schema = |id: &str, comp: &str, cols: Value| {
+            let mut n = node(id, comp, json!({ "path": "/lake/orders.parquet" }));
+            n["data"]["schema"] = cols;
+            n
+        };
+        let docs = vec![
+            (
+                "writer".to_string(),
+                json!({ "name": "w", "nodes": [with_schema("k", "snk.parquet",
+                    json!([{"name":"id"},{"name":"total"},{"name":"placed_at"}]))], "edges": [] }),
+            ),
+            (
+                "reader".to_string(),
+                // Reads two, one of which the writer never declared, and uses
+                // the bare-string schema shape the editor also writes.
+                json!({ "name": "r", "nodes": [with_schema("s", "src.parquet",
+                    json!(["id", "currency"]))], "edges": [] }),
+            ),
+        ];
+        let cat = build_from_documents(&docs);
+        let asset = &cat.assets[0];
+        assert_eq!(asset.columns, vec!["id", "total", "placed_at", "currency"]);
+
+        // A workspace that declares nothing reports nothing, rather than
+        // claiming the asset has no columns.
+        let bare = build_from_documents(&[(
+            "p".to_string(),
+            json!({ "name": "p", "nodes": [node("k", "snk.parquet", json!({ "path": "/x.parquet" }))], "edges": [] }),
+        )]);
+        assert!(bare.assets[0].columns.is_empty());
+    }
+
+    /// owners.json carries the human half: description, tags and a glossary.
+    #[test]
+    fn owners_json_also_holds_descriptions_tags_and_a_glossary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            owners_path(ws),
+            r#"{
+              "assets": [
+                {"match": "/lake/raw/*", "owner": "Data Platform",
+                 "contact": "dp@acme.test",
+                 "description": "Raw landing zone, one file per source table.",
+                 "tags": ["raw", "pii"]}
+              ],
+              "terms": {"active customer": "Ordered in the last 90 days."}
+            }"#,
+        )
+        .unwrap();
+
+        let owners = load_owners(ws).unwrap();
+        let rule = owners.for_asset("/lake/raw/orders.parquet").expect("no rule matched");
+        assert_eq!(rule.owner, "Data Platform");
+        assert_eq!(rule.description.as_deref(), Some("Raw landing zone, one file per source table."));
+        assert_eq!(rule.tags, vec!["raw", "pii"]);
+        assert_eq!(owners.terms["active customer"], "Ordered in the last 90 days.");
+
+        // An owners.json written before any of this still loads: every new
+        // field is optional, so upgrading does not invalidate the file people
+        // already committed.
+        std::fs::write(owners_path(ws), r#"{"assets":[{"match":"*","owner":"Someone"}]}"#).unwrap();
+        let old = load_owners(ws).unwrap();
+        assert_eq!(old.for_asset("anything").unwrap().owner, "Someone");
+        assert!(old.terms.is_empty());
     }
 
     /// A pipeline the console can open must be a pipeline the graph can see.
@@ -1179,18 +1368,25 @@ mod tests {
                     pattern: "/lake/raw/pii_*".into(),
                     owner: "Privacy".into(),
                     contact: Some("privacy@acme.test".into()),
+                    description: None,
+                    tags: Vec::new(),
                 },
                 OwnerRule {
                     pattern: "/lake/raw/*".into(),
                     owner: "Data Platform".into(),
                     contact: None,
+                    description: None,
+                    tags: Vec::new(),
                 },
             ],
             pipelines: vec![OwnerRule {
                 pattern: "*-ingest-*".into(),
                 owner: "Ingest".into(),
                 contact: None,
+                description: None,
+                tags: Vec::new(),
             }],
+            terms: Default::default(),
         };
         assert_eq!(owners.for_asset("/lake/raw/pii_customers.parquet").unwrap().owner, "Privacy");
         assert_eq!(owners.for_asset("/lake/raw/orders.parquet").unwrap().owner, "Data Platform");
@@ -1208,9 +1404,12 @@ mod tests {
                 pattern: "[unclosed".into(),
                 owner: "Nobody".into(),
                 contact: None,
-            }],
+                                   description: None,
+            tags: Vec::new(),
+                                   }],
             pipelines: vec![],
-        };
+                            terms: Default::default(),
+                            };
         assert!(owners.for_asset("/lake/raw/orders.parquet").is_none());
         assert!(owners.for_asset("anything at all").is_none());
     }

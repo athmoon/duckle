@@ -465,6 +465,36 @@ the batch up, so the run that queued it reports how many items are waiting
 rather than pretending they loaded. A batch is a file in the workspace like
 everything else here: no queue server, no database, no network service.
 
+Then run workers against it:
+
+```bash
+duckle-runner work --workspace /path/to/workspace     # drain every batch
+duckle-runner work --batch fe-20260816T101112123      # just this one
+duckle-runner work --once                             # one item, then exit
+```
+
+Start it on several machines pointed at one workspace and they share the batch.
+Each item is claimed with the same OS lock a pipeline run uses, so no two
+workers take the same one, and a worker that is killed mid-item leaves nothing
+to clean up: the kernel drops the lock and the item becomes claimable again.
+There is no lease, no heartbeat and no timeout, because there is nothing to
+expire. Progress is appended to `batches/<id>.ledger.ndjson`, so re-running a
+worker resumes rather than repeats.
+
+Items run **at least once, not exactly once.** The ledger is written after an
+item succeeds, so a worker that finishes an item and then dies leaves it
+looking undone and another worker repeats it. That is the honest trade for
+having no transactional store - the alternative loses items instead of
+repeating them, and a lost load is worse. Make the child idempotent (an upsert
+sink rather than an append) and a repeat costs time, not correctness. A failed
+item stays claimable and is retried on a later pass, with the failure kept in
+the ledger.
+
+Measured on one machine: three workers against a twelve-item batch took four
+items each, with no item run twice. Several machines against one shared
+filesystem is the design intent and is **not yet measured**, so treat it as
+untested until it is.
+
 ### Advanced settings (per-node)
 
 Every node has an **Advanced** tab with fields the engine honours at run time:

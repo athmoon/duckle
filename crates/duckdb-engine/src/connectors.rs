@@ -10635,6 +10635,19 @@ impl DuckdbEngine {
         ))
     }
 
+    /// Run one queued batch item: the same child execution a For Each does,
+    /// reachable from outside the engine so a worker process can drive it.
+    pub fn run_batch_item(
+        &self,
+        child: &str,
+        vars: &std::collections::BTreeMap<String, String>,
+        item: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let subs: std::collections::HashMap<String, String> =
+            vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        self.run_subpipeline_as(child, &subs, item)
+    }
+
     /// Run a sub-pipeline under a name that also identifies the ITEM.
     ///
     /// `item` is the value of `ctl.foreach`'s `itemKey` column for this row. It

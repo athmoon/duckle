@@ -29,6 +29,7 @@ use duckle_duckdb_engine::context;
 mod drift;
 mod manifest;
 mod selfextract;
+mod work;
 mod serve;
 
 const USAGE: &str = "\
@@ -1476,6 +1477,16 @@ fn main() -> ExitCode {
     // `audit` -> read back who did what through the management console.
     if std::env::args().nth(1).as_deref() == Some("audit") {
         return match audit::run() {
+            Ok(code) => ExitCode::from(code as u8),
+            Err(e) => {
+                eprintln!("duckle-runner: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    // `work` -> run items queued by a For Each set to "Queue for workers".
+    if std::env::args().nth(1).as_deref() == Some("work") {
+        return match work::run() {
             Ok(code) => ExitCode::from(code as u8),
             Err(e) => {
                 eprintln!("duckle-runner: {e}");

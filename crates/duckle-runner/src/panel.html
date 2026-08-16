@@ -632,7 +632,7 @@ function renderCatalog(){
 
   // Say out loud when the graph is partial. A blast radius that hides its own
   // gaps is the one that gets trusted and then turns out to have missed a node.
-  const notes = [`${assets.length} assets across ${c.pipelines || 0} pipelines`];
+  const notes = [`${assets.length} assets across ${(c.pipelines || []).length} pipelines`];
   // The graph is derived and this view serves the saved copy, so it can be
   // describing pipelines as they were an hour ago. Rebuilding is an Operator
   // action, so the view says so rather than silently doing it.
@@ -640,7 +640,8 @@ function renderCatalog(){
   if(c.orphans && c.orphans.length) notes.push(`${c.orphans.length} written but never read`);
   if(c.externals && c.externals.length) notes.push(`${c.externals.length} read but produced elsewhere`);
   if(!c.hasOwners) notes.push('no owners.json, so nothing has an owner');
-  if(c.unresolved) notes.push(`<b style="color:var(--amber)">${c.unresolved} node(s) could not be named, so this view may be incomplete</b>`);
+  if(c.stale) notes.push('<b style="color:var(--amber)">pipelines have changed since this was built - press Rescan</b>');
+  if((c.unresolved || []).length) notes.push(`<b style="color:var(--amber)">${c.unresolved.length} node(s) could not be named, so this view may be incomplete</b>`);
   $('cat-note').innerHTML = notes.join(' &middot; ');
 
   $('cat-body').innerHTML = shown.map(a => {
@@ -649,9 +650,16 @@ function renderCatalog(){
     // producing it; read by nobody means whatever uses it is outside.
     const wcell = w.length ? esc(w.join(', ')) : '<span class="muted">elsewhere</span>';
     const rcell = r.length ? esc(r.join(', ')) : '<span class="muted">nobody here</span>';
+    const tags = (a.tags || []).map(t => `<span class="sched">${esc(t)}</span>`).join(' ');
+    const fresh = a.freshness
+      ? `<div class="col-k">written ${relTime(a.freshness.lastWrittenAt)} by ${esc(a.freshness.pipelineId)}</div>`
+      : '<div class="col-k muted">never written here</div>';
     return `<tr>
-      <td><code style="font-size:12px">${esc(a.id)}</code></td>
-      <td><span class="sched">${esc(a.kind)}</span></td>
+      <td><code style="font-size:12px">${esc(a.id)}</code>
+        ${a.description ? `<div class="col-k">${esc(a.description)}</div>` : ''}
+        ${fresh}</td>
+      <td><span class="sched">${esc(a.kind)}</span> ${tags}
+        ${(a.columns || []).length ? `<div class="col-k">${a.columns.length} column(s)</div>` : ''}</td>
       <td>${a.owner ? esc(a.owner) : '<span class="muted">unowned</span>'}</td>
       <td>${wcell}</td>
       <td>${rcell}</td>

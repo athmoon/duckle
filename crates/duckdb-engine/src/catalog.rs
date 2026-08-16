@@ -163,6 +163,57 @@ pub fn is_stale(workspace: &Path, catalog: &Catalog) -> bool {
     }
 }
 
+/// An ownership rule that will never fire, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadRule {
+    /// "asset" or "pipeline".
+    pub kind: String,
+    pub pattern: String,
+    pub owner: String,
+    pub reason: String,
+}
+
+/// Ownership rules that match nothing in this workspace.
+///
+/// A rule that matches nothing fails silently: the team it names simply never
+/// gets told about anything, and the file looks correct. Almost always a typo
+/// or an asset that was renamed out from under it.
+///
+/// Lives here rather than in the linter because it has to use the same glob
+/// semantics as `for_asset` - a second implementation of "does this match"
+/// would eventually disagree with the one that decides who actually owns what.
+pub fn dead_rules(catalog: &Catalog, owners: &Owners) -> Vec<DeadRule> {
+    let assets: Vec<&str> = catalog.assets.iter().map(|a| a.id.as_str()).collect();
+    let pipelines: Vec<&str> = catalog.pipelines.iter().map(|p| p.id.as_str()).collect();
+    let mut out = Vec::new();
+    for (kind, rules, universe) in [
+        ("asset", &owners.assets, &assets),
+        ("pipeline", &owners.pipelines, &pipelines),
+    ] {
+        for rule in rules {
+            let reason = match glob::Pattern::new(&rule.pattern) {
+                // A pattern that will not compile owns nothing, which is the
+                // safe behaviour and an invisible one.
+                Err(_) => Some("not a valid glob, so it owns nothing".to_string()),
+                Ok(p) if !universe.iter().any(|n| p.matches(n)) => {
+                    Some("matches nothing in this workspace".to_string())
+                }
+                Ok(_) => None,
+            };
+            if let Some(reason) = reason {
+                out.push(DeadRule {
+                    kind: kind.to_string(),
+                    pattern: rule.pattern.clone(),
+                    owner: rule.owner.clone(),
+                    reason,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Everything a catalog screen needs about one workspace, in one call.
 ///
 /// Assembled here rather than in each surface because the desktop app, the web
@@ -1216,6 +1267,42 @@ mod tests {
         // A real pipeline still does.
         write_pipeline(ws, "second", json!([node("s", "src.parquet", json!({ "path": "/lake/a.parquet" }))]));
         assert!(is_stale(ws, &built), "adding a pipeline no longer registers");
+    }
+
+    /// A rule that matches nothing fails silently, so it has to be reported.
+    ///
+    /// The team a typo'd rule names simply never gets told about anything, and
+    /// the file looks perfectly correct. Same for a pattern that will not
+    /// compile: it owns nothing, safely and invisibly.
+    #[test]
+    fn ownership_rules_that_can_never_fire_are_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_pipeline(ws, "load", json!([node("k", "snk.parquet", json!({ "path": "/lake/orders.parquet" }))]));
+        let cat = build(ws).unwrap();
+
+        let owners: Owners = serde_json::from_str(
+            r#"{"assets":[
+                 {"match":"/lake/orders.parquet","owner":"Ingest"},
+                 {"match":"/lake/odrers.parquet","owner":"Typo Team"},
+                 {"match":"/lake/[unclosed","owner":"Broken Glob"}
+               ],
+               "pipelines":[{"match":"load","owner":"Ingest"},
+                            {"match":"never-built-*","owner":"Ghost"}]}"#,
+        )
+        .unwrap();
+
+        let dead = dead_rules(&cat, &owners);
+        let patterns: Vec<&str> = dead.iter().map(|d| d.pattern.as_str()).collect();
+        assert_eq!(patterns, vec!["/lake/odrers.parquet", "/lake/[unclosed", "never-built-*"]);
+        // The two failures are told apart, because they call for different fixes.
+        assert!(dead[0].reason.contains("matches nothing"));
+        assert!(dead[1].reason.contains("not a valid glob"));
+        assert_eq!(dead[2].kind, "pipeline");
+
+        // A rule that DOES match is never reported, or the check is noise.
+        assert!(!patterns.contains(&"/lake/orders.parquet"));
+        assert!(!patterns.contains(&"load"));
     }
 
     /// Annotating one asset must not re-describe everything a glob covers.

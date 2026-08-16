@@ -1578,47 +1578,14 @@ fn sanitize_segment(name: &str) -> String {
 /// dashboard polls every few seconds and a rebuild reads every pipeline file.
 /// A POST to the same path rebuilds it deliberately.
 fn api_catalog(state: &State) -> Value {
-    use duckle_duckdb_engine::catalog;
-    let cat = match catalog::load(&state.workspace) {
-        Ok(Some(c)) => c,
-        // Never built: do it once so the first visit shows something.
-        Ok(None) => match catalog::build_and_save(&state.workspace) {
-            Ok(c) => c,
-            Err(e) => return json!({ "error": e }),
-        },
-        Err(e) => return json!({ "error": e }),
-    };
-    // Reported, not repaired. This route is rated for the VIEWER role and
-    // rebuilding writes a file, so a viewer must not be able to trigger one by
-    // opening a tab. The Rescan button is Operator and does the rebuild; this
-    // just stops the view from quietly presenting an out-of-date graph as
-    // current, which is the wrong answer to "what breaks if I change this".
-    let stale = catalog::is_stale(&state.workspace, &cat);
-    let owners = catalog::load_owners(&state.workspace).unwrap_or_default();
-    let assets: Vec<Value> = cat
-        .assets
-        .iter()
-        .map(|a| {
-            json!({
-                "id": a.id,
-                "kind": a.kind,
-                "writtenBy": cat.producers(&a.id).iter().map(|t| &t.pipeline_id).collect::<Vec<_>>(),
-                "readBy": cat.consumers(&a.id).iter().map(|t| &t.pipeline_id).collect::<Vec<_>>(),
-                "owner": owners.for_asset(&a.id).map(|r| r.owner.clone()),
-            })
-        })
-        .collect();
-    json!({
-        "assets": assets,
-        "stale": stale,
-        "pipelines": cat.pipelines.len(),
-        "orphans": cat.orphans().iter().map(|a| &a.id).collect::<Vec<_>>(),
-        "externals": cat.externals().iter().map(|a| &a.id).collect::<Vec<_>>(),
-        // Carried so the tab can say the view may be incomplete rather than
-        // presenting a partial graph as the whole picture.
-        "unresolved": cat.unresolved.len(),
-        "hasOwners": !owners.is_empty(),
-    })
+    // The SAME assembly the desktop screen uses, so the two surfaces cannot
+    // drift into two slightly different catalogs. It reads the saved graph and
+    // reports `stale`; rebuilding stays the Operator-rated POST, because this
+    // route is Viewer-rated and a viewer opening a tab must not write a file.
+    match duckle_duckdb_engine::catalog::view(&state.workspace) {
+        Ok(view) => json!(view),
+        Err(e) => json!({ "error": e }),
+    }
 }
 
 /// Where the console's own store used to live, before both products moved to

@@ -1053,6 +1053,7 @@ Still put it behind a reverse proxy if you need TLS.
 Every other lineage view in Duckle answers about **one** pipeline. The catalog answers about the whole workspace, by joining pipelines through the assets they name: two pipelines that read and write the same table are connected whether or not anyone drew a line between them.
 
 ```bash
+duckle-runner catalog lint                                        # CI gate, exits 1 on findings
 duckle-runner catalog build                                       # scan every pipeline
 duckle-runner catalog assets                                      # every table, file, topic and endpoint
 duckle-runner catalog impact postgres://db:5432/sales.public.orders
@@ -1109,7 +1110,20 @@ re-describes its neighbours. **Read live schema** opens the source on demand
 through a node that already reads it, so it authenticates the way the pipeline
 does - it is never done just because a screen was opened.
 
-The same answers are available in the console's Catalog view and over MCP as `workspace_impact`.
+`catalog lint` is the gate for a CI job: it exits 1 when it finds something.
+It reports ownership rules that match nothing - almost always a typo or a
+renamed asset, and a failure that is otherwise silent, because the team the
+rule names simply never gets told about anything - patterns that will not
+compile (they own nothing, safely and invisibly), and nodes the graph could not
+name. Unowned assets are reported but only fail under `--strict`: most
+workspaces have a long tail nobody will ever claim, and failing CI over it on
+day one is how a useful check gets deleted from the pipeline instead of acted
+on.
+
+The console's Catalog view now shows the same facts as the desktop screen -
+description, tags, columns and freshness - because both are assembled by one
+function in the engine rather than two that would drift. The same answers are
+available over MCP as `workspace_impact`.
 
 ### Alerting (tell someone when a run fails)
 

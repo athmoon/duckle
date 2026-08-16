@@ -19,7 +19,12 @@ pub fn run() -> Result<i32, String> {
              duckle-runner catalog assets  [--workspace <dir>] [--json]\n    \
              duckle-runner catalog impact  <asset> [--workspace <dir>] [--json]\n    \
              duckle-runner catalog orphans [--workspace <dir>]\n    \
-             duckle-runner catalog owners  [--workspace <dir>]\n\n\
+             duckle-runner catalog owners  [--workspace <dir>]\n    \
+             duckle-runner catalog lint    [--workspace <dir>] [--strict]\n\n\
+             lint is the CI gate: it exits 1 when it finds something, and reports\n\
+             owners.json rules that match nothing (a typo means a team is simply\n\
+             never told), patterns that will not compile, and nodes the graph could\n\
+             not name. Unowned assets are reported but only fail under --strict.\n\n\
              build scans every pipeline and writes .duckle/catalog.json. The other\n\
              commands read it, and build it first if it is missing.\n\n\
              impact answers what breaks if an asset changes: the pipelines that read\n\
@@ -39,6 +44,7 @@ pub fn run() -> Result<i32, String> {
 
     let mut workspace = PathBuf::from(".");
     let mut as_json = false;
+    let mut strict = false;
     let mut positional: Vec<String> = Vec::new();
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
@@ -47,6 +53,7 @@ pub fn run() -> Result<i32, String> {
                 workspace = PathBuf::from(it.next().ok_or("--workspace needs a value")?)
             }
             "--json" => as_json = true,
+            "--strict" => strict = true,
             other if other.starts_with("--") => {
                 return Err(format!("unknown argument: {other}"))
             }
@@ -180,8 +187,73 @@ pub fn run() -> Result<i32, String> {
             report_unresolved(&cat);
             Ok(0)
         }
+        "lint" => {
+            let cat = load_or_build(&workspace)?;
+            let owners = catalog::load_owners(&workspace)?;
+            Ok(lint(&cat, &owners, strict))
+        }
         other => Err(format!("unknown catalog command: {other}")),
     }
+}
+
+/// Check the workspace's governance metadata and report what is wrong with it.
+///
+/// Built for a CI job, so the exit code is the product: 0 clean, 1 findings.
+/// Everything it reports is something a person can act on, and nothing it
+/// reports is a matter of taste - a linter that flags style gets switched off,
+/// and then it is not there for the one that matters.
+fn lint(cat: &Catalog, owners: &Owners, strict: bool) -> i32 {
+    let mut findings = 0usize;
+
+    // Rules that will never fire. The matching itself lives in the engine,
+    // beside the rule that decides who actually owns what - a second
+    // implementation of "does this match" would eventually disagree with it.
+    for dead in catalog::dead_rules(cat, owners) {
+        findings += 1;
+        println!(
+            "owners.json: {} rule '{}' ({}) {}",
+            dead.kind, dead.pattern, dead.owner, dead.reason
+        );
+    }
+
+    // Nodes the graph could not name: every impact answer is incomplete by
+    // exactly this much, and one that hides its gaps is the one that gets
+    // trusted and then turns out to have missed the node that mattered.
+    if !cat.unresolved.is_empty() {
+        findings += 1;
+        println!(
+            "{} source/sink node(s) could not be named, so impact answers are incomplete",
+            cat.unresolved.len()
+        );
+    }
+
+    // Unowned assets fail only under --strict. Most workspaces have a long
+    // tail nobody will ever claim, and failing CI over it on day one is how a
+    // useful check gets deleted from the pipeline instead of acted on.
+    let unowned = cat.unowned(owners);
+    if !unowned.is_empty() {
+        let line = format!("{} asset(s) have no owner", unowned.len());
+        if strict {
+            findings += 1;
+            println!("{line}");
+            for a in unowned.iter().take(10) {
+                println!("  {}", a.id);
+            }
+            if unowned.len() > 10 {
+                println!("  ... and {} more", unowned.len() - 10);
+            }
+        } else {
+            println!("{line} (not a failure; use --strict to make it one)");
+        }
+    }
+
+    if findings == 0 {
+        println!("catalog lint: nothing to report.");
+        return 0;
+    }
+    println!("
+catalog lint: {findings} finding(s).");
+    1
 }
 
 /// Everyone reached, de-duplicated and in a stable order, so the line can be

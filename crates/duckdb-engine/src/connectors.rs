@@ -10628,11 +10628,30 @@ impl DuckdbEngine {
             })
             .collect();
         let path = crate::batch::write(ws, &batch_id, &items)?;
-        Ok(format!(
+
+        // Say whether these items can actually be spread across workers. Both
+        // "400 items each loading their own table" and "400 items appending to
+        // one file" look identical on the canvas - one sink node with a
+        // variable in it - and only the first is safe to run at once. Checked
+        // here, before anyone picks the batch up, rather than discovered as
+        // interleaved rows afterwards.
+        let safety = crate::batch::inspect(&items, |child| {
+            std::fs::read_to_string(resolve_subpipeline_ref(child)).ok()
+        });
+        let mut note = format!(
             "queued {} item(s) to {} - nothing has run yet; start a worker to pick them up",
             items.len(),
             path.display()
-        ))
+        );
+        match safety.note() {
+            Some(warning) => note.push_str(&format!("\nduckle: heads up - {warning}")),
+            None => note.push_str(&format!(
+                "\nduckle: {} item(s) write to targets nothing else in the batch writes, so they \
+                 are safe to run at the same time",
+                safety.disjoint
+            )),
+        }
+        Ok(note)
     }
 
     /// Run one queued batch item: the same child execution a For Each does,
@@ -10675,29 +10694,7 @@ impl DuckdbEngine {
         // it reaches the engine, but a child read raw from disk here is not, so
         // its context placeholders would otherwise pass through literally. Per-
         // row ITER substitutions win on any key collision.
-        let mut merged = workspace_context_vars();
-        for (k, v) in subs {
-            merged.insert(k.clone(), v.clone());
-        }
-        for (key, val) in &merged {
-            let placeholder = format!("${{{}}}", key);
-            if content.contains(&placeholder) {
-                // JSON-escape the value before substitution so embedded
-                // quotes / backslashes don't break parsing.
-                let escaped: String = val
-                    .chars()
-                    .flat_map(|c| match c {
-                        '"' => vec!['\\', '"'],
-                        '\\' => vec!['\\', '\\'],
-                        '\n' => vec!['\\', 'n'],
-                        '\r' => vec!['\\', 'r'],
-                        '\t' => vec!['\\', 't'],
-                        c => vec![c],
-                    })
-                    .collect();
-                content = content.replace(&placeholder, &escaped);
-            }
-        }
+        content = substitute_into_child(&content, subs);
         let sub_doc: plan::PipelineDoc = serde_json::from_str(&content).map_err(|e| {
             EngineError::Config(format!("sub-pipeline: parse '{}': {}", path, e))
         })?;
@@ -12052,6 +12049,46 @@ fn dedupe_names(names: Vec<String>) -> Vec<String> {
 /// different children through `ctl.foreach` had all three sharing one watermark
 /// file per node id, and each overwrote the others.
 const UNNAMED_RUN_FOLDER: &str = "pipeline";
+
+/// Put a child pipeline's variables in, exactly as a run would.
+///
+/// Shared by the runner and by the batch safety check, so what the check
+/// inspects is what will actually execute. A second implementation here would
+/// be a check of something nobody runs.
+///
+/// Workspace context variables are merged in first and the caller's
+/// substitutions win on a collision, so a per-row `${ITER_ITEM_*}` beats a
+/// workspace-wide value of the same name.
+pub(crate) fn substitute_into_child(
+    content: &str,
+    subs: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut merged = workspace_context_vars();
+    for (k, v) in subs {
+        merged.insert(k.clone(), v.clone());
+    }
+    let mut content = content.to_string();
+    for (key, val) in &merged {
+        let placeholder = format!("${{{}}}", key);
+        if content.contains(&placeholder) {
+            // JSON-escape the value before substitution so embedded quotes /
+            // backslashes don't break parsing.
+            let escaped: String = val
+                .chars()
+                .flat_map(|c| match c {
+                    '"' => vec!['\\', '"'],
+                    '\\' => vec!['\\', '\\'],
+                    '\n' => vec!['\\', 'n'],
+                    '\r' => vec!['\\', 'r'],
+                    '\t' => vec!['\\', 't'],
+                    c => vec![c],
+                })
+                .collect();
+            content = content.replace(&placeholder, &escaped);
+        }
+    }
+    content
+}
 
 /// The name a sub-pipeline run goes under: `<child>` or `<child>@<item>`.
 ///

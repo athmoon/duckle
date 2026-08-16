@@ -465,6 +465,27 @@ the batch up, so the run that queued it reports how many items are waiting
 rather than pretending they loaded. A batch is a file in the workspace like
 everything else here: no queue server, no database, no network service.
 
+Queueing also reports whether the items are actually safe to spread out. Both
+"400 items each loading their own table" and "400 items appending to one file"
+look identical on the canvas - one sink node with a variable in the path - and
+only the first survives being run at once. So each item's variables are put
+into the child and the resulting targets are named with the same function that
+builds the workspace catalog, before anything picks the batch up:
+
+```
+duckle: 400 item(s) write to targets nothing else in the batch writes, so they
+        are safe to run at the same time
+duckle: heads up - 1 target(s) are written by more than one item (400 items
+        write /lake/everything.parquet). Workers run items at the same time, so
+        these will collide unless the sink is an upsert or the target is
+        append-safe
+```
+
+It warns rather than refuses: appending many items into one table is a real
+thing to want, and only you know whether that sink is safe for it. Items whose
+child cannot be read are counted and reported, so a partial check never reads
+as a clean one.
+
 Then run workers against it:
 
 ```bash

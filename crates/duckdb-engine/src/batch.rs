@@ -133,6 +133,131 @@ pub fn read(path: &Path) -> Result<(Vec<WorkItem>, usize), EngineError> {
     Ok((items, skipped))
 }
 
+/// What a batch will write, and whether its items can safely run at once.
+///
+/// A queued batch is about to be spread across workers. That is only safe when
+/// the items write to DIFFERENT places: 400 items each loading their own table
+/// is exactly what this is for, and 400 items all appending to one file is a
+/// pile-up that a queue turns from slow into wrong. The difference is invisible
+/// on the canvas, because both look like one sink node with a variable in it.
+///
+/// So the targets are worked out before the batch is handed to anyone, by
+/// substituting each item's variables into the child and asking the workspace
+/// catalog what the resulting nodes name - the same function that builds the
+/// asset graph, so the answer agrees with everything else in the product.
+#[derive(Debug, Default)]
+pub struct BatchSafety {
+    /// Items whose write targets nothing else in the batch writes.
+    pub disjoint: usize,
+    /// Write target -> how many items write it, for targets shared by more
+    /// than one item. These are the collisions.
+    pub shared: std::collections::BTreeMap<String, usize>,
+    /// Items whose child could not be read or named, so nothing is claimed
+    /// about them either way.
+    pub unknown: usize,
+}
+
+impl BatchSafety {
+    /// The line to show. `None` when there is nothing worth saying.
+    pub fn note(&self) -> Option<String> {
+        if self.shared.is_empty() && self.unknown == 0 {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if !self.shared.is_empty() {
+            let worst = self
+                .shared
+                .iter()
+                .max_by_key(|(_, n)| **n)
+                .map(|(k, n)| format!("{n} items write {k}"))
+                .unwrap_or_default();
+            parts.push(format!(
+                "{} target(s) are written by more than one item ({}). Workers run items at the \
+                 same time, so these will collide unless the sink is an upsert or the target is \
+                 append-safe",
+                self.shared.len(),
+                worst
+            ));
+        }
+        if self.unknown > 0 {
+            parts.push(format!(
+                "{} item(s) could not be checked, so this is not a clean bill of health",
+                self.unknown
+            ));
+        }
+        Some(parts.join("; "))
+    }
+}
+
+/// Work out what each item writes, without running anything.
+///
+/// `read_child` is how a child reference becomes its raw JSON, injected so this
+/// is testable without a workspace on disk.
+pub fn inspect<F>(items: &[WorkItem], mut read_child: F) -> BatchSafety
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let mut writes_by_item: Vec<Vec<String>> = Vec::with_capacity(items.len());
+    let mut safety = BatchSafety::default();
+
+    for item in items {
+        let Some(raw) = read_child(&item.child) else {
+            safety.unknown += 1;
+            writes_by_item.push(Vec::new());
+            continue;
+        };
+        let subs: std::collections::HashMap<String, String> =
+            item.vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let resolved = crate::connectors::substitute_into_child(&raw, &subs);
+        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&resolved) else {
+            safety.unknown += 1;
+            writes_by_item.push(Vec::new());
+            continue;
+        };
+        let mut writes = Vec::new();
+        let mut named_any = false;
+        for node in doc.get("nodes").and_then(|n| n.as_array()).into_iter().flatten() {
+            let Some(cid) = node.pointer("/data/componentId").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !cid.starts_with("snk.") {
+                continue;
+            }
+            let props = node
+                .pointer("/data/properties")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            if let Ok(asset) = crate::catalog::asset_of(cid, &props) {
+                named_any = true;
+                writes.push(asset.id);
+            }
+        }
+        // A child with sinks none of which could be named tells us nothing.
+        if !named_any {
+            safety.unknown += 1;
+        }
+        writes_by_item.push(writes);
+    }
+
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for writes in &writes_by_item {
+        // Count an item ONCE per target, so a child writing the same table from
+        // two nodes is not mistaken for two items colliding.
+        let mut seen = std::collections::BTreeSet::new();
+        for w in writes {
+            if seen.insert(w.clone()) {
+                *counts.entry(w.clone()).or_default() += 1;
+            }
+        }
+    }
+    safety.shared = counts.iter().filter(|(_, n)| **n > 1).map(|(k, n)| (k.clone(), *n)).collect();
+    safety.disjoint = writes_by_item
+        .iter()
+        .filter(|writes| !writes.is_empty() && writes.iter().all(|w| counts.get(w) == Some(&1)))
+        .count();
+    safety
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +323,73 @@ mod tests {
         let (back, skipped) = read(&path).unwrap();
         assert_eq!(back.len(), 1, "a v99 line must not be run by a v1 worker");
         assert_eq!(skipped, 1);
+    }
+
+    fn child_writing(path_expr: &str) -> String {
+        serde_json::json!({
+            "name": "load-one",
+            "nodes": [
+                {"id":"s","data":{"componentId":"src.csv","properties":{"path":"/in.csv"}}},
+                {"id":"k","data":{"componentId":"snk.parquet","properties":{"path":path_expr}}}
+            ],
+            "edges": []
+        })
+        .to_string()
+    }
+
+    /// Items that each write their own target are safe to spread over workers.
+    #[test]
+    fn a_batch_whose_items_write_different_targets_is_reported_disjoint() {
+        let items = vec![item(0, "orders"), item(1, "customers")];
+        let safety = inspect(&items, |_| Some(child_writing("/lake/${ITER_ITEM_TABLE_NAME}.parquet")));
+        assert_eq!(safety.disjoint, 2);
+        assert!(safety.shared.is_empty(), "{:?}", safety.shared);
+        assert_eq!(safety.unknown, 0);
+        assert!(safety.note().is_none(), "nothing to warn about");
+    }
+
+    /// Items that all write ONE target will collide once workers run them at
+    /// the same time, and that is invisible on the canvas: it is the same sink
+    /// node either way, just without the variable in the path.
+    #[test]
+    fn a_batch_whose_items_share_a_target_is_reported_as_a_collision() {
+        let items = vec![item(0, "orders"), item(1, "customers"), item(2, "invoices")];
+        let safety = inspect(&items, |_| Some(child_writing("/lake/everything.parquet")));
+        assert_eq!(safety.disjoint, 0);
+        assert_eq!(safety.shared.len(), 1);
+        assert_eq!(safety.shared.values().next(), Some(&3));
+        let note = safety.note().expect("a collision must be reported");
+        assert!(note.contains("3 items write"), "{note}");
+        assert!(note.contains("collide"), "{note}");
+    }
+
+    /// A child that cannot be read is counted, not silently treated as safe.
+    #[test]
+    fn items_that_cannot_be_checked_are_not_called_safe() {
+        let items = vec![item(0, "orders"), item(1, "customers")];
+        let safety = inspect(&items, |_| None);
+        assert_eq!(safety.unknown, 2);
+        assert_eq!(safety.disjoint, 0);
+        let note = safety.note().expect("an unchecked batch must say so");
+        assert!(note.contains("not a clean bill of health"), "{note}");
+    }
+
+    /// One child writing the same table twice is not two items colliding.
+    #[test]
+    fn a_child_with_two_nodes_writing_one_table_is_not_a_collision() {
+        let doc = serde_json::json!({
+            "name": "load-one",
+            "nodes": [
+                {"id":"a","data":{"componentId":"snk.parquet","properties":{"path":"/lake/${ITER_ITEM_TABLE_NAME}.parquet"}}},
+                {"id":"b","data":{"componentId":"snk.parquet","properties":{"path":"/lake/${ITER_ITEM_TABLE_NAME}.parquet"}}}
+            ],
+            "edges": []
+        })
+        .to_string();
+        let items = vec![item(0, "orders"), item(1, "customers")];
+        let safety = inspect(&items, |_| Some(doc.clone()));
+        assert!(safety.shared.is_empty(), "one item's own two sinks were counted as a clash: {:?}", safety.shared);
+        assert_eq!(safety.disjoint, 2);
     }
 
     /// Two dispatches of one node are two batches.

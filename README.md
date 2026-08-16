@@ -4,7 +4,7 @@
 
 <h3>Pipelines you own. Author locally, deploy to your servers.</h3>
 
-<p><b>Duckle</b> is an open-source ETL platform for teams who want their pipelines running on their own infrastructure. Author on your laptop with a canvas, Python or SQL, then ship the same file to a server: <code>duckle-runner serve</code> runs it headless on a schedule, in Docker or on a box you own, with a web console, roles and an audit trail. Every pipeline is one file in git, so it outlives whoever wrote it. It compiles to SQL and runs single-node on DuckDB, which reaches further than most people expect: <b>96 million rows out of Postgres to Parquet in 39.9s</b>. <b>No vendor cloud. No per-row billing. No lock-in.</b></p>
+<p><b>Duckle</b> is an open-source ETL platform for teams who want their pipelines running on their own infrastructure. Author on your laptop with a canvas, Python or SQL, then ship the same file to a server: <code>duckle-runner serve</code> runs it headless on a schedule, in Docker or on a box you own, with a web console, roles and an audit trail. Every pipeline is one file in git, so it outlives whoever wrote it. It compiles to SQL on DuckDB and uses every core you give the box, so a bigger instance is a faster pipeline: <b>96 million rows out of Postgres to Parquet in 39.9s</b>. <b>No vendor cloud. No per-row billing. No lock-in.</b></p>
 
 <a href="https://duckle.org/"><img src="website/assets/img/website-hero.gif" alt="Duckle connecting 190 sources and destinations - databases, warehouses, SaaS apps and the DuckDB ecosystem - all running locally on DuckDB" width="600"/></a>
 
@@ -39,7 +39,7 @@
 
 ## Where Duckle runs
 
-The laptop is where you author. It is not where the work has to happen.
+The laptop is where you author. The work runs wherever you deploy it, on the same file.
 
 | | How | What you get |
 |---|---|---|
@@ -55,16 +55,22 @@ Nothing here depends on a person's machine being switched on:
 - **The console has roles and an audit log,** so more than one person can operate it and you can see who did what.
 - **Secrets are not in the pipeline file.** They resolve from the environment or an encrypted per-workspace store at run time.
 
-### How far single node goes
+### Scaling it
 
-Duckle is single-node by design and compiles to SQL on DuckDB. That is a real boundary, so here is where it actually sits, measured rather than asserted:
+`duckle-runner serve` is an ordinary service. Run it on EC2, EKS, a VM or a container next to everything else you operate, and scale it the way you scale any service:
+
+- **More cores.** The engine is parallel and uses every core on the box by default, so a bigger instance is a faster pipeline with no change to the pipeline. Bound it with `DUCKLE_THREADS` when you would rather it did not take the whole machine.
+- **More RAM.** Set `memoryLimitMb` per stage, or a workspace default, and spill to disk past it.
+- **More pipelines at once.** `DUCKLE_MAX_CONCURRENT_RUNS` raises how many run together; it ships at 1 so an unattended server stays predictable until you decide otherwise.
+- **More machines.** `duckle-runner work` drains a queued batch from as many workers as you start, on as many hosts as you like, each claiming its items under a lock so nothing runs twice.
+- **Bigger than any box.** Turn on **pushdown** and the query runs verbatim inside Postgres, Oracle, SQL Server or Snowflake. The warehouse does the scan; Duckle keeps the scheduling, lineage, data quality and alerting.
+
+Measured, rather than asserted:
 
 - **96,000,000 rows** out of live Postgres to Parquet in **39.9s** ([details](#96m-rows-postgres-to-parquet))
 - **Oracle extract at 65.0s**, against 68.6s for python-oracledb with pyarrow on the same machine ([details](#whats-new-in-v061))
 
-One large machine covers the overwhelming majority of data teams outright. Past that point Duckle stops being the thing that moves every row and becomes the thing that orchestrates whatever does: turn on **pushdown** and the query runs verbatim inside Postgres, Oracle, SQL Server or Snowflake, while Duckle keeps the scheduling, lineage, data quality and alerting around it. Point the output at the system that scales and let it scale.
-
-The engine is single-node. The pipelines it runs do not have to be.
+The one thing Duckle does not do is split a single query across a cluster the way a distributed warehouse does. When you need that, push the work down into the system that has it and let Duckle orchestrate around it.
 
 ## Quick links
 
@@ -291,7 +297,7 @@ Hardware, per-run numbers and the two measurement traps that produced wrong figu
 
 Duckle is in **public beta**. The visual designer, the DuckDB execution engine, the scheduler, the cloud connectors, and the Duckie AI assistant all work today and are covered by 170+ integration tests across Linux, macOS, and Windows. The catalog is still growing and APIs may evolve before 1.0, but the day-to-day surface is stable enough for real work.
 
-**Scope, stated plainly:** Duckle is a single-machine, embedded studio. If you outgrow one box, point Duckle's output at the system that scales (a warehouse, an object store, a lakehouse). It will not pretend to be a cluster.
+**Scope, stated plainly:** Duckle runs as a service on hardware you provision, and uses all of it. What it does not do is split one query across a cluster, so when a job outgrows the largest instance you want to pay for, push the work down into the source system or point the output at a warehouse, object store or lakehouse. It will not pretend to be a cluster.
 
 The component palette ships **384 nodes** so the roadmap is visible in the product itself:
 
@@ -1460,7 +1466,7 @@ Yes, free + open source. Dual-licensed **MIT OR Apache-2.0**. You can use it com
 <details>
 <summary><b>Is Duckle an open-source alternative to Fivetran or Airbyte?</b></summary>
 
-It covers similar ground - moving data across 190 sources and destinations - but locally, with nothing to host and no per-row, per-connector, or per-seat billing. Pipelines are built visually or from plain English and compile to readable DuckDB SQL that runs wherever you deploy it: a laptop, a server, CI or a container. The trade-off is scope: the engine is single-machine, so for warehouse-scale replication you push the work down into the source system or point the output at the system that scales.
+It covers similar ground - moving data across 190 sources and destinations - but locally, with nothing to host and no per-row, per-connector, or per-seat billing. Pipelines are built visually or from plain English and compile to readable DuckDB SQL that runs wherever you deploy it: a laptop, a server, CI or a container. The trade-off is scope: Duckle does not split one query across a cluster, so for warehouse-scale replication you push the work down into the source system or point the output at the system that scales.
 
 </details>
 
@@ -1490,7 +1496,9 @@ Duckie AI Assistant runs **fully offline** once the model is downloaded.
 <details>
 <summary><b>How big are pipelines this works well on?</b></summary>
 
-DuckDB is excellent on data that fits on one machine - tens of GB on a laptop, hundreds on a workstation. Beyond that, point Duckle's output at a warehouse / lakehouse that scales horizontally. Duckle is honest about being single-machine.
+Bigger than people assume, because the ceiling is the instance you provision rather than the laptop you develop on. The engine is parallel and uses every core available, so the same pipeline that you debug against a sample on a laptop runs against the full set on a large server without changing. For reference, 96M rows come out of live Postgres to Parquet in 39.9s.
+
+Past whatever instance you are willing to pay for, you have two routes that do not involve rewriting anything: turn on pushdown so the query executes inside the source database, or point the output at a warehouse or lakehouse that scales horizontally. What Duckle will not do is spread a single query across a cluster.
 
 </details>
 
@@ -1525,7 +1533,7 @@ In the workspace folder you pick on first launch (see [Workspace and Git flow](#
 <details>
 <summary><b>Can multiple people collaborate on the same workspace?</b></summary>
 
-Via Git, yes - check the workspace into a repo and use standard branch/PR flows. Duckle does not have a real-time multiplayer mode (single-machine by design).
+Via Git, yes - check the workspace into a repo and use standard branch/PR flows, and deploy the result to a shared server where the console has roles and an audit log. What there is not is a real-time multiplayer canvas: two people editing the same pipeline at the same moment is a merge, not a live session.
 
 </details>
 

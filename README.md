@@ -2,9 +2,9 @@
 
 <img src="docs/assets/duckle-readme.png" alt="Duckle" width="460"/>
 
-<h3>Pipelines you own. Write them, wire them, or draw them.</h3>
+<h3>Pipelines you own. Author locally, deploy to your servers.</h3>
 
-<p><b>Duckle</b> is the open ETL stack that runs on your machine, not on someone else's warehouse meter. <b>No per-row tax. No lock-in.</b> Build as many pipelines as you need and let them call, schedule and retry each other - write them in Python, wire them from 190 connectors and 385 components, or draw them on the canvas, or describe one to <b>Duckie</b>, the on-device AI assistant, and verify what it builds. Every pipeline is one portable file that compiles to SQL on DuckDB, carrying its transforms, data quality and lineage with it. ELT when you want it too: run dbt on DuckDB, or push work down into the source database. Runs anywhere - laptop, CI, headless, or a browser - and fully offline when you need it.</p>
+<p><b>Duckle</b> is an open-source ETL platform for teams who want their pipelines running on their own infrastructure. Author on your laptop with a canvas, Python or SQL, then ship the same file to a server: <code>duckle-runner serve</code> runs it headless on a schedule, in Docker or on a box you own, with a web console, roles and an audit trail. Every pipeline is one file in git, so it outlives whoever wrote it. It compiles to SQL and runs single-node on DuckDB, which reaches further than most people expect: <b>96 million rows out of Postgres to Parquet in 39.9s</b>. <b>No vendor cloud. No per-row billing. No lock-in.</b></p>
 
 <a href="https://duckle.org/"><img src="website/assets/img/website-hero.gif" alt="Duckle connecting 190 sources and destinations - databases, warehouses, SaaS apps and the DuckDB ecosystem - all running locally on DuckDB" width="600"/></a>
 
@@ -37,6 +37,35 @@
 
 ---
 
+## Where Duckle runs
+
+The laptop is where you author. It is not where the work has to happen.
+
+| | How | What you get |
+|---|---|---|
+| **Server** | `duckle-runner serve --workspace /srv/pipelines` | Headless web console, cron scheduler, roles, audit log, alerts |
+| **Docker** | `Dockerfile.web` | The same console in a container, behind your own ingress |
+| **CI** | `duckle-runner --pipeline p.json` | Any runner. Exit codes and NDJSON logs, nothing to install |
+| **Standalone** | **Build Pipeline** | One self-contained executable. Drop it on a box, run it from cron or systemd |
+| **Desktop** | The app | Author, debug and inspect. Optional, and never required to run anything |
+
+Nothing here depends on a person's machine being switched on:
+
+- **Pipelines are plain files in git.** Review them in a pull request, roll them back, and let them outlive whoever wrote them. There is no proprietary repository and no exported binary artifact.
+- **The console has roles and an audit log,** so more than one person can operate it and you can see who did what.
+- **Secrets are not in the pipeline file.** They resolve from the environment or an encrypted per-workspace store at run time.
+
+### How far single node goes
+
+Duckle is single-node by design and compiles to SQL on DuckDB. That is a real boundary, so here is where it actually sits, measured rather than asserted:
+
+- **96,000,000 rows** out of live Postgres to Parquet in **39.9s** ([details](#96m-rows-postgres-to-parquet))
+- **Oracle extract at 65.0s**, against 68.6s for python-oracledb with pyarrow on the same machine ([details](#whats-new-in-v061))
+
+One large machine covers the overwhelming majority of data teams outright. Past that point Duckle stops being the thing that moves every row and becomes the thing that orchestrates whatever does: turn on **pushdown** and the query runs verbatim inside Postgres, Oracle, SQL Server or Snowflake, while Duckle keeps the scheduling, lineage, data quality and alerting around it. Point the output at the system that scales and let it scale.
+
+The engine is single-node. The pipelines it runs do not have to be.
+
 ## Quick links
 
 <table>
@@ -45,6 +74,7 @@
 
 **Get started**
 
+- [Where Duckle runs](#where-duckle-runs)
 - [What is Duckle?](#what-is-duckle)
 - [What's new in v0.6.1](#whats-new-in-v061)
 - [What's new in v0.6.0](#whats-new-in-v060)
@@ -1430,7 +1460,7 @@ Yes, free + open source. Dual-licensed **MIT OR Apache-2.0**. You can use it com
 <details>
 <summary><b>Is Duckle an open-source alternative to Fivetran or Airbyte?</b></summary>
 
-It covers similar ground - moving data across 190 sources and destinations - but locally, with nothing to host and no per-row, per-connector, or per-seat billing. Pipelines are built visually or from plain English and compile to readable DuckDB SQL that runs on your machine. The trade-off is scope: Duckle is single-machine and embedded, so for warehouse-scale replication you point its output at the system that scales.
+It covers similar ground - moving data across 190 sources and destinations - but locally, with nothing to host and no per-row, per-connector, or per-seat billing. Pipelines are built visually or from plain English and compile to readable DuckDB SQL that runs wherever you deploy it: a laptop, a server, CI or a container. The trade-off is scope: the engine is single-machine, so for warehouse-scale replication you push the work down into the source system or point the output at the system that scales.
 
 </details>
 
@@ -1444,7 +1474,7 @@ Yes. Duckle executes on the embedded DuckDB engine, so there is no external ware
 <details>
 <summary><b>How is Duckle different from Airbyte, dbt, or Talend?</b></summary>
 
-Airbyte focuses on hosted extract-and-load connectors; dbt focuses on SQL transformation; Talend is a heavyweight GUI suite (its free Open Studio edition was discontinued in early 2026). Duckle is a single open engine that does extract, transform, and load together - write it in Python, wire it from connectors, or draw it on a canvas - compiles to DuckDB SQL, and can also run dbt on DuckDB inside the same tool. One format, one engine, no per-row tax, no lock-in.
+Airbyte focuses on hosted extract-and-load connectors; dbt focuses on SQL transformation; Talend is a heavyweight GUI suite (its free Open Studio edition was discontinued in early 2026). Duckle is a single open engine that does extract, transform, and load together - write it in Python, wire it from connectors, or draw it on a canvas - compiles to DuckDB SQL, and can also run dbt on DuckDB inside the same tool. One format, one engine, running on your own infrastructure rather than a vendor's, with no per-row billing.
 
 </details>
 

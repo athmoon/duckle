@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Duckle - Open-source ETL you can see end to end, built on DuckDB</title>
-<meta name="description" content="Duckle is the open ETL stack on DuckDB that runs on your machine, not on a warehouse meter. Build as many pipelines as you need from 190 connectors and 385 components: write them in Python, wire them, or draw them on a canvas, with an MCP server for AI agents. No per-row tax, no lock-in." />
+<title>Duckle - Open-source ETL you run on your own servers, built on DuckDB</title>
+<meta name="description" content="Open-source ETL on your own servers. Author on your laptop, deploy headless on a schedule in Docker or a box you own. No vendor cloud, no per-row billing." />
 <meta name="keywords" content="visual ETL tool, DuckDB ETL, open source ETL, ELT tool, code-first ETL, Python ETL, ETL for AI agents, MCP ETL, data pipeline builder, dbt GUI, dbt on DuckDB, DuckLake, Quack DuckDB, no-code data pipeline, Fivetran alternative, Airbyte alternative, Talend alternative, dlt alternative, self-hosted ETL, local-first ETL" />
-<meta property="og:title" content="Duckle - Open-source ETL you can see end to end" />
-<meta property="og:description" content="Pipelines you own - write them, wire them, or draw them. The open ETL stack on DuckDB: 190 connectors, dbt, AI agents via MCP, runs anywhere. Open source, no per-row tax, no lock-in." />
+<meta property="og:title" content="Duckle - Open-source ETL you run on your own servers" />
+<meta property="og:description" content="Open-source ETL you deploy on your own servers. Author on your laptop, run headless on a schedule in Docker or on your own box. 96M rows Postgres to Parquet in 39.9s. No vendor cloud, no per-row billing." />
 <meta property="og:image" content="https://duckle.org/assets/img/og-card.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
@@ -16,8 +16,8 @@
 <meta property="og:site_name" content="Duckle" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:url" content="https://duckle.org/" />
-<meta name="twitter:title" content="Duckle - Open-source ETL you can see end to end" />
-<meta name="twitter:description" content="Pipelines you own - write them, wire them, or draw them. The open ETL stack on DuckDB: 190 connectors, dbt, AI agents via MCP, runs anywhere. Open source, no per-row tax, no lock-in." />
+<meta name="twitter:title" content="Duckle - Open-source ETL you run on your own servers" />
+<meta name="twitter:description" content="Open-source ETL you deploy on your own servers. Author on your laptop, run headless on a schedule in Docker or on your own box. 96M rows Postgres to Parquet in 39.9s. No vendor cloud, no per-row billing." />
 <meta name="twitter:image" content="https://duckle.org/assets/img/og-card.png" />
 <meta name="robots" content="index, follow" />
 <meta name="author" content="Duckle" />
@@ -101,7 +101,7 @@
     { "@type": "Question", "name": "Is there an open-source alternative to Fivetran or Airbyte?", "acceptedAnswer": { "@type": "Answer", "text": "Duckle is a free, open-source ETL/ELT tool that covers similar ground to hosted platforms like Fivetran and Airbyte, but runs locally. It moves data across 190 sources and destinations with no per-row, per-connector, or per-seat billing and nothing to host or operate. Pipelines are built visually or from plain English and compile to readable DuckDB SQL." } },
     { "@type": "Question", "name": "Can I run ETL pipelines without the cloud or a data warehouse?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Duckle executes on the embedded DuckDB engine, so there is no external warehouse, no server, and no account required. It runs fully offline, which suits air-gapped, on-premise, and compliance-sensitive work, and it still reads from and writes to cloud systems whenever you want." } },
     { "@type": "Question", "name": "What is a local-first ETL tool?", "acceptedAnswer": { "@type": "Answer", "text": "A local-first ETL tool builds and runs data pipelines on your own machine rather than in a hosted cloud service, so data never leaves your control. Duckle is an open, single-engine example: write a pipeline in Python, wire it from connectors, or draw it on a canvas, and run it fully offline on DuckDB - or in CI, headless, or a browser when you want." } },
-    { "@type": "Question", "name": "How is Duckle different from Airbyte and dbt?", "acceptedAnswer": { "@type": "Answer", "text": "Airbyte focuses on hosted extract-and-load connectors and dbt focuses on SQL transformation. Duckle is one open engine that does extract, transform, and load together - write it in Python, wire it from connectors, or draw it on a canvas - and it runs dbt on DuckDB inside the same tool. One format, one engine, no per-row tax, no lock-in." } }
+    { "@type": "Question", "name": "How is Duckle different from Airbyte and dbt?", "acceptedAnswer": { "@type": "Answer", "text": "Airbyte focuses on hosted extract-and-load connectors and dbt focuses on SQL transformation. Duckle is one open engine that does extract, transform, and load together - write it in Python, wire it from connectors, or draw it on a canvas - and it runs dbt on DuckDB inside the same tool. One format, one engine, deployed on your own infrastructure rather than a vendor's, with no per-row billing." } }
   ,
     { "@type": "Question", "name": "What is the best open-source ETL tool?", "acceptedAnswer": { "@type": "Answer", "text": "There is no single best one; the honest answer depends on where the work runs. Airbyte and Meltano suit server-hosted extract and load. Apache Airflow orchestrates jobs rather than transforming data. dbt transforms data already inside a warehouse. Duckle is the option when you want the pipeline to run on your own machine with no server: it covers extract, transform and load in one artifact, compiles to readable DuckDB SQL, and can run dbt models itself. It is free and dual-licensed MIT OR Apache-2.0, with no per-row or per-seat billing." } },
     { "@type": "Question", "name": "What replaced Talend Open Studio after it was discontinued?", "acceptedAnswer": { "@type": "Answer", "text": "Talend Open Studio reached end of life on 31 January 2024 and its free downloads were withdrawn, so teams still running it need a migration path. Duckle covers the same ground for the visual-pipeline user: a canvas of sources, transforms and destinations, a tMap-style visual mapper for joins and expression mapping, control-flow nodes for branching and iteration, and scheduled or headless execution. The differences are that pipelines compile to readable SQL on DuckDB rather than generated Java, the whole thing is one desktop binary with no Studio install, and it is free under MIT OR Apache-2.0." } },
@@ -196,8 +196,8 @@
   <div class="wrap">
     <div class="hero-grid">
       <div>
-        <h1>Pipelines you own.<br />Write them, wire them, or draw them.</h1>
-        <p class="lead">Duckle is the open ETL stack that runs on your machine, not on someone else's warehouse meter. No per-row tax, no lock-in. Build as many pipelines as you need and let them call, schedule and retry each other - write them in Python, wire them from 190 sources and destinations, or draw them on the canvas, and describe one to a built-in AI agent that builds while you verify. Runs anywhere - laptop, CI, headless, or a browser - and fully offline when you need it.</p>
+        <h1>Pipelines you own.<br />Author locally, deploy to your servers.</h1>
+        <p class="lead">Duckle is an open-source ETL platform for teams who want their pipelines running on their own infrastructure. Author on your laptop with a canvas, Python or SQL, then ship the same file to a server: <code>duckle-runner serve</code> runs it headless on a schedule, in Docker or on a box you own, with a web console, roles and an audit trail. Every pipeline is one file in git, so it outlives whoever wrote it. Single node on DuckDB, which reaches further than most people expect: <b>96 million rows out of Postgres to Parquet in 39.9s</b>. No vendor cloud, no per-row billing, no lock-in.</p>
         <div class="hero-cta">
           <a class="btn btn-primary btn-pill btn-lg" href="#download">Download Duckle</a>
           <a class="btn btn-outline btn-lg" href="https://github.com/slothflowlabs/duckle" target="_blank" rel="noopener">
@@ -207,8 +207,8 @@
         </div>
         <div class="value-props">
           <span class="vp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Free &amp; open source</span>
-          <span class="vp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Runs anywhere, or fully offline</span>
-          <span class="vp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> No per-row tax, no lock-in</span>
+          <span class="vp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Runs headless on your own servers</span>
+          <span class="vp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> No vendor cloud, no per-row billing</span>
         </div>
       </div>
 
@@ -487,7 +487,7 @@
         </details>
         <details class="faq-item">
           <summary><h3>How is Duckle different from Airbyte and dbt?</h3></summary>
-          <p>Airbyte focuses on hosted extract-and-load connectors and dbt focuses on SQL transformation. Duckle is one open engine that does extract, transform, and load together - write it in Python, wire it from connectors, or draw it on a canvas - and it runs dbt on DuckDB inside the same tool. One format, one engine, no per-row tax, no lock-in.</p>
+          <p>Airbyte focuses on hosted extract-and-load connectors and dbt focuses on SQL transformation. Duckle is one open engine that does extract, transform, and load together - write it in Python, wire it from connectors, or draw it on a canvas - and it runs dbt on DuckDB inside the same tool. One format, one engine, deployed on your own infrastructure rather than a vendor's, with no per-row billing.</p>
         </details>
         <details class="faq-item">
           <summary><h3>What is the best open-source ETL tool?</h3></summary>
@@ -563,7 +563,7 @@
           <img class="logo-dark" src="assets/img/duckle-mark.v4.svg" alt="" />
           <span class="bw"><span class="bn">Duckle</span><span class="by">by SlothFlowLabs</span></span>
         </a>
-        <p class="muted" style="max-width:30ch;">The open ETL stack. Pipelines you own - write them, wire them, or draw them. Built on DuckDB.</p>
+        <p class="muted" style="max-width:30ch;">Open-source ETL you run on your own servers. Author locally, deploy anywhere. Built on DuckDB.</p>
       </div>
       <div><h4>Product</h4><a href="#product">Visual canvas</a><a href="#duckie">Duckie AI</a><a href="docs/components.html">Components</a><a href="#download">Download</a></div>
       <div><h4>Solutions</h4><a href="use-cases.html#join">Cross-system joins</a><a href="use-cases.html#snowflake">Warehouse savings</a><a href="use-cases.html#cdc">Change data capture</a><a href="use-cases.html#ai">Data prep for AI</a></div>

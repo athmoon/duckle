@@ -190,6 +190,10 @@ pub fn run() {
             schedule_upsert,
             schedule_delete,
             schedule_run_now,
+            workspace_catalog,
+            workspace_catalog_rebuild,
+            workspace_catalog_annotate,
+            workspace_catalog_inspect,
             engine_status,
             engine_install,
             llama_models,
@@ -695,6 +699,102 @@ fn schedule_delete(id: String) -> Result<(), String> {
 #[tauri::command]
 async fn schedule_run_now(id: String) -> Result<RunResult, String> {
     scheduler()?.run_now(&id).await
+}
+
+// ---- Workspace catalog --------------------------------------------------
+
+/// The whole catalog view for a workspace: graph, ownership, annotations,
+/// freshness, and whether the saved graph is still current.
+///
+/// Reads the saved graph rather than rebuilding, so opening the screen never
+/// silently costs a full workspace rescan; `stale` says when a rebuild is due
+/// and `workspace_catalog_rebuild` is the deliberate act.
+#[tauri::command]
+fn workspace_catalog(
+    workspace: String,
+) -> Result<duckle_duckdb_engine::catalog::CatalogView, String> {
+    duckle_duckdb_engine::catalog::view(std::path::Path::new(&workspace))
+}
+
+#[tauri::command]
+fn workspace_catalog_rebuild(
+    workspace: String,
+) -> Result<duckle_duckdb_engine::catalog::CatalogView, String> {
+    let ws = std::path::Path::new(&workspace);
+    duckle_duckdb_engine::catalog::build_and_save(ws)?;
+    duckle_duckdb_engine::catalog::view(ws)
+}
+
+/// Set the human metadata for one asset or pipeline, in owners.json.
+///
+/// Fields left null are left alone, so writing a description cannot clear an
+/// owner somebody else authored.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+fn workspace_catalog_annotate(
+    workspace: String,
+    pipelines: bool,
+    name: String,
+    owner: Option<String>,
+    contact: Option<String>,
+    description: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<duckle_duckdb_engine::catalog::CatalogView, String> {
+    let ws = std::path::Path::new(&workspace);
+    duckle_duckdb_engine::catalog::annotate(
+        ws,
+        pipelines,
+        &name,
+        owner,
+        contact,
+        description,
+        tags,
+    )?;
+    duckle_duckdb_engine::catalog::view(ws)
+}
+
+/// Read an asset's LIVE schema, on demand.
+///
+/// Deliberately not part of building the graph: this opens the source and
+/// therefore needs credentials, a network and time, none of which should be
+/// spent because somebody opened a catalog screen. It answers for one asset,
+/// when asked, by finding a node that touches it and inspecting through that
+/// node's own configuration - so it authenticates exactly the way the pipeline
+/// does rather than inventing a second way to connect.
+#[tauri::command]
+fn workspace_catalog_inspect(workspace: String, asset: String) -> Result<Vec<String>, String> {
+    use duckle_duckdb_engine::catalog;
+    let ws = std::path::Path::new(&workspace);
+    let cat = catalog::load(ws)?.ok_or("no catalog has been built for this workspace yet")?;
+    let touch = cat
+        .touches
+        .iter()
+        .find(|t| t.asset == asset && t.component_id.starts_with("src."))
+        .ok_or_else(|| {
+            format!("nothing in this workspace READS {asset}, so there is no node to inspect it through")
+        })?;
+
+    // Re-read the pipeline for that node's live properties: the catalog keeps
+    // names, not configuration, and inspecting needs the connection details.
+    let path = catalog::discover_pipeline_files(ws)
+        .into_iter()
+        .find(|p| p.file_stem().map(|s| s.to_string_lossy() == touch.pipeline_id.as_str()).unwrap_or(false))
+        .ok_or_else(|| format!("pipeline {} is no longer in this workspace", touch.pipeline_id))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let doc: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let node = doc
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .and_then(|nodes| {
+            nodes.iter().find(|n| n.get("id").and_then(|i| i.as_str()) == Some(&touch.node_id))
+        })
+        .ok_or_else(|| format!("node {} is no longer in {}", touch.node_id, touch.pipeline_id))?;
+    let props = node.pointer("/data/properties").cloned().unwrap_or(serde_json::Value::Null);
+    let format = touch.component_id.strip_prefix("src.").unwrap_or(&touch.component_id);
+
+    let engine = engine()?;
+    let inspection = engine.inspect(format, props).map_err(|e| e.to_string())?;
+    Ok(inspection.schema.iter().map(|c| c.name.clone()).collect())
 }
 
 // ---- Engine install (first-run guided setup) ---------------------------

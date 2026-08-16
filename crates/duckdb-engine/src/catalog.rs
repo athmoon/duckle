@@ -163,6 +163,165 @@ pub fn is_stale(workspace: &Path, catalog: &Catalog) -> bool {
     }
 }
 
+/// Everything a catalog screen needs about one workspace, in one call.
+///
+/// Assembled here rather than in each surface because the desktop app, the web
+/// console and MCP all want the same answer, and three assemblies of it would
+/// drift into three slightly different catalogs.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogView {
+    pub assets: Vec<AssetView>,
+    pub pipelines: Vec<PipelineEntry>,
+    pub orphans: Vec<String>,
+    pub externals: Vec<String>,
+    pub unresolved: Vec<Unresolved>,
+    /// The workspace glossary, as authored in owners.json.
+    pub terms: BTreeMap<String, String>,
+    /// True when the pipelines have changed since this graph was built.
+    pub stale: bool,
+    pub has_owners: bool,
+}
+
+/// One asset, with everything known about it joined together.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetView {
+    pub id: String,
+    pub kind: String,
+    pub columns: Vec<String>,
+    pub written_by: Vec<String>,
+    pub read_by: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<Freshness>,
+}
+
+/// Build the whole view: graph, ownership, annotations and freshness.
+///
+/// Reads the saved graph rather than rebuilding, and reports `stale` instead,
+/// so opening a catalog screen never silently costs a full workspace rescan.
+pub fn view(workspace: &Path) -> Result<CatalogView, String> {
+    let catalog = match load(workspace)? {
+        Some(c) => c,
+        // Never built: do it once, so the first visit shows something rather
+        // than an empty screen that looks like an empty workspace.
+        None => build_and_save(workspace)?,
+    };
+    let owners = load_owners(workspace).unwrap_or_default();
+    let fresh = freshness(workspace);
+    let assets = catalog
+        .assets
+        .iter()
+        .map(|a| {
+            let rule = owners.for_asset(&a.id);
+            AssetView {
+                id: a.id.clone(),
+                kind: a.kind.clone(),
+                columns: a.columns.clone(),
+                written_by: catalog.producers(&a.id).iter().map(|t| t.pipeline_id.clone()).collect(),
+                read_by: catalog.consumers(&a.id).iter().map(|t| t.pipeline_id.clone()).collect(),
+                owner: rule.map(|r| r.owner.clone()),
+                contact: rule.and_then(|r| r.contact.clone()),
+                description: rule.and_then(|r| r.description.clone()),
+                tags: rule.map(|r| r.tags.clone()).unwrap_or_default(),
+                freshness: fresh.get(&a.id).cloned(),
+            }
+        })
+        .collect();
+    Ok(CatalogView {
+        assets,
+        pipelines: catalog.pipelines.clone(),
+        orphans: catalog.orphans().iter().map(|a| a.id.clone()).collect(),
+        externals: catalog.externals().iter().map(|a| a.id.clone()).collect(),
+        unresolved: catalog.unresolved.clone(),
+        terms: owners.terms.clone(),
+        stale: is_stale(workspace, &catalog),
+        has_owners: !owners.is_empty(),
+    })
+}
+
+/// Set the human metadata for one exact asset or pipeline name.
+///
+/// Writes an EXACT-match rule rather than editing whichever glob happened to
+/// cover the name. Annotating `/lake/raw/orders.parquet` when the file says
+/// `/lake/raw/*` belongs to Data Platform must not silently re-describe every
+/// file under `/lake/raw` - so a specific rule goes in ABOVE the general one,
+/// which is exactly how first-match-wins is meant to be used. An existing rule
+/// whose pattern IS this name is updated in place instead of duplicated.
+///
+/// Fields left as `None` are left alone, so setting a description does not
+/// clear an owner somebody else wrote.
+pub fn annotate(
+    workspace: &Path,
+    pipelines: bool,
+    name: &str,
+    owner: Option<String>,
+    contact: Option<String>,
+    description: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("annotate needs a name".into());
+    }
+    let mut owners = load_owners(workspace)?;
+    let rules = if pipelines { &mut owners.pipelines } else { &mut owners.assets };
+
+    match rules.iter_mut().position(|r| r.pattern == name) {
+        Some(i) => {
+            let rule = &mut rules[i];
+            if let Some(v) = owner {
+                rule.owner = v;
+            }
+            if contact.is_some() {
+                rule.contact = contact;
+            }
+            if description.is_some() {
+                rule.description = description;
+            }
+            if let Some(v) = tags {
+                rule.tags = v;
+            }
+        }
+        None => rules.insert(
+            0,
+            OwnerRule {
+                pattern: name.to_string(),
+                // An annotation with no owner still needs the field; the empty
+                // string reads as "not stated" everywhere it is shown.
+                owner: owner.unwrap_or_default(),
+                contact,
+                description,
+                tags: tags.unwrap_or_default(),
+            },
+        ),
+    }
+    save_owners(workspace, &owners)
+}
+
+/// Write owners.json back, preserving everything in it.
+///
+/// Temp file then rename, like every other store here: this file is
+/// hand-authored and committed, and half of it is worse than none of it.
+pub fn save_owners(workspace: &Path, owners: &Owners) -> Result<(), String> {
+    let p = owners_path(workspace);
+    let body = serde_json::to_string_pretty(owners).map_err(|e| e.to_string())?;
+    let tmp = p.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    if let Err(e) = std::fs::rename(&tmp, &p) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("{}: {e}", p.display()));
+    }
+    Ok(())
+}
+
 /// When an asset was last written, and by what.
 ///
 /// The static graph says an asset exists and who touches it. This says whether
@@ -491,8 +650,25 @@ pub struct Impact {
 /// Folders that hold Duckle's own output rather than pipelines. Kept identical
 /// to the console's walk, because a pipeline either of them can open and the
 /// other cannot is a hole in whichever answer omits it.
-const NOT_PIPELINES: [&str; 7] =
-    ["runs", "logs", "connections", "node_modules", ".duckle", ".git", "target"];
+const NOT_PIPELINES: [&str; 8] =
+    ["runs", "logs", "connections", "node_modules", ".duckle", ".git", "target", "batches"];
+
+/// Workspace config files that are JSON but are not pipelines.
+///
+/// They live beside the pipelines and none of them has a `nodes` array, so the
+/// builder already skipped them - but the staleness fingerprint stats whatever
+/// this walk returns, and with these in it, saving a schedule or writing an
+/// owner made the catalog report itself out of date. Nothing about the graph
+/// had changed. Named here so both agree on what a pipeline file is.
+const NOT_PIPELINE_FILES: [&str; 7] = [
+    "owners.json",
+    "alerts.json",
+    "schedules.json",
+    "panel-schedules.json",
+    "duckle.json",
+    "repository.json",
+    "catalog.json",
+];
 
 /// Every candidate pipeline file in the workspace.
 ///
@@ -515,7 +691,10 @@ pub fn discover_pipeline_files(workspace: &Path) -> Vec<PathBuf> {
                     stack.push(path);
                 }
             } else if path.extension().and_then(|x| x.to_str()) == Some("json") {
-                out.push(path);
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !NOT_PIPELINE_FILES.contains(&name) {
+                    out.push(path);
+                }
             }
         }
     }
@@ -1013,6 +1192,112 @@ mod tests {
         // And an sftp path, where the same shape appears in `path`.
         let sftp = asset_of("src.xml", &json!({ "path": "sftp://etl:hunter2@files.internal/in/orders.xml" })).unwrap();
         assert_eq!(sftp.id, "sftp://files.internal/in/orders.xml");
+    }
+
+    /// Saving a schedule must not make the catalog look out of date.
+    ///
+    /// The staleness fingerprint stats whatever the pipeline walk returns, and
+    /// the walk took every .json in the workspace - so writing owners.json,
+    /// alerts.json or schedules.json flipped the graph to stale even though
+    /// nothing the graph is built from had changed. A catalog that cries stale
+    /// on every unrelated save is one nobody reads the warning on.
+    #[test]
+    fn writing_workspace_config_does_not_make_the_graph_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_pipeline(ws, "load", json!([node("k", "snk.parquet", json!({ "path": "/lake/a.parquet" }))]));
+        let built = build_and_save(ws).unwrap();
+        assert!(!is_stale(ws, &built));
+
+        for name in ["owners.json", "alerts.json", "schedules.json", "repository.json"] {
+            std::fs::write(ws.join(name), r#"{"written":"just now"}"#).unwrap();
+            assert!(!is_stale(ws, &built), "writing {name} made the graph report itself stale");
+        }
+        // A real pipeline still does.
+        write_pipeline(ws, "second", json!([node("s", "src.parquet", json!({ "path": "/lake/a.parquet" }))]));
+        assert!(is_stale(ws, &built), "adding a pipeline no longer registers");
+    }
+
+    /// Annotating one asset must not re-describe everything a glob covers.
+    ///
+    /// owners.json is glob-based and first-match-wins. If describing
+    /// /lake/raw/orders.parquet edited whichever rule happened to match it,
+    /// a workspace with `/lake/raw/*` owned by Data Platform would silently
+    /// have every file under /lake/raw re-described - and the person who did it
+    /// would have no idea. So a specific rule goes in ABOVE the general one,
+    /// which is exactly what first-match-wins is for.
+    #[test]
+    fn annotating_one_asset_does_not_rewrite_the_glob_that_covered_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            owners_path(ws),
+            r#"{"assets":[{"match":"/lake/raw/*","owner":"Data Platform","contact":"dp@acme.test"}]}"#,
+        )
+        .unwrap();
+
+        annotate(
+            ws,
+            false,
+            "/lake/raw/orders.parquet",
+            None,
+            None,
+            Some("Orders, one row per line item.".into()),
+            Some(vec!["gold".into()]),
+        )
+        .unwrap();
+
+        let owners = load_owners(ws).unwrap();
+        assert_eq!(owners.assets.len(), 2, "the broad rule was edited instead of a specific one added");
+        assert_eq!(owners.assets[0].pattern, "/lake/raw/orders.parquet", "the specific rule must come first");
+
+        // The one asset gets the description...
+        let orders = owners.for_asset("/lake/raw/orders.parquet").unwrap();
+        assert_eq!(orders.description.as_deref(), Some("Orders, one row per line item."));
+        assert_eq!(orders.tags, vec!["gold"]);
+        // ...and its neighbour under the same glob is untouched.
+        let other = owners.for_asset("/lake/raw/customers.parquet").unwrap();
+        assert_eq!(other.owner, "Data Platform");
+        assert!(other.description.is_none(), "a sibling was re-described");
+    }
+
+    /// Annotating twice edits the rule rather than stacking duplicates, and a
+    /// field left unset is left alone.
+    #[test]
+    fn a_second_annotation_updates_in_place_and_keeps_what_it_was_not_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        annotate(ws, false, "/lake/orders.parquet", Some("Ingest".into()), None, Some("First".into()), None)
+            .unwrap();
+        annotate(ws, false, "/lake/orders.parquet", None, None, Some("Second".into()), None).unwrap();
+
+        let owners = load_owners(ws).unwrap();
+        assert_eq!(owners.assets.len(), 1, "a second annotation added a duplicate rule");
+        let rule = &owners.assets[0];
+        assert_eq!(rule.description.as_deref(), Some("Second"));
+        assert_eq!(rule.owner, "Ingest", "writing a description cleared the owner");
+    }
+
+    /// The view joins the graph, ownership, annotations and freshness.
+    #[test]
+    fn the_view_carries_everything_a_catalog_screen_needs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_pipeline(ws, "load", json!([node("k", "snk.parquet", json!({ "path": "/lake/orders.parquet" }))]));
+        build_and_save(ws).unwrap();
+        annotate(ws, false, "/lake/orders.parquet", Some("Ingest".into()), None, Some("Orders.".into()), Some(vec!["gold".into()])).unwrap();
+
+        let v = view(ws).unwrap();
+        assert_eq!(v.assets.len(), 1);
+        let a = &v.assets[0];
+        assert_eq!(a.owner.as_deref(), Some("Ingest"));
+        assert_eq!(a.description.as_deref(), Some("Orders."));
+        assert_eq!(a.tags, vec!["gold"]);
+        assert_eq!(a.written_by, vec!["load"]);
+        // Written by nobody yet, so no freshness rather than a fabricated one.
+        assert!(a.freshness.is_none());
+        assert!(!v.stale, "a freshly built graph reported itself stale");
+        assert!(v.has_owners);
     }
 
     /// The catalog can say when an asset was last written, and by what.

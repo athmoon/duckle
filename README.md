@@ -519,10 +519,22 @@ is no lease that could have gone stale. **Retry failed** clears the recorded
 failures so those items are claimable again, keeping the successes so a retry
 never repeats finished work.
 
+Before running anything, a worker **proves the lock actually excludes on that
+filesystem**: it takes a lock and asks a second process whether it can take the
+same one. Some shared filesystems tell every caller it has the lock - NFS with
+no lock daemon is the classic case - and on one of those every worker would
+claim every item and each item would run once per worker, silently, with no
+error anywhere. A worker refuses to start there. Check it yourself with
+`duckle-runner work --check`; `--no-check` overrides, knowing the above. A test
+that could not be *run* is only a warning, because failing to prove exclusion
+is not the same as having disproved it.
+
 Measured on one machine: three workers against a twelve-item batch took four
-items each, with no item run twice. Several machines against one shared
-filesystem is the design intent and is **not yet measured**, so treat it as
-untested until it is.
+items each, with no item run twice. **Several machines against one shared
+filesystem is the design intent and is not yet measured**, so treat it as
+untested until it is. `scripts/measure-multi-host-batch.sh` is the measurement:
+point it at a shared workspace and two or more hosts and it counts duplicate
+executions, failing if there are any.
 
 ### Advanced settings (per-node)
 

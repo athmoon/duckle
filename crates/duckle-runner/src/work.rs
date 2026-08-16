@@ -97,6 +97,72 @@ fn batches(workspace: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// Prove that the run lock actually excludes on THIS filesystem.
+///
+/// Everything about sharing a batch rests on one assumption: that when two
+/// processes ask for the same lock, exactly one gets it. That holds on a local
+/// disk and on a properly configured network mount, and it does NOT hold on
+/// some shared filesystems - NFSv3 with no lock daemon being the classic case,
+/// where every caller is told it has the lock. On such a mount every worker
+/// would claim every item and each item would run once per worker, silently,
+/// with no error anywhere to notice.
+///
+/// Assuming that away would be the most expensive kind of optimism, so it is
+/// measured. This process takes a lock, re-runs itself as a real second
+/// process, and asks that process whether it got the same lock. A second
+/// process is the only honest test: two attempts inside one process can be
+/// refused by bookkeeping a network filesystem never sees.
+fn lock_excludes(workspace: &Path) -> Result<bool, String> {
+    let key = format!("preflight-{}", std::process::id());
+    let held = runlock::try_acquire_nested(workspace, "batch", &key)
+        .ok_or_else(|| "could not take a lock in this workspace at all".to_string())?;
+
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?;
+    let out = std::process::Command::new(exe)
+        .args(["work", "--lock-probe"])
+        .arg(workspace)
+        .arg(&key)
+        .output()
+        .map_err(|e| format!("could not start a second process to test the lock: {e}"))?;
+    drop(held);
+
+    verdict_from_probe(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Read the probe's answer.
+///
+/// Split out because the branch that matters most - the probe saying it GOT a
+/// lock this process was already holding - cannot be produced on a machine
+/// whose filesystem works. A test can produce it, and must, or the only code
+/// path protecting against silent duplicate execution is the one never
+/// exercised.
+fn verdict_from_probe(said: &str) -> Result<bool, String> {
+    if said.contains("REFUSED") {
+        return Ok(true);
+    }
+    if said.contains("ACQUIRED") {
+        return Ok(false);
+    }
+    Err(format!(
+        "the lock test process said something unexpected: {}",
+        said.trim().chars().take(200).collect::<String>()
+    ))
+}
+
+/// The hidden other half of [`lock_excludes`]: try the lock, say what happened.
+fn lock_probe(workspace: &Path, key: &str) -> i32 {
+    match runlock::try_acquire_nested(workspace, "batch", key) {
+        Some(_lock) => {
+            println!("ACQUIRED");
+            0
+        }
+        None => {
+            println!("REFUSED");
+            0
+        }
+    }
+}
+
 pub fn run() -> Result<i32, String> {
     let args: Vec<String> = std::env::args().skip(2).collect();
     if args.first().map(String::as_str) == Some("-h")
@@ -111,7 +177,15 @@ pub fn run() -> Result<i32, String> {
              item is claimed with the same lock a pipeline run uses, so no two workers\n\
              take the same one.\n\n\
              --batch <id>   only this batch, instead of every batch in the workspace\n    \
-             --once         claim and run a single item, then exit\n\n\
+             --once         claim and run a single item, then exit\n    \
+             --check        test that locks exclude on this filesystem, then exit\n    \
+             --no-check     skip that test (see below)\n\n\
+             Before running anything a worker proves the run lock actually excludes\n\
+             here, by taking a lock and asking a second process whether it can take\n\
+             the same one. Some shared filesystems - NFS with no lock daemon is the\n\
+             classic case - tell every caller it has the lock, and on one of those\n\
+             every worker would claim every item and each item would run once per\n\
+             worker, silently. A worker refuses to start there.\n\n\
              Items are run AT LEAST once. The ledger is written after an item succeeds,\n\
              so a worker that finishes an item and then dies leaves it looking undone\n\
              and another worker repeats it. Make the child idempotent - an upsert sink\n\
@@ -126,6 +200,9 @@ pub fn run() -> Result<i32, String> {
     let mut only_batch: Option<String> = None;
     let mut once = false;
     let mut duckdb: Option<PathBuf> = None;
+    let mut check_only = false;
+    let mut skip_check = false;
+    let mut probe: Option<(String, String)> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -135,11 +212,57 @@ pub fn run() -> Result<i32, String> {
             "--batch" => only_batch = Some(it.next().ok_or("--batch needs a value")?.clone()),
             "--duckdb" => duckdb = Some(PathBuf::from(it.next().ok_or("--duckdb needs a value")?)),
             "--once" => once = true,
+            "--check" => check_only = true,
+            "--no-check" => skip_check = true,
+            // Hidden: the second process the lock test spawns.
+            "--lock-probe" => {
+                let ws = it.next().ok_or("--lock-probe needs a workspace")?.clone();
+                let key = it.next().ok_or("--lock-probe needs a key")?.clone();
+                probe = Some((ws, key));
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+    if let Some((ws, key)) = probe {
+        return Ok(lock_probe(Path::new(&ws), &key));
+    }
     let workspace = std::fs::canonicalize(&workspace)
         .map_err(|e| format!("workspace {}: {e}", workspace.display()))?;
+
+    // Measure the guarantee before relying on it. Refusing to start is the
+    // right answer to a filesystem whose locks do not exclude: the alternative
+    // is every worker running every item, silently. A test that could not be
+    // RUN is only a warning - failing to prove it is not the same as having
+    // disproved it, and refusing to work because a probe would not spawn would
+    // be its own outage.
+    if !skip_check {
+        match lock_excludes(&workspace) {
+            Ok(true) => {
+                if check_only {
+                    println!(
+                        "locks exclude correctly on {} - safe to run workers here.",
+                        workspace.display()
+                    );
+                    return Ok(0);
+                }
+            }
+            Ok(false) => {
+                return Err(format!(
+                    "locks do NOT exclude on {}: a second process took a lock this one was                      already holding. Every worker would claim every item, and each item would                      run once per worker, with no error anywhere. That is what an NFS mount with                      no lock daemon does. Fix the mount, or point workers at a local workspace.                      --no-check overrides this, knowing the above.",
+                    workspace.display()
+                ));
+            }
+            Err(why) => eprintln!(
+                "duckle-runner: could not verify that locks exclude here ({why}). Proceeding,                  but two workers on this filesystem are unproven."
+            ),
+        }
+        if check_only {
+            return Ok(0);
+        }
+    } else if check_only {
+        println!("--no-check was given, so nothing was tested.");
+        return Ok(0);
+    }
     // The engine reads this for sub-pipeline refs, incremental state and logs,
     // exactly as a normal run does.
     std::env::set_var("DUCKLE_WORKSPACE", &workspace);
@@ -314,6 +437,41 @@ mod tests {
         let found = batches(ws);
         assert_eq!(found.len(), 1, "found {found:?}");
         assert_eq!(found[0].0, "b1");
+    }
+
+    /// The dangerous case, which a working filesystem cannot produce.
+    ///
+    /// If a second process reports it took a lock this one was already holding,
+    /// locks do not exclude here, and running anyway means every worker claims
+    /// every item and each item runs once per worker - silently, with no error
+    /// anywhere. That branch cannot be reached on a machine whose locks work,
+    /// so it is driven directly rather than left as the one untested path.
+    #[test]
+    fn a_probe_that_got_the_lock_means_this_filesystem_is_not_safe() {
+        assert_eq!(verdict_from_probe("ACQUIRED
+"), Ok(false));
+        assert_eq!(verdict_from_probe("REFUSED
+"), Ok(true));
+
+        // Silence, or anything unrecognised, is NOT read as safe. Not being
+        // able to prove exclusion is different from having proved it, and
+        // guessing "safe" here is exactly the assumption this exists to remove.
+        assert!(verdict_from_probe("").is_err());
+        assert!(verdict_from_probe("bash: duckle-runner: not found").is_err());
+    }
+
+    /// The probe answers honestly about a lock that is genuinely held.
+    #[test]
+    fn the_probe_reports_refused_only_when_something_holds_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        // Nothing holds it.
+        assert_eq!(lock_probe(ws, "k1"), 0);
+        // Held: the probe run in THIS process would be refused, which is what
+        // the child process observes on a working filesystem.
+        let held = runlock::try_acquire_nested(ws, "batch", "k2").unwrap();
+        assert!(runlock::try_acquire_nested(ws, "batch", "k2").is_none());
+        drop(held);
     }
 
     /// Two workers must not take the same item.

@@ -10624,7 +10624,27 @@ impl DuckdbEngine {
         let sub_doc: plan::PipelineDoc = serde_json::from_str(&content).map_err(|e| {
             EngineError::Config(format!("sub-pipeline: parse '{}': {}", path, e))
         })?;
-        let result = self.execute_pipeline(&sub_doc);
+        // Run it under the CHILD's own name. Unnamed, every sub-pipeline shared
+        // one run-log folder and - far worse - one `xf.incremental` watermark
+        // file per node id, so three different children driven by ctl.foreach
+        // silently overwrote each other's marks and each resumed from whichever
+        // ran last. The name comes from the child's own file, not the caller,
+        // so the same child is the same run wherever it is invoked from.
+        //
+        // This does NOT separate the ITERATIONS of one child from each other:
+        // 400 tables through one child pipeline still share its watermark,
+        // because nothing here knows which property identifies an item. That
+        // needs an explicit key on ctl.foreach and is deliberately not guessed
+        // at - keying on ITER_INDEX would tie a watermark to a row's position
+        // in the driving query, which changes when that query is reordered.
+        let child_name = std::path::Path::new(&resolved)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty());
+        let result = match &child_name {
+            Some(name) => self.execute_pipeline_named(&sub_doc, name),
+            None => self.execute_pipeline(&sub_doc),
+        };
         if result.status == "ok" {
             Ok(())
         } else {
@@ -10655,7 +10675,10 @@ impl DuckdbEngine {
         let node_q = plan::quote_ident(&spec.node_id);
 
         let state_path = incremental_state_path(pipeline_name, &spec.node_id);
-        let saved = state_path.as_ref().and_then(read_incremental_state);
+        let saved = state_path
+            .as_ref()
+            .and_then(read_incremental_state)
+            .or_else(|| inherited_incremental_state(pipeline_name, &spec.node_id));
 
         // Build the WHERE filter from saved state, else the configured
         // initial value (typed by probing the column), else no filter.
@@ -11948,9 +11971,47 @@ fn dedupe_names(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// The folder an unnamed run falls back to.
+///
+/// Every sub-pipeline used to land here, because the sub-pipeline runner called
+/// `execute_pipeline` and that forwards no name. So a workspace running three
+/// different children through `ctl.foreach` had all three sharing one watermark
+/// file per node id, and each overwrote the others.
+const UNNAMED_RUN_FOLDER: &str = "pipeline";
+
+/// The watermark a newly-named run should start from, when it has none yet.
+///
+/// Naming sub-pipeline runs moves their state from `state/pipeline/<node>.json`
+/// to `state/<child>/<node>.json`. Without this, the first run after that change
+/// would find no state, fall back to `initialValue`, and re-load the source from
+/// the beginning - which on a large incremental sync is a very expensive
+/// surprise for what is meant to be a bug fix.
+///
+/// So a named run with no state of its own inherits the old shared value once,
+/// then writes its own from then on. That is not a guess about which child the
+/// shared value belonged to: whichever child wrote it last, every child was
+/// already reading exactly this number, so inheriting it is precisely today's
+/// behaviour, and every child diverges correctly from the next run onward.
+fn inherited_incremental_state(
+    pipeline_name: Option<&str>,
+    node_id: &str,
+) -> Option<(String, String)> {
+    // Only a NAMED run can inherit; an unnamed one already reads that file.
+    pipeline_name?;
+    let legacy = incremental_state_path(None, node_id)?;
+    let state = read_incremental_state(&legacy)?;
+    eprintln!(
+        "duckle: {} has no watermark yet, so it inherited the one at {} \
+         (written before sub-pipeline runs were named). It keeps its own from now on.",
+        node_id,
+        legacy.display()
+    );
+    Some(state)
+}
+
 fn incremental_state_path(pipeline_name: Option<&str>, node_id: &str) -> Option<std::path::PathBuf> {
     let ws = std::env::var("DUCKLE_WORKSPACE").ok().filter(|s| !s.is_empty())?;
-    let folder = sanitize_path_segment(pipeline_name.unwrap_or("pipeline"));
+    let folder = sanitize_path_segment(pipeline_name.unwrap_or(UNNAMED_RUN_FOLDER));
     let file = format!("{}.json", sanitize_path_segment(node_id));
     Some(
         std::path::Path::new(&ws)
@@ -14227,5 +14288,85 @@ impl DuckdbEngine {
             return Err(EngineError::Query(format!("pixeltable {}: {}", op, tail)));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod incremental_state_tests {
+    use super::{incremental_state_path, inherited_incremental_state};
+
+    /// Serialised: these tests set DUCKLE_WORKSPACE, which is process-global.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn workspace(tag: &str) -> std::path::PathBuf {
+        let ws = std::env::temp_dir().join(format!("duckle_state_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(&ws).unwrap();
+        ws
+    }
+
+    fn write_state(path: &std::path::Path, value: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!(r#"{{"column":"modified","value":"{value}","type":"TIMESTAMP"}}"#))
+            .unwrap();
+    }
+
+    /// Two different children must not share one watermark.
+    ///
+    /// Every sub-pipeline ran unnamed, so `state/pipeline/<node>.json` was the
+    /// path for all of them. Two children driven by ctl.foreach overwrote each
+    /// other's mark and each resumed from whichever ran last - which silently
+    /// skips rows, the exact failure incremental loading exists to prevent.
+    #[test]
+    fn two_children_keep_separate_watermarks() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let ws = workspace("split");
+        std::env::set_var("DUCKLE_WORKSPACE", &ws);
+
+        let a = incremental_state_path(Some("load-orders"), "inc1").unwrap();
+        let b = incremental_state_path(Some("load-customers"), "inc1").unwrap();
+        assert_ne!(a, b, "two children still share one watermark file");
+        assert!(a.ends_with("state/load-orders/inc1.json") || a.ends_with(r"state\load-orders\inc1.json"), "{}", a.display());
+
+        // And an unnamed run keeps the old location, so nothing else moves.
+        let legacy = incremental_state_path(None, "inc1").unwrap();
+        assert!(legacy.ends_with("state/pipeline/inc1.json") || legacy.ends_with(r"state\pipeline\inc1.json"), "{}", legacy.display());
+        assert_ne!(a, legacy);
+
+        std::env::remove_var("DUCKLE_WORKSPACE");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// Naming the runs must not silently re-load everything.
+    ///
+    /// A named child looks in a path that has never existed before. Without an
+    /// inheritance step it finds nothing, falls back to initialValue and reads
+    /// the source from the beginning - turning a bug fix into a full re-sync on
+    /// somebody's production load.
+    #[test]
+    fn a_newly_named_child_inherits_the_old_shared_watermark_once() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let ws = workspace("inherit");
+        std::env::set_var("DUCKLE_WORKSPACE", &ws);
+
+        write_state(&incremental_state_path(None, "inc1").unwrap(), "2026-08-01T00:00:00");
+
+        let inherited = inherited_incremental_state(Some("load-orders"), "inc1")
+            .expect("a named child did not inherit the existing watermark");
+        assert_eq!(inherited.0, "2026-08-01T00:00:00");
+        assert_eq!(inherited.1, "TIMESTAMP");
+
+        // Only where there is nothing of its own: a child with its own mark is
+        // asked for it first, so inheritance never overwrites a real value.
+        // (run_incremental reads its own path before calling this.)
+        assert!(
+            inherited_incremental_state(None, "inc1").is_none(),
+            "an unnamed run must not inherit from itself"
+        );
+        // A node nobody ever ran has nothing to inherit.
+        assert!(inherited_incremental_state(Some("load-orders"), "inc-unknown").is_none());
+
+        std::env::remove_var("DUCKLE_WORKSPACE");
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

@@ -437,12 +437,21 @@ Database sinks support an optional **dead-letter (validate-before-insert)** step
 | **Parallelize** | Run the downstream branches wired to its outputs concurrently; branches are unlimited (`ctl.parallelize`) |
 | **Iterate** | Run a sub-pipeline N times with `${ITER_INDEX}` substitution |
 | **For Each** | Run a sub-pipeline once per input row with `${ITER_ITEM_<FIELD>}` substitution |
+
 | **Try / Catch** | Install a fallback sub-pipeline if the wrapped stage fails |
 | **Retry** | Per-stage retry policy (configure on Advanced tab) |
 | **Log Message** | Emit an info log line (`{rows}` = upstream count), pass rows through (`ctl.log`) |
 | **Warn** | Emit a warning log line, pass rows through (`ctl.warn`) |
 | **Die / Fail** | Stop the run with a message: always, only when the input has rows, or only when empty (`ctl.die`) |
 | **Schedule** | Cron / interval / file-watch triggers via the orchestration crate |
+
+A sub-pipeline runs under its own name, so its run log lands in
+`logs/<child>/` and an `xf.incremental` watermark inside it is saved to
+`state/<child>/<node>.json`. Two different children driven by the same For Each
+therefore keep separate marks. Note that the ITERATIONS of one child still
+share that child's watermark: 400 tables through one sub-pipeline is one
+watermark, so keep a per-item mark in your own table rather than relying on
+`xf.incremental` inside a loop.
 
 ### Advanced settings (per-node)
 

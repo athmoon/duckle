@@ -155,26 +155,16 @@ fn session_key(sid: &str) -> String {
 /// Read the store, dropping anything already expired. A store that will not parse is an
 /// empty one here: a session is a convenience, and refusing to start the console because a
 /// cache went bad would trade a small problem for a total one.
-fn load_sessions(workspace: &Path) -> HashMap<String, Session> {
-    let now = now_secs();
-    let stored: HashMap<String, Session> = std::fs::read_to_string(sessions_path(workspace))
+fn read_sessions_file(workspace: &Path) -> HashMap<String, Session> {
+    std::fs::read_to_string(sessions_path(workspace))
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default();
-    let live: HashMap<String, Session> =
-        stored.iter().filter(|(_, s)| s.expires_at > now).map(|(k, s)| (k.clone(), s.clone())).collect();
-    // Write the pruned set back rather than only forgetting it here, or an expired session
-    // stays on disk until someone happens to sign in. A restart is the one moment every
-    // deployment reliably gets, so it is the right place to take out the dead ones.
-    if live.len() != stored.len() {
-        save_sessions(workspace, &live);
-    }
-    live
+        .unwrap_or_default()
 }
 
-/// Persist the store. Best effort: failing to write must not fail the sign-in, it only
-/// means the session does not outlive this process, which is where it used to live anyway.
-fn save_sessions(workspace: &Path, sessions: &HashMap<String, Session>) {
+/// Best effort: failing to write must not fail the sign-in, it only means the session does
+/// not outlive this process, which is where it used to live anyway.
+fn write_sessions_file(workspace: &Path, sessions: &HashMap<String, Session>) {
     let path = sessions_path(workspace);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -186,6 +176,47 @@ fn save_sessions(workspace: &Path, sessions: &HashMap<String, Session>) {
             let _ = std::fs::rename(&tmp, &path);
         }
     }
+}
+
+/// Change the stored sessions as one exclusive step, and return the merged result.
+///
+/// Writing the whole map from a copy held in memory is what a single process wants and
+/// what two processes must never do: running `serve` for operations and `web` for
+/// authoring against one workspace is a normal setup, and whichever signed in last erased
+/// the other's sessions. So this re-reads under a lock, applies the change to what is
+/// actually on disk, and writes that back, which is exactly how the schedule store already
+/// handles the same problem.
+///
+/// Expired sessions are dropped on the way through, so every write is also a prune and the
+/// file cannot grow without bound.
+///
+/// One limitation, stated rather than hidden: a process still serves reads from its own
+/// copy, so a session minted by the other one is not visible until this process next
+/// reloads. Nothing is lost, and the recommended topology is a single console.
+fn update_sessions<F>(workspace: &Path, f: F) -> HashMap<String, Session>
+where
+    F: FnOnce(&mut HashMap<String, Session>),
+{
+    // A workspace that will not take a lock must not cost anyone their session, so a
+    // failure here proceeds unlocked rather than refusing to sign in.
+    let _guard = duckle_duckdb_engine::runlock::lock_store(workspace, "console-sessions").ok();
+    let mut stored = read_sessions_file(workspace);
+    let before = stored.len();
+    let now = now_secs();
+    stored.retain(|_, s| s.expires_at > now);
+    let pruned = stored.len() != before;
+    f(&mut stored);
+    if pruned || stored.len() != before {
+        write_sessions_file(workspace, &stored);
+    }
+    stored
+}
+
+/// Read the store, dropping anything already expired and writing the pruned set back. A
+/// store that will not parse is an empty one: a session is a convenience, and refusing to
+/// start the console because a cache went bad trades a small problem for a total one.
+fn load_sessions(workspace: &Path) -> HashMap<String, Session> {
+    update_sessions(workspace, |_| {})
 }
 
 impl Console {
@@ -261,7 +292,11 @@ impl Console {
                 // waiting for a restart, or the store only ever grows.
                 Some(_) => {
                     sessions.remove(&key);
-                    save_sessions(&self.workspace, &sessions);
+                    let ws = self.workspace.clone();
+                    let k = key.clone();
+                    update_sessions(&ws, |stored| {
+                        stored.remove(&k);
+                    });
                 }
                 None => {}
             }
@@ -279,30 +314,27 @@ impl Console {
         let mut raw = [0u8; 32];
         getrandom::fill(&mut raw).ok()?;
         let sid = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
-        {
-            let mut sessions = self.sessions.lock().ok()?;
-            let now = now_secs();
-            // Signing in is the natural moment to take out the dead ones, so the store
-            // stays the size of who is actually using it.
-            sessions.retain(|_, s| s.expires_at > now);
-            sessions.insert(
-                session_key(&sid),
-                Session {
-                    label: identity.label.clone(),
-                    role: identity.role,
-                    expires_at: now + SESSION_TTL_SECS,
-                },
-            );
-            save_sessions(&self.workspace, &sessions);
-        }
+        let session = Session {
+            label: identity.label.clone(),
+            role: identity.role,
+            expires_at: now_secs() + SESSION_TTL_SECS,
+        };
+        let key = session_key(&sid);
+        let merged = update_sessions(&self.workspace, |stored| {
+            stored.insert(key, session);
+        });
+        *self.sessions.lock().ok()? = merged;
         Some((sid, identity))
     }
 
     pub fn sign_out(&self, cookie: Option<&str>) {
         if let Some(sid) = cookie.and_then(|c| cookie_value(c, SESSION_COOKIE)) {
+            let key = session_key(&sid);
+            let merged = update_sessions(&self.workspace, |stored| {
+                stored.remove(&key);
+            });
             if let Ok(mut s) = self.sessions.lock() {
-                s.remove(&session_key(&sid));
-                save_sessions(&self.workspace, &s);
+                *s = merged;
             }
         }
     }
@@ -533,6 +565,33 @@ mod tests {
         let written = std::fs::read_to_string(sessions_path(ws)).expect("store written");
         assert!(!written.contains(&sid), "the session id itself was written down");
         assert!(!written.contains("s3cret-token"), "the token was written down");
+    }
+
+    /// Running `serve` for operations and `web` for authoring against one workspace is a
+    /// normal setup, and both keep sessions in the same file. Writing the whole map from a
+    /// copy loaded at startup meant whichever signed in last erased the other's sessions.
+    /// Raised by Dariusz Danielewski, who was right that a JSON file needs the same care
+    /// here as anywhere else; the store this repository already uses for schedules takes a
+    /// lock around read-modify-write, and this one now does too.
+    #[test]
+    fn two_processes_sharing_a_workspace_do_not_erase_each_others_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+
+        let ops = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        let editor = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+
+        let (a, _) = ops.sign_in("s3cret-token").expect("signs in");
+        let (b, _) = editor.sign_in("s3cret-token").expect("signs in");
+
+        // A third process reads what is actually on disk.
+        let fresh = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        for (who, sid) in [("the ops console", &a), ("the editor", &b)] {
+            assert!(
+                fresh.identify(None, Some(&format!("{SESSION_COOKIE}={sid}"))).is_some(),
+                "{who}'s session was erased by the other process"
+            );
+        }
     }
 
     /// Signing out has to mean signed out everywhere, not just in the process that

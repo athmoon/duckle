@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { KeyValueField } from '../fields/KeyValueField';
 import { createPortal } from 'react-dom';
 import { Plug, Save, X } from 'lucide-react';
 import type { ConnectionKind, ConnectionPayload, RepoItem } from '../../repo-types';
@@ -112,7 +113,12 @@ const CONNECTION_TYPES: ConnectionType[] = [
         fields: ['accountName', 'accountKey', 'bucket'],
     },
     { kind: 'kafka', label: 'Kafka', fields: ['brokers', 'username', 'password'] },
-    { kind: 'rest', label: 'REST API', fields: ['url'] },
+    {
+        // Auth lives here so a rotated key is one edit, not one per node.
+        kind: 'rest',
+        label: 'REST API',
+        fields: ['url', 'headers', 'authType', 'authToken', 'authHeader'],
+    },
     {
         // #166 stage 2: field names match what the engine's Salesforce
         // connectors read, so run-time resolution injects them verbatim.
@@ -151,6 +157,10 @@ const FIELD_LABELS: Partial<Record<keyof ConnectionPayload, string>> = {
     clientId: 'Client ID (Client Credentials)',
     clientSecret: 'Client secret (Client Credentials)',
     accessToken: 'Access token (Bearer mode)',
+    headers: 'Headers (sent with every request)',
+    authType: 'Auth type (bearer / basic / none)',
+    authToken: 'Auth token',
+    authHeader: 'Auth header name (default Authorization)',
 };
 
 const SECRET_FIELDS = new Set<keyof ConnectionPayload>([
@@ -159,6 +169,7 @@ const SECRET_FIELDS = new Set<keyof ConnectionPayload>([
     'accountKey',
     'clientSecret',
     'accessToken',
+    'authToken',
 ]);
 
 export default function ConnectionEditorModal({ item, onSave, onCancel }: Props) {
@@ -179,7 +190,12 @@ export default function ConnectionEditorModal({ item, onSave, onCancel }: Props)
         return () => document.removeEventListener('keydown', onKey);
     }, [onCancel]);
 
-    const setField = (key: keyof ConnectionPayload, value: string | number) => {
+    // `headers` is a list of pairs rather than a scalar, so the value type is
+    // wider than the text/number inputs that made up this form until now.
+    const setField = (
+        key: keyof ConnectionPayload,
+        value: string | number | { key: string; value: string }[],
+    ) => {
         setValues(v => ({ ...v, [key]: value }));
     };
 
@@ -283,6 +299,40 @@ export default function ConnectionEditorModal({ item, onSave, onCancel }: Props)
                                             <option value="require">require</option>
                                             <option value="verify-ca">verify-ca</option>
                                             <option value="verify-full">verify-full</option>
+                                        </select>
+                                    </div>
+                                );
+                            }
+                            if (field === 'headers') {
+                                // Reuses the canvas key/value editor rather
+                                // than a second implementation, so a header set
+                                // here looks and behaves like one set on a node.
+                                return (
+                                    <div className="modal-field" key={field}>
+                                        <label className="modal-field-label">
+                                            {FIELD_LABELS[field] ?? field}
+                                        </label>
+                                        <KeyValueField
+                                            value={values.headers}
+                                            onChange={pairs => setField('headers', pairs)}
+                                        />
+                                    </div>
+                                );
+                            }
+                            if (field === 'authType') {
+                                return (
+                                    <div className="modal-field" key={field}>
+                                        <label className="modal-field-label">
+                                            {FIELD_LABELS[field] ?? field}
+                                        </label>
+                                        <select
+                                            className="modal-input"
+                                            value={(values.authType as string | undefined) ?? ''}
+                                            onChange={e => setField('authType', e.target.value)}
+                                        >
+                                            <option value="">None</option>
+                                            <option value="bearer">Bearer</option>
+                                            <option value="basic">Basic</option>
                                         </select>
                                     </div>
                                 );

@@ -64,6 +64,15 @@ export type ConnectionPayload = {
     // Salesforce OAuth (#166 stage 2). The node stores only a connectionRef;
     // the host resolves + decrypts these at run time, so the secret never
     // lands in the pipeline JSON. Field names match what the engine reads.
+    // Saved REST connection (community request: vendor auth in one place, so
+    // rotating a key is one edit instead of one per node). The node keeps only
+    // a connectionRef; headers merge per key at run time and the node's own
+    // url/body always win. See merge_rest_connection in duckle-secrets.
+    headers?: { key: string; value: string }[];
+    authType?: string;
+    authToken?: string;
+    authHeader?: string;
+    tokenUrl?: string;
     authMode?: string;
     loginUrl?: string;
     instanceUrl?: string;

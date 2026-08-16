@@ -37,6 +37,7 @@ import DuckleEdge from './DuckleEdge';
 import ConnectionTypePicker from './ConnectionTypePicker';
 import { QuickAddSearch } from './QuickAddSearch';
 import { CONNECTION_TYPES, type ConnectionType } from './connection-types';
+import { loadPersisted } from '../persistence';
 import type { DuckleNodeData } from '../pipeline-types';
 import { readClipboard } from '../clipboard';
 import type { ComponentDef } from '../workflow-ui/palette-data';
@@ -178,6 +179,15 @@ function CanvasInner({
     );
     const menu = useContextMenu();
     const mouseRef = useRef({ x: 0, y: 0 });
+    // The minimap eats a corner of the canvas, which on a dense graph is the
+    // part you are trying to see. Settings toggles it and broadcasts, so an
+    // open canvas reacts without a reload.
+    const [showMinimap, setShowMinimap] = useState(() => !loadPersisted('hideMinimap', false));
+    useEffect(() => {
+        const sync = () => setShowMinimap(!loadPersisted('hideMinimap', false));
+        window.addEventListener('duckle:minimap-visibility', sync);
+        return () => window.removeEventListener('duckle:minimap-visibility', sync);
+    }, []);
     const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
     const [pickerPos, setPickerPos] = useState<{ x: number; y: number } | null>(null);
     const [pickerAllowed, setPickerAllowed] = useState<Set<ConnectionType> | null>(null);
@@ -573,7 +583,7 @@ function CanvasInner({
                 colorMode={theme}
             >
                 <Background gap={16} />
-                <MiniMap pannable zoomable />
+                {showMinimap ? <MiniMap pannable zoomable /> : null}
                 <Controls />
             </ReactFlow>
             {menu.element}

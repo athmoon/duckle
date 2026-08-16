@@ -206,8 +206,15 @@ const compressionField = (): Field => ({
 
 // Map a database component to the saved-connection kind its picker should
 // offer. Wire-compatible engines reuse a base kind (Cockroach speaks the
-// Postgres protocol; OpenSearch speaks the Elasticsearch API). Components not
-// listed get an unfiltered picker (any saved connection).
+// Postgres protocol; OpenSearch speaks the Elasticsearch API).
+//
+// A component NOT listed here falls back to its own family (see
+// connectionKindFor), not to an unfiltered picker. Falling back to "anything"
+// meant src.db2, src.jdbc, src.pgvector, src.pinecone, src.qdrant,
+// src.weaviate, src.chroma, src.milvus, snk.jdbc, snk.pgvector and snk.chroma
+// all offered every saved connection in the workspace - so a REST connection
+// could be picked on a JDBC node, which copies its `url` onto the node and
+// produces a failure with no obvious cause.
 const CONNECTION_KIND_FOR: Record<string, string> = {
     'src.postgres': 'postgres', 'snk.postgres': 'postgres',
     'src.cockroach': 'postgres', 'snk.cockroach': 'postgres',
@@ -296,8 +303,14 @@ const DB_PORTS: Record<string, number> = {
     'src.rabbit': 5672,
 };
 
+// The saved-connection kind a component's picker should offer: the explicit
+// mapping when there is one, otherwise the component's own family. `src.db2`
+// offers db2 connections, not every connection in the workspace.
+export const connectionKindFor = (componentId: string): string | undefined =>
+    CONNECTION_KIND_FOR[componentId] ?? componentId.split('.')[1] ?? undefined;
+
 const dbConnectionFields = (componentId: string): Field[] => [
-    connectionRefField(CONNECTION_KIND_FOR[componentId]),
+    connectionRefField(connectionKindFor(componentId)),
     { key: 'host', label: 'Host', kind: 'text', required: true, placeholder: 'localhost' },
     {
         key: 'port',
@@ -2838,7 +2851,16 @@ function synthApiSource(comp: ComponentDef): ComponentManifest {
         {
             label: 'Auth',
             fields: [
-                ...(isSalesforce ? [salesforceConnectionRefField()] : []),
+                // Salesforce keeps its ref-only field (#166 stage 2). Every
+                // other REST alias gets an ordinary picker for a saved `rest`
+                // connection: two users asked for the vendor's auth to live in
+                // one place so a rotated key is a single edit rather than one
+                // per node. The connection carries the headers and the token;
+                // the node keeps its own url and body, which the run-time merge
+                // never overwrites.
+                ...(isSalesforce
+                    ? [salesforceConnectionRefField()]
+                    : [connectionRefField('rest')]),
                 {
                     key: 'authType',
                     label: 'Auth type',
@@ -5872,7 +5894,7 @@ function synthVectorSink(comp: ComponentDef): ComponentManifest {
                     { key: 'endpoint', label: 'Endpoint / host', kind: 'text', placeholder: 'http://localhost:6333' },
                     { key: 'apiKey', label: 'API key', kind: 'text', placeholder: '••••••••' },
                     { key: 'collection', label: 'Collection / index', kind: 'text', required: true, placeholder: 'documents' },
-                    { key: 'connectionRef', label: 'Or use saved connection', kind: 'connection-ref' },
+                    { ...connectionRefField(connectionKindFor(comp.id)), label: 'Or use saved connection' },
                 ],
             },
             {
@@ -5982,7 +6004,7 @@ function synthVectorSource(comp: ComponentDef): ComponentManifest {
                 { key: 'endpoint', label: 'Endpoint / host', kind: 'text' },
                 { key: 'apiKey', label: 'API key', kind: 'text', placeholder: '••••••••' },
                 { key: 'collection', label: 'Collection / index', kind: 'text', required: true },
-                { key: 'connectionRef', label: 'Or use saved connection', kind: 'connection-ref' },
+                { ...connectionRefField(connectionKindFor(comp.id)), label: 'Or use saved connection' },
             ],
         },
         {

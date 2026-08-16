@@ -55,6 +55,10 @@ export function SettingsModal({
     const [contextFile, setContextFile] = useState('');
     // Local UI pref: show/hide the top-bar Dives button.
     const [showDives, setShowDives] = useState(() => !loadPersisted('hideDivesButton', false));
+    // Local UI pref: show/hide the canvas minimap. On by default, because it
+    // is how you find a node on a large graph; off for anyone who would rather
+    // have the corner of the canvas back.
+    const [showMinimap, setShowMinimap] = useState(() => !loadPersisted('hideMinimap', false));
     // Local UI pref: global font size (applies live, no Save).
     const [fontSize, setFontSize] = useState(() => getFontSize());
     const [loaded, setLoaded] = useState(false);
@@ -141,6 +145,12 @@ export function SettingsModal({
         setShowDives(next);
         savePersisted('hideDivesButton', !next);
         window.dispatchEvent(new Event('duckle:dives-visibility'));
+    };
+
+    const toggleMinimap = (next: boolean) => {
+        setShowMinimap(next);
+        savePersisted('hideMinimap', !next);
+        window.dispatchEvent(new Event('duckle:minimap-visibility'));
     };
 
     // Font size applies live as it changes; clamped + persisted in font-size.ts.
@@ -440,6 +450,10 @@ export function SettingsModal({
                         <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '1rem', cursor: 'pointer' }}>
                             <input type="checkbox" checked={showDives} onChange={e => toggleDives(e.target.checked)} />
                             Show the Dives button (live data views &amp; dashboards) in the toolbar
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '1rem', cursor: 'pointer', marginTop: 10 }}>
+                            <input type="checkbox" checked={showMinimap} onChange={e => toggleMinimap(e.target.checked)} />
+                            Show the minimap in the corner of the canvas
                         </label>
                     </Section>
 

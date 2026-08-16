@@ -1101,11 +1101,13 @@ Saved connections become DuckDB secrets at runtime so credentials never leak int
 | **Snowflake** | account, user, role, warehouse, PAT or JWT private key | `src.snowflake`, `snk.snowflake` |
 | **S3 / GCS / Azure** | access key, secret, region (or service-account JSON) | All cloud sources/sinks via `httpfs` |
 | **MotherDuck / Databricks / BigQuery** | token, workspace URL | Respective sources/sinks |
-| **Generic REST / SaaS** | base URL, auth scheme (Bearer / API key / Basic, with a configurable API-key header name), token, custom headers | All REST aliases |
+| **Generic REST / SaaS** | base URL, headers, auth scheme (Bearer / Basic) and token | All REST aliases |
 
 Connections live in `workspace/connections/` as JSON. The token/password field is encrypted with the workspace key; the rest is plain text.
 
-To use a connection in a pipeline, the Properties panel of any compatible source/sink shows a **Connection** dropdown - pick one and the fields auto-fill.
+To use a connection in a pipeline, the Properties panel of any compatible source/sink shows a **Connection** dropdown - pick one and the fields auto-fill. The list is filtered to connections of a matching kind, so a REST connection is not offered on a JDBC node.
+
+A **REST** connection is the exception to auto-fill, because it exists to be shared by many nodes that each send a different request: put the vendor's headers and token on the connection once, and rotating a key is a single edit. Headers are merged per key at run time, and the node wins on a key it sets itself; the node's own `url` and request body are never overwritten. A node with no URL of its own inherits the connection's.
 
 The **Copy SQL** / **Export SQL** output is display-only and never executed. Secret values (passwords, tokens, keys, connection strings) are replaced with named placeholders such as `${DUCKLE_PASSWORD}`, so the exported script stays valid and is safe to share - substitute the real value at run time. To emit the real credentials instead (so the script runs unchanged), set the environment variable `DUCKLE_EXPORT_INCLUDE_SECRETS=1`; the output then contains live secrets and should be handled accordingly.
 

@@ -3336,6 +3336,9 @@
                 "key": "connectionRef",
                 "label": "Saved connection",
                 "kind": "connection-ref",
+                "accepts": [
+                  "db2"
+                ],
                 "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               },
               {
@@ -4265,6 +4268,9 @@
                 "key": "connectionRef",
                 "label": "Saved connection",
                 "kind": "connection-ref",
+                "accepts": [
+                  "jdbc"
+                ],
                 "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               },
               {
@@ -7964,6 +7970,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -8281,6 +8296,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -8597,6 +8621,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -8997,6 +9030,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -9313,6 +9355,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -9660,6 +9711,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -9977,6 +10037,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -10293,6 +10362,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -11593,6 +11671,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -12091,6 +12178,9 @@
                 "key": "connectionRef",
                 "label": "Saved connection",
                 "kind": "connection-ref",
+                "accepts": [
+                  "pgvector"
+                ],
                 "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               },
               {
@@ -12297,7 +12387,11 @@
               {
                 "key": "connectionRef",
                 "label": "Or use saved connection",
-                "kind": "connection-ref"
+                "kind": "connection-ref",
+                "accepts": [
+                  "pinecone"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               }
             ]
           },
@@ -12413,7 +12507,11 @@
               {
                 "key": "connectionRef",
                 "label": "Or use saved connection",
-                "kind": "connection-ref"
+                "kind": "connection-ref",
+                "accepts": [
+                  "qdrant"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               }
             ]
           },
@@ -12529,7 +12627,11 @@
               {
                 "key": "connectionRef",
                 "label": "Or use saved connection",
-                "kind": "connection-ref"
+                "kind": "connection-ref",
+                "accepts": [
+                  "weaviate"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               }
             ]
           },
@@ -12645,7 +12747,11 @@
               {
                 "key": "connectionRef",
                 "label": "Or use saved connection",
-                "kind": "connection-ref"
+                "kind": "connection-ref",
+                "accepts": [
+                  "chroma"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               }
             ]
           },
@@ -12761,7 +12867,11 @@
               {
                 "key": "connectionRef",
                 "label": "Or use saved connection",
-                "kind": "connection-ref"
+                "kind": "connection-ref",
+                "accepts": [
+                  "milvus"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               }
             ]
           },
@@ -30729,6 +30839,9 @@
                 "key": "connectionRef",
                 "label": "Saved connection",
                 "kind": "connection-ref",
+                "accepts": [
+                  "jdbc"
+                ],
                 "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               },
               {
@@ -35853,6 +35966,9 @@
                 "key": "connectionRef",
                 "label": "Saved connection",
                 "kind": "connection-ref",
+                "accepts": [
+                  "pgvector"
+                ],
                 "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               },
               {
@@ -36283,7 +36399,11 @@
               {
                 "key": "connectionRef",
                 "label": "Or use saved connection",
-                "kind": "connection-ref"
+                "kind": "connection-ref",
+                "accepts": [
+                  "chroma"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
               }
             ]
           },
@@ -42111,6 +42231,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -42427,6 +42556,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -42745,6 +42883,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -43061,6 +43208,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -43379,6 +43535,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -43695,6 +43860,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -44013,6 +44187,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -44329,6 +44512,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -44647,6 +44839,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -44963,6 +45164,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -45281,6 +45491,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -45597,6 +45816,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -45915,6 +46143,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -46231,6 +46468,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -46549,6 +46795,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -46865,6 +47120,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -47183,6 +47447,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -47499,6 +47772,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -47817,6 +48099,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -48133,6 +48424,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -48451,6 +48751,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -48767,6 +49076,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -49085,6 +49403,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -49401,6 +49728,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",
@@ -49719,6 +50055,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -50036,6 +50381,15 @@
             "label": "Auth",
             "fields": [
               {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
+              {
                 "key": "authType",
                 "label": "Auth type",
                 "kind": "select",
@@ -50352,6 +50706,15 @@
           {
             "label": "Auth",
             "fields": [
+              {
+                "key": "connectionRef",
+                "label": "Saved connection",
+                "kind": "connection-ref",
+                "accepts": [
+                  "rest"
+                ],
+                "description": "Pick a connection from the Connections folder to auto-fill the fields below."
+              },
               {
                 "key": "authType",
                 "label": "Auth type",

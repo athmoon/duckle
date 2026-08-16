@@ -39,6 +39,8 @@ pub const SENSITIVE_KEYS: &[&str] = &[
     // Salesforce OAuth client-credentials + bearer token (#166 stage 2).
     "clientSecret",
     "accessToken",
+    // The bearer/API token on a saved REST connection.
+    "authToken",
 ];
 
 fn key_path(workspace: &Path) -> PathBuf {
@@ -373,6 +375,72 @@ pub fn resolve_connection_ref_props(
 /// and pipelines that carry only a `connectionRef`. The connection wins over any
 /// stale inline value so credential rotation lives in one place. Runs before the
 /// `${ENV:}` pass, so a field stored as `${ENV:...}` still resolves afterwards.
+/// Apply a saved REST connection to a node, auth-first.
+///
+/// The point of a REST connection is the thing two people asked for on the same
+/// day: the vendor's auth in one place, so rotating a key is one edit rather
+/// than one per node. That gives two rules, and neither is the generic
+/// "whatever the connection says wins":
+///
+/// - **Headers merge per key.** The connection carries `X-Access-Key`; the node
+///   still gets to add its own `Content-Type`. A key present on the node wins,
+///   because the specific thing should be able to say something about itself.
+/// - **`url` only fills a node that has none.** Copying it over would point
+///   every node using the connection at the same endpoint, which is the
+///   opposite of "one datasource, a different query per node".
+///
+/// Auth fields fill in the same way: only where the node left a blank.
+fn merge_rest_connection(conn: &JsonValue, map: &mut serde_json::Map<String, JsonValue>) {
+    let filled = |v: Option<&JsonValue>| -> bool {
+        !matches!(v, None | Some(JsonValue::Null)) && v.and_then(|x| x.as_str()) != Some("")
+    };
+
+    // Headers, merged. Both shapes the engine accepts are normalised to an
+    // object here: headers_from_props reads either, and an object is the one
+    // that can be merged by key.
+    let as_pairs = |v: Option<&JsonValue>| -> Vec<(String, JsonValue)> {
+        match v {
+            Some(JsonValue::Object(o)) => o.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            Some(JsonValue::Array(a)) => a
+                .iter()
+                .filter_map(|it| {
+                    let k = it.get("key")?.as_str()?.to_string();
+                    let v = it.get("value").cloned().unwrap_or(JsonValue::Null);
+                    Some((k, v))
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let from_conn = as_pairs(conn.get("headers"));
+    if !from_conn.is_empty() {
+        let mut merged = serde_json::Map::new();
+        for (k, v) in from_conn {
+            merged.insert(k, v);
+        }
+        // The node last, so it overrides the connection on a shared key.
+        for (k, v) in as_pairs(map.get("headers")) {
+            if !matches!(v, JsonValue::Null) && v.as_str() != Some("") {
+                merged.insert(k, v);
+            }
+        }
+        map.insert("headers".into(), JsonValue::Object(merged));
+    }
+
+    // Everything else fills a blank and never overwrites.
+    for key in ["url", "authType", "authToken", "authHeader", "tokenUrl", "clientId", "clientSecret"]
+    {
+        let Some(v) = conn.get(key) else { continue };
+        if v.is_null() || v.as_str() == Some("") {
+            continue;
+        }
+        if filled(map.get(key)) {
+            continue;
+        }
+        map.insert(key.to_string(), v.clone());
+    }
+}
+
 fn merge_generic_connection(
     component_id: &str,
     kind: &str,
@@ -410,6 +478,15 @@ fn merge_generic_connection(
     let map = props
         .as_object_mut()
         .ok_or_else(|| format!("{}: node properties are not an object", component_id))?;
+
+    // A REST connection exists so that auth lives in ONE place while each node
+    // keeps its own request. The generic "connection value wins" rule is wrong
+    // for both of its interesting fields, so it gets its own policy.
+    if kind == "rest" {
+        merge_rest_connection(conn, map);
+        return Ok(());
+    }
+
     for key in KEYS {
         let Some(v) = conn.get(*key) else {
             continue;
@@ -763,6 +840,73 @@ mod tests {
         );
         resolve_connection_refs(&ws, std::slice::from_mut(&mut node)).unwrap();
         assert_eq!(node.data.properties.unwrap()["accessKey"], "AKINLINE");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// The whole point of a REST connection: auth in one place, query per node.
+    ///
+    /// Two users asked for this on the same day - "let's say auth changes, then
+    /// you update in one place". That only works if the connection supplies the
+    /// headers WITHOUT taking over the request, so the rules are the opposite of
+    /// the generic merge: headers merge per key, and the node's own url survives.
+    #[test]
+    fn a_rest_connection_supplies_auth_without_taking_over_the_request() {
+        let ws = temp_ws("rest");
+        write_connection(
+            &ws,
+            "crazyvendor",
+            r#"{"kind":"rest","url":"https://vendor.example.com/sql",
+                "headers":[{"key":"X-Client-Number","value":"42"},
+                           {"key":"X-Access-Key","value":"${ENV:XP_KEY}"},
+                           {"key":"Content-Type","value":"application/json"}],
+                "authType":"bearer","authToken":"t0ken"}"#,
+        );
+
+        // A node that keeps its own query and overrides one header.
+        let mut node = sf_node(
+            "src.rest",
+            serde_json::json!({
+                "connectionRef": "crazyvendor",
+                "url": "https://vendor.example.com/sql/v2",
+                "body": "{\"queryString\":\"SELECT * FROM custom.Contact\"}",
+                "headers": [{"key": "Content-Type", "value": "application/xml"}]
+            }),
+        );
+        resolve_connection_refs(&ws, std::slice::from_mut(&mut node)).unwrap();
+        let p = node.data.properties.unwrap();
+
+        // The node's own request is untouched. Copying the connection's url
+        // over it would point every node at one endpoint, which is exactly the
+        // thing being asked for and exactly what must not happen.
+        assert_eq!(p["url"], "https://vendor.example.com/sql/v2");
+        assert!(p["body"].as_str().unwrap().contains("custom.Contact"));
+
+        // Auth arrives from the connection, so rotating the key is one edit.
+        let headers = p["headers"].as_object().expect("headers merged to an object");
+        assert_eq!(headers["X-Client-Number"], "42");
+        assert_eq!(headers["X-Access-Key"], "${ENV:XP_KEY}"); // env pass resolves later
+        assert_eq!(p["authType"], "bearer");
+        assert_eq!(p["authToken"], "t0ken");
+
+        // ...and the node still wins on a header it set itself.
+        assert_eq!(headers["Content-Type"], "application/xml");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// A node with no url of its own takes the connection's.
+    #[test]
+    fn a_rest_node_with_no_url_of_its_own_inherits_the_connection_one() {
+        let ws = temp_ws("rest2");
+        write_connection(
+            &ws,
+            "vendor",
+            r#"{"kind":"rest","url":"https://vendor.example.com/sql","headers":[{"key":"X-Access-Key","value":"k"}]}"#,
+        );
+        let mut node = sf_node("src.rest", serde_json::json!({ "connectionRef": "vendor" }));
+        resolve_connection_refs(&ws, std::slice::from_mut(&mut node)).unwrap();
+        let p = node.data.properties.unwrap();
+        assert_eq!(p["url"], "https://vendor.example.com/sql");
+        assert_eq!(p["headers"].as_object().unwrap()["X-Access-Key"], "k");
         let _ = std::fs::remove_dir_all(&ws);
     }
 

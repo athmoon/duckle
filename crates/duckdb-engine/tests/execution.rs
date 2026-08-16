@@ -5822,6 +5822,84 @@ fn ctl_foreach_runs_subpipeline_per_upstream_row_with_iter_item() {
 }
 
 #[test]
+fn foreach_dispatch_queue_writes_a_batch_and_runs_nothing() {
+    // dispatch: "queue" is the difference between one machine and several: the
+    // rows become a durable file that any number of workers can claim from,
+    // instead of thread waves inside this process. So the batch must appear -
+    // and the children must NOT have run, because a run that quietly did the
+    // work anyway would double-load the moment a worker picked the batch up.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    std::env::set_var("DUCKLE_WORKSPACE", ws);
+
+    let parent_in = write_file(ws, "tables.csv", "table_name
+orders
+customers
+");
+    let sub_in = write_file(ws, "src.csv", "v
+42
+");
+    let out_prefix = out_path(ws, "loaded_");
+    let sub_doc_value = json!({
+        "nodes": [
+            node("s", "src.csv", json!({ "path": sub_in, "hasHeader": true })),
+            node("k", "snk.csv", json!({
+                "path": format!("{}${{ITER_ITEM_TABLE_NAME}}.csv", out_prefix),
+                "hasHeader": true
+            })),
+        ],
+        "edges": [main_edge("e", "s", "k")],
+    });
+    let sub_doc_path = out_path(ws, "sub.json");
+    std::fs::write(&sub_doc_path, serde_json::to_string(&sub_doc_value).unwrap()).unwrap();
+
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": parent_in, "hasHeader": true })),
+            node("fe", "ctl.foreach", json!({
+                "pipelineRef": sub_doc_path,
+                "itemKey": "table_name",
+                "dispatch": "queue"
+            })),
+        ]),
+        json!([main_edge("e1", "s", "fe")]),
+    ));
+    assert_eq!(r.status, "ok", "queueing failed: {:?}", r.error);
+
+    // Nothing ran.
+    for t in ["orders", "customers"] {
+        let p = format!("{}{}.csv", out_prefix, t);
+        assert!(
+            !std::path::Path::new(&p).exists(),
+            "queue dispatch ran the child for {t}; a worker would then run it a second time"
+        );
+    }
+
+    // The work is on disk, one line per row, carrying what a worker needs.
+    let dir = duckle_duckdb_engine::batch::batches_dir(ws);
+    let batch = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("no batches folder at {}: {e}", dir.display()))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|x| x.to_str()) == Some("ndjson"))
+        .expect("no batch file was written");
+    let (items, skipped) = duckle_duckdb_engine::batch::read(&batch).unwrap();
+    assert_eq!(skipped, 0);
+    assert_eq!(items.len(), 2, "one line per upstream row");
+
+    let names: Vec<Option<&str>> = items.iter().map(|i| i.item.as_deref()).collect();
+    assert!(names.contains(&Some("orders")) && names.contains(&Some("customers")), "{names:?}");
+    // The child reference and the substitutions travel with the item, so a
+    // worker on another machine needs nothing from this process.
+    assert_eq!(items[0].child, sub_doc_path);
+    assert!(items[0].vars.contains_key("ITER_ITEM_TABLE_NAME"));
+    assert!(items[0].vars.contains_key("ITER_INDEX"));
+
+    std::env::remove_var("DUCKLE_WORKSPACE");
+}
+
+#[test]
 fn concurrent_foreach_with_python_does_not_cross_contaminate() {
     // #203: a parallel foreach (concurrency > 1) whose sub-pipeline runs a
     // code.python node. Every iteration used the same scratch files

@@ -4881,6 +4881,23 @@ function synthRoutingControl(comp: ComponentDef): ComponentManifest {
                 kind: 'integer',
                 defaultValue: 1,
                 description: 'How many rows to process at the same time. 1 runs sequentially; higher overlaps slow per-row work (e.g. a cloud sink that re-connects each run). Each row still runs in isolation.',
+                // Hidden while queueing: the workers decide how much runs at
+                // once, so a concurrency here would be a control that does
+                // nothing. effectiveValue falls back to the field's
+                // defaultValue, so a pipeline with no dispatch key still shows it.
+                visibleWhen: { key: 'dispatch', equals: 'inline' },
+            });
+            fields.push({
+                key: 'dispatch',
+                label: 'Dispatch',
+                kind: 'select',
+                defaultValue: 'inline',
+                options: [
+                    { label: 'Run here', value: 'inline' },
+                    { label: 'Queue for workers', value: 'queue' },
+                ],
+                description:
+                    'Run here does the work in this process, bounded by this machine. Queue writes the rows to batches/<id>.ndjson and returns without running anything, so any number of duckle-runner workers can claim an item each and get through the batch together. Queued work does not start on its own: a worker has to pick it up.',
             });
         }
         return base(comp, [{ label: isIterate ? 'Iterate' : 'For each row', fields }], 'upstream');

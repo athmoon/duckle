@@ -37,6 +37,7 @@ pub mod review;
 pub mod alerts;
 pub mod catalog;
 pub mod runlock;
+pub mod batch;
 pub mod schedules;
 pub mod talend;
 pub mod trust;
@@ -1295,7 +1296,7 @@ impl DuckdbEngine {
                 }
                 // ctl.foreach: read upstream rows, run the sub-pipeline
                 // once per row with ${ITER_ITEM_<FIELD>} substitutions.
-                if let Some(RuntimeSpec::Foreach { path: each_path, concurrency, item_key }) =
+                if let Some(RuntimeSpec::Foreach { path: each_path, concurrency, item_key, queue }) =
                     stage.runtime.as_ref()
                 {
                     // Materialize upstream first if it isn't already
@@ -1344,8 +1345,22 @@ impl DuckdbEngine {
                         })
                         .collect();
 
+                    // dispatch: "queue" - write the work out and return. The
+                    // rows become a file any number of workers can claim from,
+                    // instead of thread waves bounded by this one machine.
                     let mut each_err: Option<String> = None;
-                    if *concurrency <= 1 {
+                    if *queue {
+                        // Write the work out and fall through to the stage's own
+                        // pass-through SQL, so the node still reports a normal
+                        // run. Skipping that leaves the stage marked as never
+                        // executed, which reads as a failure.
+                        if let Err(e) = self
+                            .queue_foreach_batch(&stage.node_id, each_path, &per_row)
+                            .map(|note| eprintln!("duckle: {note}"))
+                        {
+                            each_err = Some(format!("ctl.foreach({}): {}", each_path, e));
+                        }
+                    } else if *concurrency <= 1 {
                         // Sequential: stop at the first failing row.
                         for (i, (subs, item)) in per_row.iter().enumerate() {
                             if let Err(e) =

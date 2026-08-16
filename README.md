@@ -458,6 +458,13 @@ when each row is a different table. It is never inferred from the row's
 position, because that would move every watermark the moment the driving query
 is reordered.
 
+Set **For Each -> Dispatch** to *Queue for workers* and the rows are written to
+`batches/<id>.ndjson` instead of being run, one JSON line per row carrying the
+child reference and that row's substitutions. Nothing runs until a worker picks
+the batch up, so the run that queued it reports how many items are waiting
+rather than pretending they loaded. A batch is a file in the workspace like
+everything else here: no queue server, no database, no network service.
+
 ### Advanced settings (per-node)
 
 Every node has an **Advanced** tab with fields the engine honours at run time:

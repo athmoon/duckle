@@ -10592,6 +10592,49 @@ impl DuckdbEngine {
         self.run_subpipeline_as(path, subs, None)
     }
 
+    /// Write a `ctl.foreach`'s rows out as a batch instead of running them.
+    ///
+    /// Returns the line to report, so the caller decides how it surfaces. The
+    /// count is in it deliberately: "queued 400 items" and "ran 400 items" look
+    /// identical in a green run otherwise, and somebody has to notice that
+    /// nothing has actually loaded yet.
+    pub(crate) fn queue_foreach_batch(
+        &self,
+        node_id: &str,
+        child: &str,
+        per_row: &[(std::collections::HashMap<String, String>, Option<String>)],
+    ) -> Result<String, EngineError> {
+        // A batch is a file in the workspace, so without one there is nowhere
+        // for the work to live and nothing could ever pick it up. Failing here
+        // is much kinder than writing to a temp folder nobody will look in.
+        let ws = std::env::var("DUCKLE_WORKSPACE").ok().filter(|s| !s.is_empty()).ok_or_else(|| {
+            EngineError::Config(
+                "dispatch \"queue\" needs a workspace (DUCKLE_WORKSPACE) to write the batch into"
+                    .into(),
+            )
+        })?;
+        let ws = std::path::Path::new(&ws);
+        let batch_id = crate::batch::new_batch_id(node_id, chrono::Utc::now());
+        let items: Vec<crate::batch::WorkItem> = per_row
+            .iter()
+            .enumerate()
+            .map(|(index, (subs, item))| crate::batch::WorkItem {
+                v: 1,
+                batch: batch_id.clone(),
+                index,
+                item: item.clone(),
+                child: child.to_string(),
+                vars: subs.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            })
+            .collect();
+        let path = crate::batch::write(ws, &batch_id, &items)?;
+        Ok(format!(
+            "queued {} item(s) to {} - nothing has run yet; start a worker to pick them up",
+            items.len(),
+            path.display()
+        ))
+    }
+
     /// Run a sub-pipeline under a name that also identifies the ITEM.
     ///
     /// `item` is the value of `ctl.foreach`'s `itemKey` column for this row. It

@@ -125,7 +125,16 @@ pub enum RuntimeSpec {
     /// one `xf.incremental` watermark - fine for 1 item, silent data loss for
     /// 400 tables. It is never inferred: keying on the row's position would
     /// tie a watermark to the order of the driving query.
-    Foreach { path: String, concurrency: usize, item_key: Option<String> },
+    /// `queue` writes the work out as a batch file and returns, instead of
+    /// running it here. That is the whole difference between one machine and
+    /// several: the rows become a durable list that any number of workers can
+    /// claim from, rather than thread waves inside this process.
+    Foreach {
+        path: String,
+        concurrency: usize,
+        item_key: Option<String>,
+        queue: bool,
+    },
     Parallelize(ParallelizeSpec),
     /// ctl.log / ctl.warn: emit a log line at `level` ("info" / "warn")
     /// then pass the upstream through. `{rows}` in the message is replaced
@@ -1066,6 +1075,7 @@ fn build_stage(
     let mut foreach_pipeline_path: Option<String> = None;
     let mut foreach_concurrency: usize = 1;
     let mut foreach_item_key: Option<String> = None;
+    let mut foreach_queue = false;
     // (level, message) for ctl.log / ctl.warn; (message, condition) for ctl.die.
     let mut log_spec: Option<(String, String)> = None;
     let mut die_spec: Option<(String, String)> = None;
@@ -2653,6 +2663,10 @@ fn build_stage(
         // per-item incremental state. Optional: absent keeps the old shape,
         // where every iteration is the same named run.
         foreach_item_key = string_prop(&props, "itemKey").filter(|s| !s.trim().is_empty());
+        // "queue" hands the rows to workers instead of running them here.
+        foreach_queue = string_prop(&props, "dispatch")
+            .map(|d| d.trim().eq_ignore_ascii_case("queue"))
+            .unwrap_or(false);
         foreach_concurrency = props
             .get("concurrency")
             .and_then(|v| {
@@ -4830,6 +4844,7 @@ fn build_stage(
                 path,
                 concurrency: foreach_concurrency,
                 item_key: foreach_item_key.clone(),
+                queue: foreach_queue,
             }))
         .or_else(|| log_spec.map(|(level, message)| RuntimeSpec::Log { level, message }))
         .or_else(|| die_spec.map(|(message, condition)| RuntimeSpec::Die { message, condition }))

@@ -868,19 +868,16 @@ fn t_workspace_impact(args: &Value) -> Result<Value, String> {
                 "unresolved": unresolved,
             }))
         }
-        None => Ok(json!({
-            "pipelines": cat.pipelines.len(),
-            "assets": cat.assets.iter().map(|a| json!({
-                "id": a.id,
-                "kind": a.kind,
-                "writtenBy": cat.producers(&a.id).len(),
-                "readBy": cat.consumers(&a.id).len(),
-                "owner": owners.for_asset(&a.id).map(|r| r.owner.clone()),
-            })).collect::<Vec<_>>(),
-            "orphans": cat.orphans().iter().map(|a| &a.id).collect::<Vec<_>>(),
-            "externals": cat.externals().iter().map(|a| &a.id).collect::<Vec<_>>(),
-            "unresolved": unresolved,
-        })),
+        // The SAME assembly the desktop screen and the web console use, so an
+        // agent and a person are looking at one catalog. This built its own
+        // before, and had drifted: `writtenBy` was a COUNT where the other two
+        // surfaces give a list of pipeline names, and columns, description,
+        // tags and freshness were simply absent - so an agent was working from
+        // a quietly poorer picture than the person it was helping.
+        //
+        // The graph is built fresh rather than loaded, because an agent never
+        // sees the "press Rescan" notice a screen shows and cannot act on it.
+        None => Ok(json!(catalog::view_of(&workspace, &cat))),
     }
 }
 
@@ -1654,4 +1651,49 @@ mod verify_tests {
         // A sink with no declared/lineage columns yields no suggestion.
         assert!(suggestions.iter().all(|s| s["nodeId"] != "k"));
     }
+    /// An agent must get the same catalog the app and the console get.
+    ///
+    /// MCP assembled its own answer, so `writtenBy` here was a COUNT while the
+    /// same key on the other two surfaces is a list of pipeline names, and
+    /// columns, description, tags and freshness were simply absent. An agent
+    /// reading the catalog through MCP was therefore working from a different -
+    /// and quietly poorer - picture than the person looking at the screen.
+    #[test]
+    fn the_catalog_an_agent_sees_is_the_catalog_the_app_sees() {
+        let ws = std::env::temp_dir().join(format!("duckle_mcp_cat_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(ws.join("pipelines")).unwrap();
+        std::fs::write(
+            ws.join("pipelines").join("load.json"),
+            r#"{"name":"load","nodes":[{"id":"k","data":{"componentId":"snk.parquet",
+               "properties":{"path":"/lake/orders.parquet"},
+               "schema":[{"name":"id"},{"name":"total"}]}}],"edges":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("owners.json"),
+            r#"{"assets":[{"match":"/lake/orders.parquet","owner":"Ingest",
+                 "description":"Orders.","tags":["gold"]}]}"#,
+        )
+        .unwrap();
+
+        let out = t_workspace_impact(&json!({ "workspace": ws.to_string_lossy() })).unwrap();
+        let asset = &out["assets"][0];
+
+        // The shared shape, field for field.
+        assert_eq!(asset["id"], "/lake/orders.parquet");
+        assert_eq!(asset["owner"], "Ingest");
+        assert_eq!(asset["description"], "Orders.", "an agent cannot see the description");
+        assert_eq!(asset["tags"][0], "gold", "an agent cannot see the tags");
+        assert_eq!(asset["columns"][0], "id", "an agent cannot see the columns");
+        // writtenBy is a LIST of pipeline names here, exactly as it is on the
+        // other two surfaces - not a count that happens to share the name.
+        assert_eq!(asset["writtenBy"][0], "load", "writtenBy is not the shared shape");
+
+        // And the answer still says what it could not name, which is the one
+        // thing a governance answer must never omit.
+        assert!(out.get("unresolved").is_some());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
 }

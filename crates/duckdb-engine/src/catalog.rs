@@ -381,6 +381,20 @@ pub fn view(workspace: &Path) -> Result<CatalogView, String> {
         // than an empty screen that looks like an empty workspace.
         None => build_and_save(workspace)?,
     };
+    Ok(view_of(workspace, &catalog))
+}
+
+/// The same view, over a graph the caller already has.
+///
+/// Split from [`view`] so each surface can choose its own freshness policy
+/// while they all produce ONE shape. A screen reads the saved graph and shows a
+/// stale notice, because rescanning on every poll would read every pipeline in
+/// the workspace; an agent asking over MCP builds fresh, because it will not
+/// see a notice and cannot press Rescan. Those are different policies about the
+/// same answer, which is exactly the thing that must not be duplicated: MCP
+/// assembled its own and drifted - `writtenBy` there was a COUNT while the same
+/// key on the other two surfaces is a list of pipeline names.
+pub fn view_of(workspace: &Path, catalog: &Catalog) -> CatalogView {
     let owners = load_owners(workspace).unwrap_or_default();
     let fresh = freshness(workspace);
     let assets = catalog
@@ -402,16 +416,16 @@ pub fn view(workspace: &Path) -> Result<CatalogView, String> {
             }
         })
         .collect();
-    Ok(CatalogView {
+    CatalogView {
         assets,
         pipelines: catalog.pipelines.clone(),
         orphans: catalog.orphans().iter().map(|a| a.id.clone()).collect(),
         externals: catalog.externals().iter().map(|a| a.id.clone()).collect(),
         unresolved: catalog.unresolved.clone(),
         terms: owners.terms.clone(),
-        stale: is_stale(workspace, &catalog),
+        stale: is_stale(workspace, catalog),
         has_owners: !owners.is_empty(),
-    })
+    }
 }
 
 /// Set the human metadata for one exact asset or pipeline name.

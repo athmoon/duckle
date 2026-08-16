@@ -54,6 +54,9 @@ coverage/
 # Embedded engines downloaded at runtime
 .duckle/cache/
 .duckle/engines/
+# Console runtime state: live sessions and account hashes. Never committed.
+.duckle/console-sessions.json
+.duckle/console-users.json
 
 # Local DuckDB CLI for tests (DUCKLE_DUCKDB_BIN)
 .duckdb-cli/

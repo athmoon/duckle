@@ -88,9 +88,11 @@ pub struct Console {
     /// unchanged local case: the caller is trusted because they are already on
     /// the machine.
     open: bool,
-    /// Session id -> identity, minted at sign-in and dropped on restart, so the
-    /// browser never stores the token itself.
-    sessions: Mutex<HashMap<String, Identity>>,
+    /// Where the session store lives, so sessions outlive the process.
+    workspace: PathBuf,
+    /// hash(session id) -> session, minted at sign-in and persisted, so the browser never
+    /// stores the token itself and a restart does not sign everyone out.
+    sessions: Mutex<HashMap<String, Session>>,
     /// sha256(token) -> identity for tokens already verified once, so an API
     /// client polling every few seconds does not pay for an Argon2 hash on
     /// every request. Only ever populated with tokens that verified.
@@ -111,6 +113,79 @@ impl std::fmt::Debug for Console {
 
 pub fn accounts_path(workspace: &Path) -> PathBuf {
     workspace.join(".duckle").join("console-users.json")
+}
+
+/// Where live sessions are kept, so a restart does not sign everyone out.
+pub fn sessions_path(workspace: &Path) -> PathBuf {
+    workspace.join(".duckle").join("console-sessions.json")
+}
+
+/// How long a session lasts before it has to be earned again. A working day, so nobody is
+/// interrupted mid-shift and nobody holds a credential for a fortnight.
+const SESSION_TTL_SECS: i64 = 12 * 60 * 60;
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// A live session, as stored.
+///
+/// Keyed by a hash of the session id rather than the id itself. The store lives in the
+/// workspace, which gets backed up and copied around, and a file of working credentials
+/// has no business being in one. The browser holds the id; nothing else does, so a copy of
+/// this file admits nobody.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Session {
+    label: String,
+    role: Role,
+    /// Unix seconds. Past this the session is refused and dropped.
+    expires_at: i64,
+}
+
+/// What is written down for a session id: a plain SHA-256, unsalted on purpose. Salting
+/// guards low-entropy secrets against a dictionary; a 256-bit random id has no dictionary.
+fn session_key(sid: &str) -> String {
+    let d: [u8; 32] = Sha256::digest(sid.as_bytes()).into();
+    d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Read the store, dropping anything already expired. A store that will not parse is an
+/// empty one here: a session is a convenience, and refusing to start the console because a
+/// cache went bad would trade a small problem for a total one.
+fn load_sessions(workspace: &Path) -> HashMap<String, Session> {
+    let now = now_secs();
+    let stored: HashMap<String, Session> = std::fs::read_to_string(sessions_path(workspace))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let live: HashMap<String, Session> =
+        stored.iter().filter(|(_, s)| s.expires_at > now).map(|(k, s)| (k.clone(), s.clone())).collect();
+    // Write the pruned set back rather than only forgetting it here, or an expired session
+    // stays on disk until someone happens to sign in. A restart is the one moment every
+    // deployment reliably gets, so it is the right place to take out the dead ones.
+    if live.len() != stored.len() {
+        save_sessions(workspace, &live);
+    }
+    live
+}
+
+/// Persist the store. Best effort: failing to write must not fail the sign-in, it only
+/// means the session does not outlive this process, which is where it used to live anyway.
+fn save_sessions(workspace: &Path, sessions: &HashMap<String, Session>) {
+    let path = sessions_path(workspace);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(sessions) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            // Rename replaces on both platforms, so a reader never sees a partial file.
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
 }
 
 impl Console {
@@ -153,7 +228,8 @@ impl Console {
         Ok(Console {
             open: accounts.is_empty() && loopback,
             accounts,
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(load_sessions(workspace)),
+            workspace: workspace.to_path_buf(),
             verified: Mutex::new(HashMap::new()),
         })
     }
@@ -175,8 +251,19 @@ impl Console {
         // A session cookie first: it is the browser's normal path and costs a
         // map lookup rather than a password hash.
         if let Some(sid) = cookie.and_then(|c| cookie_value(c, SESSION_COOKIE)) {
-            if let Some(id) = self.sessions.lock().ok()?.get(&sid) {
-                return Some(id.clone());
+            let key = session_key(&sid);
+            let mut sessions = self.sessions.lock().ok()?;
+            match sessions.get(&key) {
+                Some(s) if s.expires_at > now_secs() => {
+                    return Some(Identity { label: s.label.clone(), role: s.role });
+                }
+                // Expired, so it is not a session any more. Drop it here rather than
+                // waiting for a restart, or the store only ever grows.
+                Some(_) => {
+                    sessions.remove(&key);
+                    save_sessions(&self.workspace, &sessions);
+                }
+                None => {}
             }
         }
         let bearer = authorization?.strip_prefix("Bearer ")?.trim();
@@ -192,14 +279,30 @@ impl Console {
         let mut raw = [0u8; 32];
         getrandom::fill(&mut raw).ok()?;
         let sid = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
-        self.sessions.lock().ok()?.insert(sid.clone(), identity.clone());
+        {
+            let mut sessions = self.sessions.lock().ok()?;
+            let now = now_secs();
+            // Signing in is the natural moment to take out the dead ones, so the store
+            // stays the size of who is actually using it.
+            sessions.retain(|_, s| s.expires_at > now);
+            sessions.insert(
+                session_key(&sid),
+                Session {
+                    label: identity.label.clone(),
+                    role: identity.role,
+                    expires_at: now + SESSION_TTL_SECS,
+                },
+            );
+            save_sessions(&self.workspace, &sessions);
+        }
         Some((sid, identity))
     }
 
     pub fn sign_out(&self, cookie: Option<&str>) {
         if let Some(sid) = cookie.and_then(|c| cookie_value(c, SESSION_COOKIE)) {
             if let Ok(mut s) = self.sessions.lock() {
-                s.remove(&sid);
+                s.remove(&session_key(&sid));
+                save_sessions(&self.workspace, &s);
             }
         }
     }
@@ -392,6 +495,92 @@ mod tests {
         // Loopback with nothing configured is unchanged: no token needed.
         let local = Console::configure(ws, "127.0.0.1", None).expect("loopback starts");
         assert!(local.is_open(), "requiring a token on localhost breaks the local workflow");
+    }
+
+    /// Sessions used to live only in the process, so every restart signed everyone out.
+    /// On a rolling deployment that is every release, which is the difference between a
+    /// console people keep open and one they avoid.
+    #[test]
+    fn a_signed_in_session_survives_a_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+
+        let first = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        let (sid, who) = first.sign_in("s3cret-token").expect("token signs in");
+        assert_eq!(who.role, Role::Admin);
+        let cookie = format!("{SESSION_COOKIE}={sid}");
+        drop(first);
+
+        // Same workspace, new process.
+        let restarted = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        let after = restarted
+            .identify(None, Some(&cookie))
+            .expect("the session should outlive the process that minted it");
+        assert_eq!(after.role, Role::Admin);
+        assert_eq!(after.label, who.label);
+    }
+
+    /// The session store sits in the workspace, which gets backed up and copied around, so
+    /// it must not be a file of working credentials. Only a hash of the id is written; the
+    /// id itself exists in the browser and nowhere else.
+    #[test]
+    fn the_session_store_holds_nothing_that_can_be_replayed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let console = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        let (sid, _) = console.sign_in("s3cret-token").expect("signs in");
+
+        let written = std::fs::read_to_string(sessions_path(ws)).expect("store written");
+        assert!(!written.contains(&sid), "the session id itself was written down");
+        assert!(!written.contains("s3cret-token"), "the token was written down");
+    }
+
+    /// Signing out has to mean signed out everywhere, not just in the process that
+    /// happened to serve the request.
+    #[test]
+    fn signing_out_survives_a_restart_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let console = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        let (sid, _) = console.sign_in("s3cret-token").expect("signs in");
+        let cookie = format!("{SESSION_COOKIE}={sid}");
+        console.sign_out(Some(&cookie));
+        drop(console);
+
+        let restarted = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        assert!(
+            restarted.identify(None, Some(&cookie)).is_none(),
+            "a signed-out session came back after a restart"
+        );
+    }
+
+    /// A session that never expires is a credential that never expires. The store also
+    /// only ever grew, because nothing was dropped except by signing out.
+    #[test]
+    fn an_expired_session_is_refused_and_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let console = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        let (sid, _) = console.sign_in("s3cret-token").expect("signs in");
+        let cookie = format!("{SESSION_COOKIE}={sid}");
+
+        // Age it past the limit by rewriting the stored expiry, which is the only thing
+        // standing between a live session and a dead one.
+        let raw = std::fs::read_to_string(sessions_path(ws)).unwrap();
+        let mut stored: HashMap<String, Session> = serde_json::from_str(&raw).unwrap();
+        for s in stored.values_mut() {
+            s.expires_at = now_secs() - 1;
+        }
+        std::fs::write(sessions_path(ws), serde_json::to_string(&stored).unwrap()).unwrap();
+
+        let restarted = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        assert!(
+            restarted.identify(None, Some(&cookie)).is_none(),
+            "an expired session was admitted"
+        );
+        let after: HashMap<String, Session> =
+            serde_json::from_str(&std::fs::read_to_string(sessions_path(ws)).unwrap()).unwrap();
+        assert!(after.is_empty(), "an expired session was kept on disk");
     }
 
     #[test]

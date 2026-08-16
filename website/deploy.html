@@ -469,6 +469,14 @@ spec:
         <p>Snapshot the volume. It carries incremental watermarks and the encryption keys under <code>.duckle/keys/</code>: losing those means full reloads and re-entered secrets.</p>
       </div>
       <div class="dep-card">
+        <h4>Make the proxy send <code>X-Forwarded-Proto</code></h4>
+        <p>The session cookie is marked <code>Secure</code> only when that header says the browser is on <code>https</code>, because always setting it would stop the cookie being stored during plain-HTTP local use. Most ingress controllers and load balancers send it by default; confirm yours does, or sessions travel without the flag.</p>
+      </div>
+      <div class="dep-card">
+        <h4>Sessions last 12 hours</h4>
+        <p>They are kept in <code>.duckle/console-sessions.json</code> as a hash of the id, so a restart or a rolling deploy does not sign everyone out and a copy of the workspace admits nobody. Expired ones are dropped at startup and at each sign-in. Back the workspace up, but keep that file out of version control.</p>
+      </div>
+      <div class="dep-card">
         <h4>Keep secrets out of the image</h4>
         <p>Secrets Manager, Key Vault or Secret Manager, injected at run time. Never bake a token into a layer and never commit <code>.duckle/keys/</code>.</p>
       </div>

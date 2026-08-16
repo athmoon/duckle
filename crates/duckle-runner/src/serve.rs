@@ -412,10 +412,11 @@ fn web_sign_in(stream: &mut TcpStream, state: &WebState, req: &Request) -> Resul
             let payload = json!({ "label": who.label, "role": who.role.as_str() }).to_string();
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Set-Cookie: {}={}; HttpOnly; SameSite=Strict; Path=/\r\nConnection: close\r\n\r\n",
+                 Set-Cookie: {}={}{}\r\nConnection: close\r\n\r\n",
                 payload.len(),
                 console_auth::SESSION_COOKIE,
-                sid
+                sid,
+                cookie_attributes(req.forwarded_proto.as_deref())
             );
             stream.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
             stream.write_all(payload.as_bytes()).map_err(|e| e.to_string())
@@ -892,6 +893,9 @@ struct Request {
     authorization: Option<String>,
     /// Raw `Cookie` header, carrying the console's session id for browsers.
     cookie: Option<String>,
+    /// `X-Forwarded-Proto` from a terminating proxy, so the session cookie can be marked
+    /// Secure exactly when the browser's leg of the connection actually is.
+    forwarded_proto: Option<String>,
     body: Vec<u8>,
 }
 
@@ -948,6 +952,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
     let mut origin = None;
     let mut host = None;
     let mut authorization = None;
+    let mut forwarded_proto = None;
     let mut cookie = None;
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
@@ -960,6 +965,8 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
                 host = Some(v.trim().to_string());
             } else if key.eq_ignore_ascii_case("authorization") {
                 authorization = Some(v.trim().to_string());
+            } else if key.eq_ignore_ascii_case("x-forwarded-proto") {
+                forwarded_proto = Some(v.trim().to_string());
             } else if key.eq_ignore_ascii_case("cookie") {
                 cookie = Some(v.trim().to_string());
             }
@@ -977,7 +984,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         body.extend_from_slice(&tmp[..n]);
     }
     body.truncate(content_length);
-    Ok(Request { method, path, query, origin, host, authorization, cookie, body })
+    Ok(Request { method, path, query, origin, host, authorization, cookie, forwarded_proto, body })
 }
 
 /// Host part of an Origin/Host header value (drop scheme, port, path, ipv6 []).
@@ -1014,6 +1021,31 @@ fn scheduler_notice(enabled_schedules: usize) -> String {
              run them on a cron.",
             enabled_schedules
         )
+    }
+}
+
+/// The attributes to put on the session cookie, given what the browser's leg of the
+/// connection actually is.
+///
+/// `Secure` cannot simply always be set: the console serves plain HTTP, and on a bare
+/// `http://host:8080` a Secure cookie is dropped by the browser, which would lock everyone
+/// out of the ordinary local case. Behind a proxy that terminates TLS the browser IS on
+/// https, and there the flag should be set, or a session cookie can be sent in clear to
+/// anything that reaches the console directly.
+///
+/// Trusting the header is safe in this direction: the worst a client can do by lying is
+/// ask for a stricter cookie than it needs.
+fn cookie_attributes(forwarded_proto: Option<&str>) -> &'static str {
+    const BASE: &str = "; HttpOnly; SameSite=Strict; Path=/";
+    const SECURE: &str = "; HttpOnly; SameSite=Strict; Path=/; Secure";
+    // A chain of proxies appends, so the browser's own hop is the first entry.
+    let browser_on_https = forwarded_proto
+        .and_then(|p| p.split(',').next())
+        .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"));
+    if browser_on_https {
+        SECURE
+    } else {
+        BASE
     }
 }
 
@@ -1344,14 +1376,16 @@ fn sign_in(stream: &mut TcpStream, state: &State, req: &Request) -> Result<(), S
     match state.console.sign_in(token) {
         Some((sid, who)) => {
             audit::record(&state.workspace, Some(&who), "session.sign_in", "-", audit::Outcome::Allowed);
-            // HttpOnly so page scripts cannot read it, SameSite=Strict so
-            // another site cannot ride it. Not Secure: the console is served
-            // over plain HTTP behind a proxy or on localhost, and marking it
-            // Secure would stop the cookie being set at all.
+            // HttpOnly so page scripts cannot read it, SameSite=Strict so another site
+            // cannot ride it, and Secure exactly when the browser's own hop is https.
+            // Always setting it would stop the cookie being stored at all on plain-HTTP
+            // local use; never setting it lets a session cookie travel in clear behind a
+            // proxy that does terminate TLS.
             let cookie = format!(
-                "{}={}; HttpOnly; SameSite=Strict; Path=/",
+                "{}={}{}",
                 console_auth::SESSION_COOKIE,
-                sid
+                sid,
+                cookie_attributes(req.forwarded_proto.as_deref())
             );
             let payload = json!({ "label": who.label, "role": who.role.as_str() }).to_string();
             let head = format!(
@@ -2233,12 +2267,51 @@ fn spawn_scheduler(state: Arc<State>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        connection_secret_cmd, console_auth, cron_decision, is_public_route, scheduler_notice,
+        connection_secret_cmd, console_auth, cookie_attributes, cron_decision, is_public_route,
+        scheduler_notice,
         migrate_legacy_schedules, normalize_cron, read_pipeline_file, read_request,
         save_schedule_at, RunGate, State, HEALTH_PATH, MAX_BODY,
     };
     use std::sync::Mutex;
     use duckle_duckdb_engine::schedules::{self, ScheduleKind};
+
+    /// Behind a proxy that terminates TLS the browser is on https, and a session cookie
+    /// that is not marked Secure can be sent in clear to anything that reaches the console
+    /// directly. That is the deployment shape the guide recommends, so it is the one that
+    /// has to be right.
+    #[test]
+    fn a_session_cookie_is_secure_when_the_browser_is_on_https() {
+        assert!(cookie_attributes(Some("https")).contains("Secure"));
+        assert!(cookie_attributes(Some("HTTPS")).contains("Secure"), "the header is not case sensitive");
+        assert!(
+            cookie_attributes(Some("https, http")).contains("Secure"),
+            "a chain of proxies leaves a list, and the first hop is the browser's"
+        );
+    }
+
+    /// The other direction matters more: the console serves plain HTTP, and a browser
+    /// silently discards a Secure cookie on http, which would lock everyone out of the
+    /// ordinary local case rather than fail visibly.
+    #[test]
+    fn a_session_cookie_is_not_secure_on_plain_http() {
+        for proto in [None, Some("http"), Some("HTTP")] {
+            assert!(
+                !cookie_attributes(proto).contains("Secure"),
+                "Secure on {proto:?} would stop the cookie being stored at all"
+            );
+        }
+    }
+
+    /// Whatever else changes, these two do not: script cannot read it, another site cannot
+    /// ride it.
+    #[test]
+    fn a_session_cookie_is_always_httponly_and_samesite() {
+        for proto in [None, Some("http"), Some("https")] {
+            let a = cookie_attributes(proto);
+            assert!(a.contains("HttpOnly"), "{proto:?}");
+            assert!(a.contains("SameSite=Strict"), "{proto:?}");
+        }
+    }
 
     /// An orchestrator has to be able to ask whether the process is alive without holding
     /// a credential. Every route requiring one meant a Kubernetes HTTP probe got 401 and

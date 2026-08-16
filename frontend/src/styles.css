@@ -8836,3 +8836,218 @@ html[dir='rtl'] .topbar-lang {
     background: var(--bg-2);
     color: var(--text-1);
 }
+
+/* ---- Data Catalog ------------------------------------------------------ */
+/* A browse-and-search screen, so it is sized for scanning a list rather than
+   filling a form: wide, fixed height, list beside detail. */
+.catalog-modal {
+    width: min(1100px, 94vw);
+    height: min(760px, 88vh);
+}
+
+.catalog-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow: hidden;
+}
+
+.catalog-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.catalog-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    padding: 0 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-3);
+}
+
+.catalog-search input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text-1);
+    padding: 9px 0;
+    font-size: 0.95rem;
+}
+
+.catalog-note {
+    padding: 9px 12px;
+    border-radius: 8px;
+    font-size: 0.86rem;
+    background: var(--bg-2);
+    color: var(--text-2);
+}
+
+.catalog-note-warn {
+    background: rgba(245, 166, 35, 0.1);
+    border: 1px solid rgba(245, 166, 35, 0.28);
+    color: var(--text-1);
+}
+
+/* List and detail side by side; each scrolls on its own so choosing an asset
+   never scrolls the list away from under the pointer. */
+.catalog-split {
+    display: grid;
+    grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.1fr);
+    gap: 14px;
+    flex: 1;
+    min-height: 0;
+}
+
+.catalog-list,
+.catalog-detail {
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-2);
+}
+
+.catalog-row {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 10px 12px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    color: var(--text-1);
+}
+
+.catalog-row:hover {
+    background: var(--bg-3);
+}
+
+.catalog-row.is-selected {
+    background: rgba(255, 122, 69, 0.1);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.catalog-row-id {
+    font-family: Consolas, monospace;
+    font-size: 0.84rem;
+    word-break: break-all;
+}
+
+.catalog-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 5px;
+    font-size: 0.76rem;
+    color: var(--text-3);
+}
+
+.catalog-kind,
+.catalog-owner,
+.catalog-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    border-radius: 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+}
+
+.catalog-fresh-none {
+    opacity: 0.7;
+    font-style: italic;
+}
+
+.catalog-detail-inner {
+    padding: 14px 16px;
+}
+
+.catalog-detail-id {
+    font-family: Consolas, monospace;
+    font-size: 0.9rem;
+    word-break: break-all;
+    color: var(--text-1);
+}
+
+.catalog-section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 16px 0 7px;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-3);
+}
+
+.catalog-lineage,
+.catalog-columns {
+    font-size: 0.86rem;
+    line-height: 1.55;
+    color: var(--text-2);
+    word-break: break-word;
+}
+
+.catalog-muted {
+    color: var(--text-3);
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+.catalog-form {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
+.catalog-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.8rem;
+    color: var(--text-3);
+}
+
+.catalog-form input,
+.catalog-form textarea {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 7px 9px;
+    color: var(--text-1);
+    font-size: 0.88rem;
+    font-family: inherit;
+    resize: vertical;
+}
+
+.btn-small {
+    padding: 3px 9px;
+    font-size: 0.76rem;
+}
+
+.catalog-glossary {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    max-height: 130px;
+    overflow-y: auto;
+}
+
+.catalog-term {
+    font-size: 0.84rem;
+    color: var(--text-2);
+    line-height: 1.6;
+}
+
+.catalog-term b {
+    color: var(--text-1);
+    margin-right: 6px;
+}

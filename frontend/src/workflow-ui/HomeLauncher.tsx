@@ -102,6 +102,7 @@ export type LauncherActions = {
     openWebConsole?: () => void;
     openLineage: () => void;
     openTrust: () => void;
+    openCatalog: () => void;
     openDataQuality: () => void;
     openConnections: () => void;
     openGit: () => void;
@@ -220,7 +221,8 @@ export function buildModules(a: LauncherActions): LauncherModule[] {
             blurb: 'A searchable inventory of every dataset, with owners and tags',
             group: 'govern',
             icon: Library,
-            status: 'planned',
+            status: 'ready',
+            open: a.openCatalog,
         },
         {
             id: 'glossary',

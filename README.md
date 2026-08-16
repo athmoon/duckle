@@ -1100,6 +1100,15 @@ schema a node already carries, so building the graph still opens no source and
 needs no credentials. No declared columns means none are *known*, which the
 catalog does not confuse with the asset having none.
 
+In the desktop app this is the **Data Catalog** screen (Home -> Govern): search
+every asset by name, owner, tag or column; see who writes it, who reads it, what
+columns are declared and when it was last written; and set the owner,
+description and tags without leaving the app. Saving writes a rule for that
+exact name **above** any wildcard covering it, so describing one file never
+re-describes its neighbours. **Read live schema** opens the source on demand
+through a node that already reads it, so it authenticates the way the pipeline
+does - it is never done just because a screen was opened.
+
 The same answers are available in the console's Catalog view and over MCP as `workspace_impact`.
 
 ### Alerting (tell someone when a run fails)

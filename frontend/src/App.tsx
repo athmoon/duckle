@@ -119,6 +119,7 @@ import type { Dashboard } from './dives/dashboard-types';
 import { DivesGallery } from './dives/DivesGallery';
 import { LineageModal } from './workflow-ui/LineageModal';
 import { TrustModal } from './workflow-ui/TrustModal';
+import CatalogPanel from './workflow-ui/CatalogPanel';
 
 type RuntimeState = 'connecting' | 'ready' | 'offline';
 
@@ -2323,6 +2324,7 @@ export default function App() {
     }, []);
     const [showLineage, setShowLineage] = useState(false);
     const [showTrust, setShowTrust] = useState(false);
+    const [showCatalog, setShowCatalog] = useState(false);
 
     const openJobIds = useMemo(() => new Set(jobs.map(j => j.id)), [jobs]);
 
@@ -2580,6 +2582,7 @@ export default function App() {
                     openBuild: () => handleBuildPipeline(activeJobId),
                     openLineage: () => setShowLineage(true),
                     openTrust: () => setShowTrust(true),
+                    openCatalog: () => setShowCatalog(true),
                     openConnections: () => handleNewConnection('connections'),
                     openGit: () => setShowGitPanel(true),
                     openSettings: () => setShowSettings(true),
@@ -2841,6 +2844,9 @@ export default function App() {
                     workspacePath={workspacePathState}
                     onClose={() => setShowTrust(false)}
                 />
+            ) : null}
+            {showCatalog ? (
+                <CatalogPanel workspace={workspacePathState} onClose={() => setShowCatalog(false)} />
             ) : null}
             {showMcpModal ? <McpModal onClose={() => setShowMcpModal(false)} /> : null}
             {showSettings ? (

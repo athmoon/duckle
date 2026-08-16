@@ -265,6 +265,68 @@ export type RunRecord = {
     category?: string;
 };
 
+export type CatalogFreshness = {
+    lastWrittenAt: string;
+    pipelineId: string;
+    rows?: number;
+};
+
+export type CatalogAsset = {
+    id: string;
+    kind: string;
+    columns: string[];
+    writtenBy: string[];
+    readBy: string[];
+    owner?: string;
+    contact?: string;
+    description?: string;
+    tags: string[];
+    freshness?: CatalogFreshness;
+};
+
+export type CatalogView = {
+    assets: CatalogAsset[];
+    pipelines: { id: string; name: string; nodeCount: number }[];
+    orphans: string[];
+    externals: string[];
+    unresolved: { pipelineId: string; nodeId: string; componentId: string; reason: string }[];
+    terms: Record<string, string>;
+    stale: boolean;
+    hasOwners: boolean;
+};
+
+/// Errors are propagated, never flattened to an empty catalog: "this workspace
+/// has no assets" and "the catalog could not be read" look identical as an
+/// empty list, and only one of them is good news.
+export async function workspaceCatalog(workspace: string): Promise<CatalogView> {
+    return await invoke<CatalogView>('workspace_catalog', { workspace });
+}
+
+export async function workspaceCatalogRebuild(workspace: string): Promise<CatalogView> {
+    return await invoke<CatalogView>('workspace_catalog_rebuild', { workspace });
+}
+
+export async function workspaceCatalogAnnotate(args: {
+    workspace: string;
+    pipelines: boolean;
+    name: string;
+    owner?: string | null;
+    contact?: string | null;
+    description?: string | null;
+    tags?: string[] | null;
+}): Promise<CatalogView> {
+    return await invoke<CatalogView>('workspace_catalog_annotate', args);
+}
+
+/// Reads the LIVE schema, which opens the source - so it is only ever called
+/// when somebody asks for it, never on render.
+export async function workspaceCatalogInspect(
+    workspace: string,
+    asset: string,
+): Promise<string[]> {
+    return await invoke<string[]>('workspace_catalog_inspect', { workspace, asset });
+}
+
 export async function runHistory(
     workspacePath: string,
     pipelineId: string,

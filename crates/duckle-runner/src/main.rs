@@ -27,6 +27,7 @@ mod build;
 mod console_auth;
 use duckle_duckdb_engine::context;
 mod drift;
+mod import;
 mod manifest;
 mod selfextract;
 mod work;
@@ -1477,6 +1478,16 @@ fn main() -> ExitCode {
     // `audit` -> read back who did what through the management console.
     if std::env::args().nth(1).as_deref() == Some("audit") {
         return match audit::run() {
+            Ok(code) => ExitCode::from(code as u8),
+            Err(e) => {
+                eprintln!("duckle-runner: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    // `import` -> convert a folder of legacy job files into pipelines.
+    if std::env::args().nth(1).as_deref() == Some("import") {
+        return match import::run() {
             Ok(code) => ExitCode::from(code as u8),
             Err(e) => {
                 eprintln!("duckle-runner: {e}");

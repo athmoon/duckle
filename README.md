@@ -136,6 +136,8 @@ carefully in exported SQL.
 
 - **Import a Talend job from the editor.** A **Talend** button sits in the project sidebar next to New Pipeline and New Folder, and the same action is in the editor's **⋯** menu as **Import Talend job...**. Either one picks a `.item` job, translates it, and opens it as a new pipeline tab, laid out on the canvas at the coordinates the job was drawn with. Measured on a real 44-job corpus: all 44 parse and 211 of 216 nodes map, the only refusal being a site-specific custom component. Nothing is written to your workspace until you save, so a job that translates badly costs a closed tab.
 - **The import report says what still needs a person.** A node count on its own would suggest a working pipeline, so the report leads with how many components actually translated, then lists everything unresolved. Encrypted Studio passwords arrive as `${ENV:...}` placeholders instead of guesses. Connections stored outside the job file are named, so you can fill them in or point the node at a saved connection. tMap outputs computed by Java are listed column by column with the expression to rewrite as SQL. A component with no Duckle equivalent is imported as a labelled placeholder, so the shape of the job survives rather than quietly losing a step.
+- **Convert a whole repository at once, from the terminal.** Importing through a file dialog is the right shape for trying Duckle and the wrong shape for leaving another tool, because nobody has one job - they have several hundred in a checkout. `duckle-runner import <dir>` walks the tree, converts every job it finds, and mirrors the folder layout under `--out` so two jobs that share a name cannot overwrite each other. Measured on a real 125-file corpus: 42 files hold a job and 83 do not (routines, contexts and SQL templates share the extension), all 42 convert with none failing, and exactly one component across the whole corpus has no equivalent - a site-specific custom one. Everything else still to resolve is credentials that were never in the job files to begin with: 119 encrypted passwords and 75 connections defined outside the job. The closing tally lists unmapped components by how often they appear, which is both the answer to "is this migration viable" and the shortest path to finishing it. `--json` for a script, `--strict` to fail a CI job.
+- **A file that was never a job is skipped, not counted.** The extension is shared by routines, contexts and SQL pattern templates. Parsing those yields an empty pipeline, and counting an empty pipeline as a converted job inflates the only number anyone reads - on the corpus above it turned 42 real conversions into a reported 82. They are now reported separately and no empty pipeline is written. The same rule applies in the other direction: a routine is Java source whose javadoc breaks any XML reader, so it is skipped rather than reported as a failed job, while a file that declares itself a job and then will not parse is still a failure.
 - **Credentials are masked on token boundaries in exported SQL.** Redaction replaced a credential value wherever it appeared, so a password that was also a substring of an ordinary identifier corrupted the statement around it: a password of `prod` rewrote `production_report.parquet` as `${DUCKLE_PASSWORD}uction_report.parquet`. The secret itself was always protected; the damage was to everything else, and it mattered most when reading the Plan or SQL view to debug. Matching is now delimiter-aware, so `LOAD postgres` is left intact while a one-character password is still masked in `password=p'`. Deliberately no minimum length: a short password is still a password.
 
 ---
@@ -1047,6 +1049,31 @@ duckle-runner audit --limit 500 --json               # for a collector
 `allowed` means the caller was permitted to proceed, not that the work then succeeded - run history answers that. Reads are not recorded, so a dashboard polling every few seconds does not bury the entries worth seeing. A page says when older entries exist beyond it, and a line that will not parse is counted rather than silently skipped.
 
 Still put it behind a reverse proxy if you need TLS.
+
+### Migrating a repository of legacy jobs
+
+The editor imports one job at a time, which is how you try Duckle. This is how you leave
+another tool: point it at a checkout and convert everything.
+
+```bash
+duckle-runner import ./legacy-jobs                    # convert the tree into ./imported
+duckle-runner import ./legacy-jobs --out ./pipelines  # somewhere else
+duckle-runner import ./legacy-jobs --json             # for a migration script
+duckle-runner import ./legacy-jobs --strict           # CI gate, exits 1 if anything needs a person
+```
+
+The folder layout is mirrored rather than flattened, because two jobs in different folders
+routinely share a name and flattening would silently drop one. Files that are not jobs -
+routines, contexts, SQL templates - are reported separately rather than counted as
+conversions, and no empty pipeline is written for them.
+
+The closing tally is the number to decide on. It says how many jobs came across clean, how
+many need a person, and which components have no equivalent yet, sorted by how often they
+appear. On a real 125-file corpus that list had a single entry, a site-specific custom
+component: coverage is the head of the distribution, so a corpus usually converts far
+better than a raw component count suggests. What remains is almost always credentials that
+were never in the job files - encrypted passwords become `${ENV:...}` placeholders and
+connections defined outside the job are named so you can point them at a saved connection.
 
 ### Workspace catalog (what reads and writes what)
 

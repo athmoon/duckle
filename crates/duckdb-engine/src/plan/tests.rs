@@ -380,6 +380,75 @@
         }
     }
 
+    /// A responsePath that is not already a JSON Pointer must still find rows.
+    ///
+    /// The value goes to `Value::pointer`, which needs a leading `/` and
+    /// returns None otherwise - and None is indistinguishable from "no rows",
+    /// so `data` yielded an empty result with no error and nothing to debug.
+    /// This repo's own example above used `data`, which is how long it went
+    /// unnoticed.
+    #[test]
+    fn a_response_path_that_is_not_a_pointer_is_still_understood() {
+        use crate::plan::builders::json_pointer_path;
+
+        // The reported case, and the JSONPath spelling the field label invites.
+        assert_eq!(json_pointer_path("data", true), "/data");
+        assert_eq!(json_pointer_path("$.data[*]", true), "/data");
+        assert_eq!(json_pointer_path("result.items", true), "/result/items");
+        assert_eq!(json_pointer_path("$.result.items[0]", true), "/result/items");
+        assert_eq!(json_pointer_path("  data  ", true), "/data");
+
+        // Already a pointer: untouched, including a literal dot, which is a
+        // legal pointer segment and therefore means what it says.
+        assert_eq!(json_pointer_path("/data", true), "/data");
+        assert_eq!(json_pointer_path("/d/results", true), "/d/results");
+        assert_eq!(json_pointer_path("/a.b", true), "/a.b");
+
+        // Empty stays empty: that means "the whole response is the row set".
+        assert_eq!(json_pointer_path("", true), "");
+        assert_eq!(json_pointer_path("   ", true), "");
+
+        // XML uses the same property as an ELEMENT path, where dots are
+        // legitimate characters, so it is left exactly as authored.
+        assert_eq!(json_pointer_path("Envelope/Body", false), "Envelope/Body");
+        assert_eq!(json_pointer_path("a.b", false), "a.b");
+    }
+
+    /// The legacy `jsonPath` field was offered by the form and read by nobody.
+    #[test]
+    fn the_legacy_json_path_field_is_honoured_rather_than_ignored() {
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"REST","componentId":"src.rest",
+                  "properties":{"url":"https://example.com/users",
+                                "jsonPath":"$.data[*]"}}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/out.csv"}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"k1",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let spec = compiled
+            .stages
+            .iter()
+            .find_map(|s| match &s.runtime {
+                Some(crate::plan::RuntimeSpec::RestSource(spec)) => Some(spec),
+                _ => None,
+            })
+            .expect("the REST source did not compile");
+        assert_eq!(
+            spec.response_path, "/data",
+            "a pipeline that set only the legacy field located no rows"
+        );
+    }
+
     #[test]
     fn rest_source_pipeline_is_not_batchable() {
         // src.rest hits the Rust-side ureq driver mid-pipeline, so

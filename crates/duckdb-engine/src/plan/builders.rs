@@ -8687,6 +8687,51 @@ pub(crate) fn kv_pairs(props: &JsonValue, key: &str) -> Vec<(String, String)> {
     Vec::new()
 }
 
+/// Normalise a user-supplied `responsePath` into a real JSON Pointer.
+///
+/// The value goes straight to `serde_json::Value::pointer`, which requires a
+/// leading `/` and returns `None` for anything else - and a `None` here is
+/// indistinguishable from "the response had no rows", so `data` or `$.data[*]`
+/// produced an empty result with no error at all. The sibling `totalCountPath`
+/// has always been normalised this way; this one was not.
+///
+/// Accepted and converted:
+///   `/data/items`  -> unchanged (already a pointer)
+///   `data.items`   -> `/data/items`
+///   `$.data[*]`    -> `/data`     (JSONPath, as the field's own label invites)
+///
+/// `json` is false for the XML flavour, where the same property is an element
+/// path rather than a pointer. XML trims its own slashes so a leading one is
+/// harmless, but dots are legitimate in element names, so it is left alone.
+pub(crate) fn json_pointer_path(raw: &str, json: bool) -> String {
+    let s = raw.trim();
+    if s.is_empty() || !json {
+        return s.to_string();
+    }
+    if s.starts_with('/') {
+        // Already a pointer. A literal dot is a legal pointer segment, so
+        // someone who wrote one means it.
+        return s.to_string();
+    }
+    // `$` / `$.` prefix, and any `[...]` subscript, are JSONPath spelling. The
+    // subscript is dropped rather than honoured: pointing at the array itself
+    // is what the row locator wants, and `[*]` has no pointer equivalent.
+    let body = s.strip_prefix('$').unwrap_or(s);
+    let mut out = String::new();
+    for seg in body.split('.') {
+        let seg = match seg.find('[') {
+            Some(i) => &seg[..i],
+            None => seg,
+        };
+        if seg.is_empty() {
+            continue;
+        }
+        out.push('/');
+        out.push_str(seg);
+    }
+    out
+}
+
 pub(crate) fn headers_from_props(props: &JsonValue) -> Vec<(String, String)> {
     let raw = match props.get("headers") {
         Some(v) => v,

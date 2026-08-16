@@ -3823,6 +3823,8 @@ fn build_stage(
         push_rest_auth(&mut headers, &props);
         // responsePath defaults to /data which is the GraphQL convention.
         let response_path = string_prop(&props, "responsePath")
+            .or_else(|| string_prop(&props, "jsonPath"))
+            .map(|s| json_pointer_path(&s, true))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "/data".into());
         rest_source = Some(RestSourceSpec {
@@ -3963,6 +3965,12 @@ fn build_stage(
             RestResponseFormat::Json
         };
         let response_path = string_prop(&props, "responsePath")
+            // `jsonPath` is the older spelling the form still offers as
+            // "Records JSONPath (legacy)". Nothing read it, so a pipeline that
+            // set only that field located no rows at all. Honoured as an alias
+            // rather than ignored, so those pipelines start working.
+            .or_else(|| string_prop(&props, "jsonPath"))
+            .map(|s| json_pointer_path(&s, response_format == RestResponseFormat::Json))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
                 if component_id == "src.odata" {

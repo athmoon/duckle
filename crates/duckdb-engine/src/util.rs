@@ -190,7 +190,7 @@ pub(crate) fn procedural_note(s: &plan::Stage) -> String {
             "control step: runs sub-pipeline '{}' x{} (ctl.iterate)",
             path, count
         )
-    } else if let Some(RuntimeSpec::Foreach { path, concurrency }) = s.runtime.as_ref() {
+    } else if let Some(RuntimeSpec::Foreach { path, concurrency, .. }) = s.runtime.as_ref() {
         if *concurrency > 1 {
             format!(
                 "control step: runs sub-pipeline '{}' once per upstream row, up to {} at a time (ctl.foreach)",

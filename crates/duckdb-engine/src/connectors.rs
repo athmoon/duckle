@@ -10589,6 +10589,27 @@ impl DuckdbEngine {
         path: &str,
         subs: &std::collections::HashMap<String, String>,
     ) -> Result<(), EngineError> {
+        self.run_subpipeline_as(path, subs, None)
+    }
+
+    /// Run a sub-pipeline under a name that also identifies the ITEM.
+    ///
+    /// `item` is the value of `ctl.foreach`'s `itemKey` column for this row. It
+    /// makes the run `<child>@<item>` rather than plain `<child>`, which is what
+    /// gives each iteration its own run log and - the reason it exists - its own
+    /// `xf.incremental` watermark. Loading 400 tables through one child
+    /// pipeline is 400 different loads; sharing one mark between them skips
+    /// rows, silently.
+    ///
+    /// `None` keeps the whole child as one run, which is right when the
+    /// iterations really are the same load and is the behaviour that predates
+    /// `itemKey`.
+    pub(crate) fn run_subpipeline_as(
+        &self,
+        path: &str,
+        subs: &std::collections::HashMap<String, String>,
+        item: Option<&str>,
+    ) -> Result<(), EngineError> {
         let resolved = resolve_subpipeline_ref(path);
         let mut content = std::fs::read_to_string(&resolved).map_err(|e| {
             EngineError::Config(format!("sub-pipeline: read '{}': {}", resolved, e))
@@ -10637,10 +10658,7 @@ impl DuckdbEngine {
         // needs an explicit key on ctl.foreach and is deliberately not guessed
         // at - keying on ITER_INDEX would tie a watermark to a row's position
         // in the driving query, which changes when that query is reordered.
-        let child_name = std::path::Path::new(&resolved)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .filter(|s| !s.is_empty());
+        let child_name = child_run_name(&resolved, item);
         let result = match &child_name {
             Some(name) => self.execute_pipeline_named(&sub_doc, name),
             None => self.execute_pipeline(&sub_doc),
@@ -11978,6 +11996,22 @@ fn dedupe_names(names: Vec<String>) -> Vec<String> {
 /// different children through `ctl.foreach` had all three sharing one watermark
 /// file per node id, and each overwrote the others.
 const UNNAMED_RUN_FOLDER: &str = "pipeline";
+
+/// The name a sub-pipeline run goes under: `<child>` or `<child>@<item>`.
+///
+/// Split out so a test drives the real construction rather than a restatement
+/// of it. The name decides the run-log folder AND the `xf.incremental`
+/// watermark path, so getting it wrong is a data bug, not a cosmetic one.
+fn child_run_name(resolved_path: &str, item: Option<&str>) -> Option<String> {
+    let stem = std::path::Path::new(resolved_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())?;
+    match item.map(str::trim).filter(|i| !i.is_empty()) {
+        Some(item) => Some(format!("{stem}@{item}")),
+        None => Some(stem),
+    }
+}
 
 /// The watermark a newly-named run should start from, when it has none yet.
 ///
@@ -14293,7 +14327,7 @@ impl DuckdbEngine {
 
 #[cfg(test)]
 mod incremental_state_tests {
-    use super::{incremental_state_path, inherited_incremental_state};
+    use super::{child_run_name, incremental_state_path, inherited_incremental_state};
 
     /// Serialised: these tests set DUCKLE_WORKSPACE, which is process-global.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -14309,6 +14343,47 @@ mod incremental_state_tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, format!(r#"{{"column":"modified","value":"{value}","type":"TIMESTAMP"}}"#))
             .unwrap();
+    }
+
+    /// Each item of a For Each keeps its own watermark, once itemKey names it.
+    ///
+    /// Naming the child fixed collisions BETWEEN children. It did nothing for
+    /// the case that actually bites: 400 tables driven through ONE child
+    /// pipeline, all sharing that child's mark, so each table resumed from
+    /// wherever the previous table finished and skipped everything in between.
+    /// `itemKey` is what separates them, and it has to be given rather than
+    /// inferred - keying on row position would move every watermark the moment
+    /// the driving query is reordered.
+    #[test]
+    fn each_item_of_a_foreach_keeps_its_own_watermark() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let ws = workspace("peritem");
+        std::env::set_var("DUCKLE_WORKSPACE", &ws);
+
+        // The names the REAL construction produces for two rows of one child,
+        // not a restatement of them.
+        let name = |item: Option<&str>| {
+            child_run_name("/ws/pipelines/sync-one-table.json", item).expect("no name")
+        };
+        assert_eq!(name(Some("orders")), "sync-one-table@orders");
+        assert_eq!(name(None), "sync-one-table", "no itemKey must keep the old single name");
+        // A blank or whitespace item is not an item.
+        assert_eq!(name(Some("   ")), "sync-one-table");
+
+        let orders = incremental_state_path(Some(&name(Some("orders"))), "inc1").unwrap();
+        let customers = incremental_state_path(Some(&name(Some("customers"))), "inc1").unwrap();
+        assert_ne!(orders, customers, "two tables still share one watermark file");
+
+        // Both are still under the child, so a workspace stays navigable.
+        assert!(orders.to_string_lossy().contains("sync-one-table"));
+
+        // Without an itemKey the child is one run, which is the pre-existing
+        // behaviour and correct when the iterations are genuinely one load.
+        let shared = incremental_state_path(Some(&name(None)), "inc1").unwrap();
+        assert_ne!(shared, orders);
+
+        std::env::remove_var("DUCKLE_WORKSPACE");
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     /// Two different children must not share one watermark.

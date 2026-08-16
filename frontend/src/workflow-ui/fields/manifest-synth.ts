@@ -4869,6 +4869,13 @@ function synthRoutingControl(comp: ComponentDef): ComponentManifest {
             });
         } else {
             fields.push({
+                key: 'itemKey',
+                label: 'Item key column',
+                kind: 'column',
+                description:
+                    'Column whose value names each row\'s run, e.g. table_name. The child then runs as <pipeline>@<value>, so every row gets its own run log AND its own Incremental Load watermark. Leave blank and all rows share one watermark, which silently skips rows when each row is a different table. Never guessed: keying on row position would break when the driving query is reordered.',
+            });
+            fields.push({
                 key: 'concurrency',
                 label: 'Concurrency',
                 kind: 'integer',

@@ -1295,7 +1295,7 @@ impl DuckdbEngine {
                 }
                 // ctl.foreach: read upstream rows, run the sub-pipeline
                 // once per row with ${ITER_ITEM_<FIELD>} substitutions.
-                if let Some(RuntimeSpec::Foreach { path: each_path, concurrency }) =
+                if let Some(RuntimeSpec::Foreach { path: each_path, concurrency, item_key }) =
                     stage.runtime.as_ref()
                 {
                     // Materialize upstream first if it isn't already
@@ -1316,8 +1316,13 @@ impl DuckdbEngine {
                             continue;
                         }
                     };
-                    // Build each row's ${ITER_*} substitution map up front.
-                    let per_row: Vec<std::collections::HashMap<String, String>> = rows
+                    // Build each row's ${ITER_*} substitution map up front, plus
+                    // the name this iteration runs under. With an itemKey the
+                    // name carries the item, so `state/<child>@<item>/<node>.json`
+                    // gives every table its own watermark instead of 400 tables
+                    // sharing one. Without it, every iteration is the same run -
+                    // the behaviour before itemKey existed.
+                    let per_row: Vec<(std::collections::HashMap<String, String>, Option<String>)> = rows
                         .iter()
                         .enumerate()
                         .map(|(i, row)| {
@@ -1332,15 +1337,20 @@ impl DuckdbEngine {
                                     subs.insert(format!("ITER_ITEM_{}", k.to_uppercase()), val_str);
                                 }
                             }
-                            subs
+                            let item = item_key.as_ref().and_then(|key| {
+                                subs.get(&format!("ITER_ITEM_{}", key.trim().to_uppercase())).cloned()
+                            });
+                            (subs, item)
                         })
                         .collect();
 
                     let mut each_err: Option<String> = None;
                     if *concurrency <= 1 {
                         // Sequential: stop at the first failing row.
-                        for (i, subs) in per_row.iter().enumerate() {
-                            if let Err(e) = self.run_subpipeline_with_subs(each_path, subs) {
+                        for (i, (subs, item)) in per_row.iter().enumerate() {
+                            if let Err(e) =
+                                self.run_subpipeline_as(each_path, subs, item.as_deref())
+                            {
                                 each_err =
                                     Some(format!("ctl.foreach({})[row {}]: {}", each_path, i, e));
                                 break;
@@ -1355,17 +1365,18 @@ impl DuckdbEngine {
                         let wave = (*concurrency).min(per_row.len().max(1));
                         'waves: for chunk in per_row.chunks(wave) {
                             let mut handles = Vec::with_capacity(chunk.len());
-                            for subs in chunk {
+                            for (subs, item) in chunk {
                                 let engine = self.clone();
                                 let path = each_path.clone();
                                 let subs = subs.clone();
+                                let item = item.clone();
                                 let idx = subs
                                     .get("ITER_INDEX")
                                     .cloned()
                                     .unwrap_or_default();
                                 handles.push(std::thread::spawn(move || {
                                     engine
-                                        .run_subpipeline_with_subs(&path, &subs)
+                                        .run_subpipeline_as(&path, &subs, item.as_deref())
                                         .map_err(|e| (idx, e))
                                 }));
                             }

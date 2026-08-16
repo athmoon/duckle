@@ -436,7 +436,7 @@ Database sinks support an optional **dead-letter (validate-before-insert)** step
 | **Run Job** | Call a child pipeline (picked from the workspace) passing parent context variables; chain several to build a Master Job (`ctl.runjob`) |
 | **Parallelize** | Run the downstream branches wired to its outputs concurrently; branches are unlimited (`ctl.parallelize`) |
 | **Iterate** | Run a sub-pipeline N times with `${ITER_INDEX}` substitution |
-| **For Each** | Run a sub-pipeline once per input row with `${ITER_ITEM_<FIELD>}` substitution |
+| **For Each** | Run a sub-pipeline once per input row with `${ITER_ITEM_<FIELD>}` substitution; an optional item key column names each run so per-row watermarks stay separate |
 
 | **Try / Catch** | Install a fallback sub-pipeline if the wrapped stage fails |
 | **Retry** | Per-stage retry policy (configure on Advanced tab) |
@@ -448,10 +448,15 @@ Database sinks support an optional **dead-letter (validate-before-insert)** step
 A sub-pipeline runs under its own name, so its run log lands in
 `logs/<child>/` and an `xf.incremental` watermark inside it is saved to
 `state/<child>/<node>.json`. Two different children driven by the same For Each
-therefore keep separate marks. Note that the ITERATIONS of one child still
-share that child's watermark: 400 tables through one sub-pipeline is one
-watermark, so keep a per-item mark in your own table rather than relying on
-`xf.incremental` inside a loop.
+therefore keep separate marks.
+
+Set **For Each -> Item key column** to separate the ITERATIONS too. The child
+then runs as `<child>@<value>`, so loading 400 tables through one sub-pipeline
+keeps 400 watermarks in `state/<child>@<table>/<node>.json` instead of one.
+Leave it blank and every row shares a single mark, which silently skips rows
+when each row is a different table. It is never inferred from the row's
+position, because that would move every watermark the moment the driving query
+is reordered.
 
 ### Advanced settings (per-node)
 

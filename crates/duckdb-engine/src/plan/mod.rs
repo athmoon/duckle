@@ -120,7 +120,12 @@ pub enum RuntimeSpec {
     /// Run `path` once per upstream row. `concurrency` > 1 runs the per-row
     /// children in bounded concurrent waves (each in its own temp DB); 1 is
     /// the default sequential behaviour.
-    Foreach { path: String, concurrency: usize },
+    /// `item_key` names the upstream COLUMN that identifies each iteration.
+    /// Without it every iteration of one child is the same run, so they share
+    /// one `xf.incremental` watermark - fine for 1 item, silent data loss for
+    /// 400 tables. It is never inferred: keying on the row's position would
+    /// tie a watermark to the order of the driving query.
+    Foreach { path: String, concurrency: usize, item_key: Option<String> },
     Parallelize(ParallelizeSpec),
     /// ctl.log / ctl.warn: emit a log line at `level` ("info" / "warn")
     /// then pass the upstream through. `{rows}` in the message is replaced
@@ -1060,6 +1065,7 @@ fn build_stage(
     let mut iterate_count: Option<u64> = None;
     let mut foreach_pipeline_path: Option<String> = None;
     let mut foreach_concurrency: usize = 1;
+    let mut foreach_item_key: Option<String> = None;
     // (level, message) for ctl.log / ctl.warn; (message, condition) for ctl.die.
     let mut log_spec: Option<(String, String)> = None;
     let mut die_spec: Option<(String, String)> = None;
@@ -2643,6 +2649,10 @@ fn build_stage(
         // Optional: run the per-row children concurrently. Default 1 keeps the
         // existing sequential behaviour. Accepts a JSON number or a numeric
         // string (the form stores it as text).
+        // The column whose value names each iteration, for run logs and for
+        // per-item incremental state. Optional: absent keeps the old shape,
+        // where every iteration is the same named run.
+        foreach_item_key = string_prop(&props, "itemKey").filter(|s| !s.trim().is_empty());
         foreach_concurrency = props
             .get("concurrency")
             .and_then(|v| {
@@ -4816,7 +4826,11 @@ fn build_stage(
         .or_else(|| iterate_pipeline_path
             .map(|path| RuntimeSpec::Iterate { path, count: iterate_count.unwrap_or(0) }))
         .or_else(|| foreach_pipeline_path
-            .map(|path| RuntimeSpec::Foreach { path, concurrency: foreach_concurrency }))
+            .map(|path| RuntimeSpec::Foreach {
+                path,
+                concurrency: foreach_concurrency,
+                item_key: foreach_item_key.clone(),
+            }))
         .or_else(|| log_spec.map(|(level, message)| RuntimeSpec::Log { level, message }))
         .or_else(|| die_spec.map(|(message, condition)| RuntimeSpec::Die { message, condition }))
         .or_else(|| incremental.map(RuntimeSpec::Incremental))

@@ -84,8 +84,13 @@ fn lock_key(s: &Schedule) -> &str {
 enum Claim {
     /// Yes. Dropping the payload gives the claim back.
     Ours(Option<runlock::RunLock>),
-    /// No - another Duckle process is already running it.
+    /// No - another Duckle process is already running it. The next tick will
+    /// come round and may well succeed.
     Taken,
+    /// No, and waiting will not help: this workspace cannot be locked at all.
+    /// Kept apart from `Taken` because the two call for opposite responses, and
+    /// blaming an imaginary other process sends somebody hunting for it.
+    Unusable(String),
 }
 
 /// Ask for the exclusive right to run `pipeline_id`.
@@ -109,9 +114,10 @@ enum Claim {
 fn claim_run(workspace: Option<&Path>, pipeline_id: &str) -> Claim {
     match workspace {
         None => Claim::Ours(None),
-        Some(ws) => match runlock::try_acquire(ws, pipeline_id) {
-            Some(lock) => Claim::Ours(Some(lock)),
-            None => Claim::Taken,
+        Some(ws) => match runlock::try_acquire_reason(ws, pipeline_id) {
+            runlock::AcquireOutcome::Claimed(lock) => Claim::Ours(Some(lock)),
+            runlock::AcquireOutcome::HeldByOther => Claim::Taken,
+            runlock::AcquireOutcome::Unusable(e) => Claim::Unusable(e.to_string()),
         },
     }
 }
@@ -503,6 +509,15 @@ impl Scheduler {
                                 );
                                 return;
                             }
+                            Claim::Unusable(why) => {
+                                warn!(
+                                    "Cannot take a run lock for {} in this workspace, so the \
+                                     file-watch fire of {} was skipped: {}. This will not clear \
+                                     on its own.",
+                                    key, id, why
+                                );
+                                return;
+                            }
                         };
                         me2.fire_and_record(&id, "File-watch").await;
                     });
@@ -595,6 +610,14 @@ impl Scheduler {
                             "Pipeline {} is already running in another process; \
                              skipping schedule {} this tick",
                             pipeline_id, id
+                        );
+                        return;
+                    }
+                    Claim::Unusable(why) => {
+                        warn!(
+                            "Cannot take a run lock for {} in this workspace, so schedule {} was \
+                             skipped: {}. Every tick will skip it until this is fixed.",
+                            pipeline_id, id, why
                         );
                         return;
                     }
@@ -905,6 +928,7 @@ mod tests {
         let first = match claim_run(Some(&ws), &held) {
             Claim::Ours(lock) => lock.expect("a workspace was set, so a lock was due"),
             Claim::Taken => panic!("the first process could not take the run lock"),
+            Claim::Unusable(why) => panic!("this workspace cannot be locked at all: {why}"),
         };
         assert!(
             matches!(claim_run(Some(&ws), &key(&daemon, &b[0])), Claim::Taken),

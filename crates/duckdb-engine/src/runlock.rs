@@ -83,6 +83,15 @@ fn lock_path(workspace: &Path, key: &str) -> PathBuf {
     workspace.join(".duckle").join("locks").join(format!("{}.lock", safe_name(key)))
 }
 
+/// Where a lock one level down, under `group`, lives.
+fn nested_lock_path(workspace: &Path, group: &str, key: &str) -> PathBuf {
+    workspace
+        .join(".duckle")
+        .join("locks")
+        .join(safe_name(group))
+        .join(format!("{}.lock", safe_name(key)))
+}
+
 #[cfg(windows)]
 fn open_exclusive(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
@@ -136,8 +145,15 @@ pub fn lock_store(workspace: &Path, name: &str) -> Result<RunLock, String> {
     loop {
         // A nested key: pipeline ids flatten their separators to underscores,
         // so no pipeline can ever name this lock and stall a save by running.
-        if let Some(lock) = try_acquire_nested(workspace, "store", name) {
-            return Ok(lock);
+        match acquire_at_reason(nested_lock_path(workspace, "store", name), name) {
+            AcquireOutcome::Claimed(lock) => return Ok(lock),
+            // Waiting cannot fix a workspace that will not take a lock, and
+            // spending five seconds to say "timed out waiting" hides the real
+            // reason behind a message about somebody else.
+            AcquireOutcome::Unusable(e) => {
+                return Err(format!("cannot lock {name} in this workspace: {e}"))
+            }
+            AcquireOutcome::HeldByOther => {}
         }
         if std::time::Instant::now() >= deadline {
             return Err(format!("Timed out waiting to write {name}"));
@@ -152,24 +168,70 @@ pub fn lock_store(workspace: &Path, name: &str) -> Result<RunLock, String> {
 /// blocked by one. A run key cannot reach this path: separators in a key are
 /// flattened to underscores, so no pipeline id can name a subdirectory.
 pub fn try_acquire_nested(workspace: &Path, group: &str, key: &str) -> Option<RunLock> {
-    let path = workspace
-        .join(".duckle")
-        .join("locks")
-        .join(safe_name(group))
-        .join(format!("{}.lock", safe_name(key)));
-    acquire_at(path, key)
+    acquire_at(nested_lock_path(workspace, group, key), key)
 }
 
 fn acquire_at(path: PathBuf, key: &str) -> Option<RunLock> {
+    match acquire_at_reason(path, key) {
+        AcquireOutcome::Claimed(lock) => Some(lock),
+        // Held elsewhere, or unwritable. Either way this process does not run.
+        _ => None,
+    }
+}
+
+/// Why a lock attempt ended the way it did.
+///
+/// `try_acquire` collapses every failure to `None`, which is right for the
+/// caller that only has to decide whether to run. It is wrong for the caller
+/// that has to tell an operator what happened: "another process is running
+/// this" and "I cannot write to this workspace at all" call for completely
+/// different actions, and reporting the first when the second is true sends
+/// somebody hunting for a process that does not exist.
+#[derive(Debug)]
+pub enum AcquireOutcome {
+    Claimed(RunLock),
+    /// Another live process holds it. Coming back later will work.
+    HeldByOther,
+    /// This process cannot lock here at all: a read-only mount, a directory it
+    /// may not create, a filesystem with no working locks. Coming back later
+    /// changes nothing.
+    Unusable(std::io::Error),
+}
+
+/// Whether a failure means "someone else holds it" rather than "this workspace
+/// cannot be locked".
+fn is_contention(e: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        // ERROR_SHARING_VIOLATION (32) / ERROR_LOCK_VIOLATION (33): the file is
+        // already open elsewhere with share_mode(0). Anything else - access
+        // denied, read-only, path not found - is this machine's problem rather
+        // than another process's.
+        matches!(e.raw_os_error(), Some(32) | Some(33))
+    }
+    #[cfg(unix)]
+    {
+        // flock(LOCK_NB) reports EWOULDBLOCK/EAGAIN when another open file
+        // description holds the lock; the open itself failing is not that.
+        e.kind() == std::io::ErrorKind::WouldBlock
+    }
+}
+
+/// Like [`try_acquire`], but says why.
+pub fn try_acquire_reason(workspace: &Path, key: &str) -> AcquireOutcome {
+    acquire_at_reason(lock_path(workspace, key), key)
+}
+
+fn acquire_at_reason(path: PathBuf, key: &str) -> AcquireOutcome {
     if let Some(dir) = path.parent() {
-        if fs::create_dir_all(dir).is_err() {
-            return None;
+        if let Err(e) = fs::create_dir_all(dir) {
+            return AcquireOutcome::Unusable(e);
         }
     }
     match open_exclusive(&path) {
-        Ok(file) => Some(RunLock { _file: file, key: key.to_string() }),
-        // Held elsewhere, or unwritable. Either way this process does not run.
-        Err(_) => None,
+        Ok(file) => AcquireOutcome::Claimed(RunLock { _file: file, key: key.to_string() }),
+        Err(e) if is_contention(&e) => AcquireOutcome::HeldByOther,
+        Err(e) => AcquireOutcome::Unusable(e),
     }
 }
 
@@ -301,6 +363,74 @@ mod tests {
         let locks = ws.join(".duckle").join("locks");
         let stray = fs::read_dir(&locks).unwrap().filter_map(|e| e.ok()).count();
         assert_eq!(stray, 1, "the lock landed outside {}", locks.display());
+    }
+
+    /// "Someone else has it" and "I cannot lock here" must not look alike.
+    ///
+    /// Both collapsed to `None`, so the scheduler reported a pipeline as
+    /// already running in another process when the truth was a workspace it
+    /// could not write to - sending an operator to hunt for a process that was
+    /// never there, while every tick went on skipping the run.
+    #[test]
+    fn a_held_lock_and_an_unlockable_workspace_are_told_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+
+        // Contention: a real second attempt while the first is held.
+        let held = try_acquire(ws, "nightly-load").expect("first caller wins");
+        match try_acquire_reason(ws, "nightly-load") {
+            AcquireOutcome::HeldByOther => {}
+            other => panic!("a held lock should read as HeldByOther, got {other:?}"),
+        }
+        drop(held);
+
+        // ...and once released it is claimable again, so HeldByOther really is
+        // about the holder and not about the path.
+        assert!(
+            matches!(try_acquire_reason(ws, "nightly-load"), AcquireOutcome::Claimed(_)),
+            "the lock did not come back after the holder let go"
+        );
+
+        // Unusable: the lock directory's own path is occupied by a FILE, so it
+        // cannot be created. No mocking - the OS reports the real error.
+        let blocked = tempfile::tempdir().unwrap();
+        std::fs::write(blocked.path().join(".duckle"), b"not a directory").unwrap();
+        match try_acquire_reason(blocked.path(), "nightly-load") {
+            AcquireOutcome::Unusable(e) => {
+                assert!(!e.to_string().is_empty(), "the reason has to say something");
+            }
+            other => panic!("an unwritable workspace should read as Unusable, got {other:?}"),
+        }
+
+        // And the old API still answers the only question it ever asked.
+        assert!(try_acquire(blocked.path(), "nightly-load").is_none());
+
+        // A second, different unusable case, and the one that actually
+        // exercises the platform error classification: the directories are all
+        // creatable, but the lock FILE's own path is a directory, so the OPEN
+        // fails with something that is not contention. Without this the
+        // classifier could call every open failure "held" and nothing here
+        // would notice.
+        let odd = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(lock_path(odd.path(), "nightly-load")).unwrap();
+        match try_acquire_reason(odd.path(), "nightly-load") {
+            AcquireOutcome::Unusable(_) => {}
+            other => panic!("a lock path that is a directory should be Unusable, got {other:?}"),
+        }
+    }
+
+    /// A store that cannot be locked fails now, not in five seconds.
+    #[test]
+    fn lock_store_does_not_wait_out_a_workspace_it_can_never_lock() {
+        let blocked = tempfile::tempdir().unwrap();
+        std::fs::write(blocked.path().join(".duckle"), b"not a directory").unwrap();
+
+        let started = std::time::Instant::now();
+        let err = lock_store(blocked.path(), "schedules").expect_err("it claimed a lock it cannot take");
+        // The retry ceiling is 5s; an unusable path must not spend it, and must
+        // not report the timeout message, which blames a writer that is not there.
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "it waited out the retry loop");
+        assert!(err.contains("cannot lock"), "wrong reason: {err}");
     }
 
     /// Two different pipelines must never share one lock.

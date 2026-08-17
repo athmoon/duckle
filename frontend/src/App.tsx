@@ -2614,7 +2614,19 @@ export default function App() {
                 </div>
             ) : null}
 
-            <GuidedTour />
+            {/* Every screen that owns the app before the workspace does. The tour cannot
+                work these out by looking at the DOM - it tried, and started on top of the
+                Home launcher and then the account dialog - so it is told. */}
+            <GuidedTour
+                ready={
+                    !showEngineSetup &&
+                    !showProfileSetup &&
+                    !showWorkspacePicker &&
+                    !showSetupWizard &&
+                    !showHome &&
+                    !!workspacePathState
+                }
+            />
 
             <HomeLauncher
                 open={showHome}

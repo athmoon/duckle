@@ -278,7 +278,20 @@ interface Box {
     height: number;
 }
 
-export function GuidedTour() {
+type TourProps = {
+    /**
+     * Whether the app is past its startup screens and the workspace is really usable.
+     *
+     * The tour used to work this out by looking for known overlay classes, and that was
+     * wrong twice: first the Home launcher, then the account dialog, each a class it had
+     * never heard of, each ending with a tour spotlighting things behind a screen somebody
+     * was still filling in. App is the only thing that knows which gates are open, so it
+     * says so, and the guesswork is gone.
+     */
+    ready?: boolean;
+};
+
+export function GuidedTour({ ready = true }: TourProps) {
     const [active, setActive] = useState(false);
     // Whether this is the first run rather than a replay.
     //
@@ -291,23 +304,21 @@ export function GuidedTour() {
     const [box, setBox] = useState<Box | null>(null);
     const [steps, setSteps] = useState<Step[]>(forThisSurface);
 
-    // Open on first run - but only once the workspace UI is actually mounted
-    // (poll for the canvas anchor), so brand-new users still on the engine-setup
-    // screen don't see a tour pointing at elements that don't exist yet.
+    // Open on first run, once the app says its startup screens are done AND the workspace
+    // UI is really mounted (poll for the canvas anchor).
+    //
+    // `ready` is the important half. Anything still owning the screen - engine setup, the
+    // account dialog, the workspace picker, the local-or-server question, Home - keeps it
+    // false, and none of them have to be recognised by class here. The canvas poll stays
+    // because "App thinks it is ready" and "the canvas has actually painted" are different
+    // moments, and the spotlight needs the second one.
     useEffect(() => {
+        if (!ready) return;
         if (localStorage.getItem(SEEN_KEY)) return;
         let tries = 0;
         const iv = setInterval(() => {
-            // A blocking modal owns the screen: the first-run setup question mounts over a
-            // canvas that already exists, so waiting for the canvas alone put the tour on
-            // top of it. Not counting this as a try matters as much as skipping it, or the
-            // tour gives up while somebody is still typing into the thing covering it.
-            // The Home launcher is the other thing that owns the screen on a first run, and
-            // it does NOT use .modal-backdrop - it is its own overlay. Waiting only for the
-            // backdrop put the tour on top of Home, spotlighting a canvas nobody could see.
-            if (document.querySelector('.modal-backdrop') || document.querySelector('.home-launcher')) {
-                return;
-            }
+            // Any other modal opened by hand still defers, and does not burn the timeout.
+            if (document.querySelector('.modal-backdrop')) return;
             tries += 1;
             if (document.querySelector('[data-tour="canvas"]')) {
                 clearInterval(iv);
@@ -319,7 +330,7 @@ export function GuidedTour() {
             }
         }, 600);
         return () => clearInterval(iv);
-    }, []);
+    }, [ready]);
     useEffect(() => {
         const start = () => {
             setI(0);

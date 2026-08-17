@@ -191,6 +191,7 @@ pub fn run() {
             schedule_upsert,
             schedule_delete,
             schedule_run_now,
+            runner_stage,
             plans_list,
             plans_save,
             plans_delete,
@@ -711,6 +712,54 @@ fn schedule_delete(id: String) -> Result<(), String> {
 #[tauri::command]
 async fn schedule_run_now(id: String) -> Result<RunResult, String> {
     scheduler()?.run_now(&id).await
+}
+
+// ---- Server setup: putting the runner where somebody can start it --------
+
+/// Where the runner was put, and what to do with it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StagedRunner {
+    /// The file on disk.
+    path: String,
+    /// Which machine it will run on, so the UI can label it honestly.
+    platform: String,
+    /// The folder holding it, for "show me where that is".
+    folder: String,
+}
+
+/// Put a copy of the headless runner somewhere the person setting up a server can reach it.
+///
+/// Nothing is downloaded. Both runners are compiled into this app already - the native one
+/// so `duckle serve` works, and a static Linux one so Build Pipeline can target Linux - so
+/// setup hands over a binary that is guaranteed to match this exact build, works with no
+/// network, and cannot be a different thing than what was tested.
+///
+/// `target` is "native" for a server on this machine, or "linux" for a cloud VM, which is
+/// what every AWS, Azure and Google recipe lands on.
+#[tauri::command]
+fn runner_stage(target: String) -> Result<StagedRunner, String> {
+    let (path, platform) = match target.as_str() {
+        "linux" => (staged_linux_stub()?, "Linux x64"),
+        "native" => {
+            if EMBEDDED_RUNNER.is_empty() {
+                return Err("This build does not bundle the headless runner".into());
+            }
+            let suffix = if cfg!(windows) { ".exe" } else { "" };
+            let p = stage_stub_bytes(EMBEDDED_RUNNER, suffix, "runner-")?;
+            (p, if cfg!(windows) { "Windows" } else { "this machine" })
+        }
+        other => return Err(format!("unknown runner target '{other}'")),
+    };
+    let folder = path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(StagedRunner {
+        path: path.to_string_lossy().into_owned(),
+        platform: platform.to_string(),
+        folder,
+    })
 }
 
 // ---- Plans --------------------------------------------------------------

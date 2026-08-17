@@ -890,6 +890,29 @@ export async function scheduleRunNow(id: string): Promise<RunResult | null> {
     return await invoke<RunResult>('schedule_run_now', { id });
 }
 
+// ---- Server setup ------------------------------------------------------
+
+/** Where a copy of the headless runner was put, ready to be started or uploaded. */
+export type StagedRunner = {
+    path: string;
+    platform: string;
+    folder: string;
+};
+
+/**
+ * Put a copy of the headless runner on disk, for somebody standing a server up.
+ *
+ * Nothing is downloaded: both runners are compiled into the app, so the binary handed over
+ * always matches this exact build and setup works with no network at all.
+ *
+ * 'native' is a server on this machine; 'linux' is a cloud VM, which is where every AWS,
+ * Azure and Google recipe ends up.
+ */
+export async function runnerStage(target: 'native' | 'linux'): Promise<StagedRunner | null> {
+    if (!isTauri()) return null;
+    return await invoke<StagedRunner>('runner_stage', { target });
+}
+
 // ---- Plans -------------------------------------------------------------
 //
 // A plan is several pipelines in ordered steps: everything in a step runs at once,

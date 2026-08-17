@@ -9297,10 +9297,47 @@ html[dir='rtl'] .topbar-lang {
     font: inherit; font-size: 14px;
 }
 .setup-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+/* The three things to do before a server will answer. Numbered because they are a
+   sequence, not a list of options. */
+.setup-steps {
+    margin: 16px 0 0; padding-left: 20px;
+    color: var(--text-2); font-size: 13px; line-height: 1.7;
+}
+.setup-steps li { margin-bottom: 2px; }
+.setup-steps li::marker { color: var(--accent); font-weight: 600; }
+
+/* The command to paste on the server. Scrolls sideways on its own rather than
+   widening the dialog, because a cloud CLI line is longer than any dialog. */
+.setup-command {
+    display: flex; align-items: flex-start; gap: 10px; margin-top: 14px;
+    padding: 10px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--bg-1);
+}
+.setup-command pre {
+    flex: 1; min-width: 0; margin: 0; overflow-x: auto;
+    font-family: Consolas, ui-monospace, monospace; font-size: 12px;
+    line-height: 1.6; color: var(--text-1); white-space: pre;
+}
+/* Only the copy button sitting inside the command block is shrunk, not every
+   secondary action in the wizard. */
+.setup-command .setup-alt { flex: none; padding: 6px 10px; font-size: 12.5px; }
+
 .setup-note {
     display: flex; align-items: flex-start; gap: 8px; margin: 16px 0 0;
     font-size: 12.5px; color: var(--text-3); line-height: 1.55;
 }
+.setup-note code {
+    font-family: Consolas, ui-monospace, monospace; font-size: 11.5px;
+    padding: 1px 4px; border-radius: 4px; background: var(--bg-1); color: var(--text-2);
+    /* Long paths must wrap inside the dialog rather than widen it. */
+    overflow-wrap: anywhere;
+}
+/* The text half of a note is one flex item; everything inside it stays inline. */
+.setup-note > span { min-width: 0; }
+
+/* The card is a flex column, so a lone button stretches edge to edge and stops
+   reading as a button at all. This one hugs its label. */
+.setup-getrunner { align-self: flex-start; margin-top: 16px; }
 .setup-note svg { flex: none; margin-top: 2px; color: var(--success); }
 .setup-error {
     margin-top: 14px; padding: 10px 12px; border-radius: var(--radius-sm);
@@ -9308,13 +9345,13 @@ html[dir='rtl'] .topbar-lang {
     background: var(--bg-2); color: var(--text-2); font-size: 12.5px; line-height: 1.55;
 }
 .setup-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
-.setup-back, .setup-next {
+.setup-back, .setup-alt, .setup-next {
     display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px;
     border-radius: var(--radius-sm); font: inherit; font-size: 13.5px; font-weight: 600;
     cursor: pointer; border: 1px solid var(--border);
 }
-.setup-back { background: transparent; color: var(--text-3); }
-.setup-back:hover { color: var(--text-1); border-color: var(--border-strong); }
+.setup-back, .setup-alt { background: transparent; color: var(--text-3); }
+.setup-back:hover, .setup-alt:hover { color: var(--text-1); border-color: var(--border-strong); }
 .setup-next { background: var(--btn-primary-bg); color: var(--btn-primary-fg); border-color: transparent; }
 .setup-next:hover:not(:disabled) { background: var(--btn-primary-bg-strong); }
 .setup-next:disabled { opacity: .5; cursor: default; }

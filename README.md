@@ -75,6 +75,20 @@ curl -X POST https://duckle.internal/api/deploy \
 
 Two things are deliberate. **The schedule arrives disabled**, so a cadence someone set while testing on a laptop cannot start firing the moment it reaches production; enabling it is a separate call. And **deploying needs `admin` while enabling needs `operator`**, because a deployed pipeline runs shell and SQL on that host: shipping the code and starting it are two acts, and the audit log records both with the name of whoever did them.
 
+### API keys, for machines
+
+A person signs in and gets a session. A machine has no browser and nobody to rotate a password, so it gets a key of its own:
+
+```bash
+duckle-runner console key-add ci-deployer --role admin --expires-days 90
+duckle-runner console key-list      # role, state, and when each was last used
+duckle-runner console key-revoke ci-deployer
+```
+
+A key carries **its own role**, so a deploy runner can be `admin` while a metrics scraper is `viewer`. It is printed once and stored only as a hash, so a lost key is replaced rather than recovered. `key-list` shows when each was last used, which is the question actually worth answering before revoking one, and **revoking takes effect immediately on a console that is already running** rather than at the next restart. Revoked keys are marked rather than deleted, so a key that turns up in an old log can still be named.
+
+Accounts, sessions and keys live in `.duckle/console.db`. An existing `console-users.json` is carried into it on first start and renamed to `.migrated`, so an upgrade neither locks anyone out nor destroys the only copy of a credential store.
+
 ### Scaling it
 
 `duckle-runner serve` is an ordinary service. Run it on EC2, EKS, a VM or a container next to everything else you operate, and scale it the way you scale any service:

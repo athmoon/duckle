@@ -26,6 +26,8 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::auth_store::AuthStore;
+
 /// What a caller is allowed to do. Ordered: each role includes the ones before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -88,11 +90,11 @@ pub struct Console {
     /// unchanged local case: the caller is trusted because they are already on
     /// the machine.
     open: bool,
-    /// Where the session store lives, so sessions outlive the process.
+    /// Where the credential database lives.
     workspace: PathBuf,
-    /// hash(session id) -> session, minted at sign-in and persisted, so the browser never
-    /// stores the token itself and a restart does not sign everyone out.
-    sessions: Mutex<HashMap<String, Session>>,
+    /// Accounts, sessions and API keys. Behind a mutex because a SQLite connection is Send
+    /// but not Sync, and one console is shared by every request thread.
+    store: Mutex<AuthStore>,
     /// sha256(token) -> identity for tokens already verified once, so an API
     /// client polling every few seconds does not pay for an Argon2 hash on
     /// every request. Only ever populated with tokens that verified.
@@ -115,11 +117,6 @@ pub fn accounts_path(workspace: &Path) -> PathBuf {
     workspace.join(".duckle").join("console-users.json")
 }
 
-/// Where live sessions are kept, so a restart does not sign everyone out.
-pub fn sessions_path(workspace: &Path) -> PathBuf {
-    workspace.join(".duckle").join("console-sessions.json")
-}
-
 /// How long a session lasts before it has to be earned again. A working day, so nobody is
 /// interrupted mid-shift and nobody holds a credential for a fortnight.
 const SESSION_TTL_SECS: i64 = 12 * 60 * 60;
@@ -131,93 +128,27 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// A live session, as stored.
+/// Carry a previous version's `console-users.json` into the database, once.
 ///
-/// Keyed by a hash of the session id rather than the id itself. The store lives in the
-/// workspace, which gets backed up and copied around, and a file of working credentials
-/// has no business being in one. The browser holds the id; nothing else does, so a copy of
-/// this file admits nobody.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Session {
-    label: String,
-    role: Role,
-    /// Unix seconds. Past this the session is refused and dropped.
-    expires_at: i64,
-}
-
-/// What is written down for a session id: a plain SHA-256, unsalted on purpose. Salting
-/// guards low-entropy secrets against a dictionary; a 256-bit random id has no dictionary.
-fn session_key(sid: &str) -> String {
-    let d: [u8; 32] = Sha256::digest(sid.as_bytes()).into();
-    d.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Read the store, dropping anything already expired. A store that will not parse is an
-/// empty one here: a session is a convenience, and refusing to start the console because a
-/// cache went bad would trade a small problem for a total one.
-fn read_sessions_file(workspace: &Path) -> HashMap<String, Session> {
-    std::fs::read_to_string(sessions_path(workspace))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
-}
-
-/// Best effort: failing to write must not fail the sign-in, it only means the session does
-/// not outlive this process, which is where it used to live anyway.
-fn write_sessions_file(workspace: &Path, sessions: &HashMap<String, Session>) {
-    let path = sessions_path(workspace);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+/// Only when the database has no accounts, so this cannot resurrect an account that was
+/// deliberately removed later. The file is then renamed rather than deleted: an upgrade
+/// that quietly destroys the only copy of a credential store is not one anyone should have
+/// to trust, and the rename also stops it being read again.
+///
+/// A file that will not parse is still an error, exactly as before. Treating it as "no
+/// accounts" would silently reopen a console that someone had locked.
+fn migrate_accounts_file(workspace: &Path, store: &AuthStore) -> Result<(), String> {
+    let path = accounts_path(workspace);
+    if !path.exists() || !store.accounts()?.is_empty() {
+        return Ok(());
     }
-    if let Ok(json) = serde_json::to_string(sessions) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            // Rename replaces on both platforms, so a reader never sees a partial file.
-            let _ = std::fs::rename(&tmp, &path);
-        }
+    for a in read_accounts_file(workspace)? {
+        store.add_account(&a.label, a.role, &a.token_hash)?;
     }
+    let _ = std::fs::rename(&path, path.with_extension("json.migrated"));
+    Ok(())
 }
 
-/// Change the stored sessions as one exclusive step, and return the merged result.
-///
-/// Writing the whole map from a copy held in memory is what a single process wants and
-/// what two processes must never do: running `serve` for operations and `web` for
-/// authoring against one workspace is a normal setup, and whichever signed in last erased
-/// the other's sessions. So this re-reads under a lock, applies the change to what is
-/// actually on disk, and writes that back, which is exactly how the schedule store already
-/// handles the same problem.
-///
-/// Expired sessions are dropped on the way through, so every write is also a prune and the
-/// file cannot grow without bound.
-///
-/// One limitation, stated rather than hidden: a process still serves reads from its own
-/// copy, so a session minted by the other one is not visible until this process next
-/// reloads. Nothing is lost, and the recommended topology is a single console.
-fn update_sessions<F>(workspace: &Path, f: F) -> HashMap<String, Session>
-where
-    F: FnOnce(&mut HashMap<String, Session>),
-{
-    // A workspace that will not take a lock must not cost anyone their session, so a
-    // failure here proceeds unlocked rather than refusing to sign in.
-    let _guard = duckle_duckdb_engine::runlock::lock_store(workspace, "console-sessions").ok();
-    let mut stored = read_sessions_file(workspace);
-    let before = stored.len();
-    let now = now_secs();
-    stored.retain(|_, s| s.expires_at > now);
-    let pruned = stored.len() != before;
-    f(&mut stored);
-    if pruned || stored.len() != before {
-        write_sessions_file(workspace, &stored);
-    }
-    stored
-}
-
-/// Read the store, dropping anything already expired and writing the pruned set back. A
-/// store that will not parse is an empty one: a session is a convenience, and refusing to
-/// start the console because a cache went bad trades a small problem for a total one.
-fn load_sessions(workspace: &Path) -> HashMap<String, Session> {
-    update_sessions(workspace, |_| {})
-}
 
 impl Console {
     /// Decide the policy for a server about to bind `host`.
@@ -231,7 +162,21 @@ impl Console {
         host: &str,
         token: Option<&str>,
     ) -> Result<Console, String> {
-        let mut accounts = load_accounts(workspace)?;
+        let store = AuthStore::open(workspace)?;
+        // An existing deployment has a console-users.json from a previous version. Carry
+        // it across rather than orphaning it: the people holding those tokens are exactly
+        // the ones an upgrade would otherwise lock out.
+        migrate_accounts_file(workspace, &store)?;
+        store.prune_sessions();
+
+        let mut accounts: Vec<Account> = store
+            .accounts()?
+            .into_iter()
+            .map(|(label, role, token_hash)| Account { label, role, token_hash })
+            .collect();
+        // A key is a credential too, so a console with keys and no user accounts has been
+        // configured and must not be treated as though it had not been.
+        let has_machine_credential = store.has_live_api_key();
         if let Some(t) = token {
             if t.trim().is_empty() {
                 return Err("--token was given but is empty".into());
@@ -243,7 +188,8 @@ impl Console {
             });
         }
         let loopback = is_loopback(host);
-        if accounts.is_empty() && !loopback {
+        let unconfigured = accounts.is_empty() && !has_machine_credential;
+        if unconfigured && !loopback {
             // Names no subcommand: both `serve` and `web` end up here, and a
             // message telling you to run the other one is worse than none.
             return Err(format!(
@@ -257,9 +203,9 @@ impl Console {
             ));
         }
         Ok(Console {
-            open: accounts.is_empty() && loopback,
+            open: unconfigured && loopback,
             accounts,
-            sessions: Mutex::new(load_sessions(workspace)),
+            store: Mutex::new(store),
             workspace: workspace.to_path_buf(),
             verified: Mutex::new(HashMap::new()),
         })
@@ -279,29 +225,25 @@ impl Console {
         if self.open {
             return Some(Identity { label: "local".into(), role: Role::Admin });
         }
-        // A session cookie first: it is the browser's normal path and costs a
-        // map lookup rather than a password hash.
+        // A session cookie first: it is the browser's normal path and costs an indexed
+        // lookup rather than a password hash.
         if let Some(sid) = cookie.and_then(|c| cookie_value(c, SESSION_COOKIE)) {
-            let key = session_key(&sid);
-            let mut sessions = self.sessions.lock().ok()?;
-            match sessions.get(&key) {
-                Some(s) if s.expires_at > now_secs() => {
-                    return Some(Identity { label: s.label.clone(), role: s.role });
+            if let Ok(store) = self.store.lock() {
+                if let Some((label, role)) = store.session(&sid) {
+                    return Some(Identity { label, role });
                 }
-                // Expired, so it is not a session any more. Drop it here rather than
-                // waiting for a restart, or the store only ever grows.
-                Some(_) => {
-                    sessions.remove(&key);
-                    let ws = self.workspace.clone();
-                    let k = key.clone();
-                    update_sessions(&ws, |stored| {
-                        stored.remove(&k);
-                    });
-                }
-                None => {}
             }
         }
         let bearer = authorization?.strip_prefix("Bearer ")?.trim();
+        // An API key is a hash lookup and an account token is an Argon2 verify, so the
+        // cheap one goes first. Reading the key on every request is also what makes
+        // revoking one take effect on a console that is already running: a revocation that
+        // waited for a restart would be a promise rather than a control.
+        if let Ok(store) = self.store.lock() {
+            if let Some((label, role)) = store.api_key(bearer) {
+                return Some(Identity { label, role });
+            }
+        }
         self.verify_token(bearer)
     }
 
@@ -314,27 +256,21 @@ impl Console {
         let mut raw = [0u8; 32];
         getrandom::fill(&mut raw).ok()?;
         let sid = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
-        let session = Session {
-            label: identity.label.clone(),
-            role: identity.role,
-            expires_at: now_secs() + SESSION_TTL_SECS,
-        };
-        let key = session_key(&sid);
-        let merged = update_sessions(&self.workspace, |stored| {
-            stored.insert(key, session);
-        });
-        *self.sessions.lock().ok()? = merged;
+        if let Ok(store) = self.store.lock() {
+            let _ = store.put_session(
+                &sid,
+                &identity.label,
+                identity.role,
+                now_secs() + SESSION_TTL_SECS,
+            );
+        }
         Some((sid, identity))
     }
 
     pub fn sign_out(&self, cookie: Option<&str>) {
         if let Some(sid) = cookie.and_then(|c| cookie_value(c, SESSION_COOKIE)) {
-            let key = session_key(&sid);
-            let merged = update_sessions(&self.workspace, |stored| {
-                stored.remove(&key);
-            });
-            if let Ok(mut s) = self.sessions.lock() {
-                *s = merged;
+            if let Ok(store) = self.store.lock() {
+                store.drop_session(&sid);
             }
         }
     }
@@ -389,7 +325,7 @@ fn hash_token(token: &str) -> Result<String, String> {
         .map_err(|e| format!("hash token: {e}"))
 }
 
-fn load_accounts(workspace: &Path) -> Result<Vec<Account>, String> {
+fn read_accounts_file(workspace: &Path) -> Result<Vec<Account>, String> {
     let p = accounts_path(workspace);
     if !p.exists() {
         return Ok(Vec::new());
@@ -417,15 +353,11 @@ pub fn add_account(workspace: &Path, label: &str, role: Role) -> Result<String, 
     let mut raw = [0u8; 32];
     getrandom::fill(&mut raw).map_err(|e| format!("token rng: {e}"))?;
     let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
-    let mut accounts = load_accounts(workspace)?;
-    accounts.retain(|a| a.label != label);
-    accounts.push(Account { label: label.into(), role, token_hash: hash_token(&token)? });
-    let p = accounts_path(workspace);
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    }
-    let body = serde_json::to_string_pretty(&accounts).map_err(|e| e.to_string())?;
-    std::fs::write(&p, body).map_err(|e| format!("write {}: {e}", p.display()))?;
+    let store = AuthStore::open(workspace)?;
+    // Carry any previous file across first, so adding the second account does not look
+    // like the first one and silently drop everybody who was already there.
+    migrate_accounts_file(workspace, &store)?;
+    store.add_account(label, role, &hash_token(&token)?)?;
     Ok(token)
 }
 
@@ -441,9 +373,17 @@ pub fn run() -> Result<i32, String> {
             "duckle-runner console - console accounts and roles\n\n\
              USAGE:\n    \
              duckle-runner console add-user <label> --role <viewer|operator|admin> [--workspace <dir>]\n    \
-             duckle-runner console list [--workspace <dir>]\n\n\
+             duckle-runner console list [--workspace <dir>]\n    \
+             duckle-runner console key-add <label> --role <role> [--expires-days <n>]\n    \
+             duckle-runner console key-list [--workspace <dir>]\n    \
+             duckle-runner console key-revoke <label> [--workspace <dir>]\n\n\
              add-user prints a freshly generated token once. It is stored only as an\n\
              Argon2 hash, so it cannot be recovered later; generate a new one instead.\n\n\
+             An API key is the same idea for a machine: it carries its own role, has no\n\
+             browser session, and can be given an expiry. It is shown once and stored only\n\
+             as a hash. key-list shows when each was last used, which is the question worth\n\
+             asking before revoking one. Revoking marks the key rather than deleting it, so\n\
+             one that turns up in a log afterwards can still be named.\n\n\
              ROLES:\n    \
              viewer     read the dashboard, runs and logs\n    \
              operator   also run pipelines and change schedules\n    \
@@ -454,6 +394,7 @@ pub fn run() -> Result<i32, String> {
 
     let mut label = None;
     let mut role = None;
+    let mut expires_days: Option<i64> = None;
     let mut workspace = PathBuf::from(".");
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
@@ -474,6 +415,16 @@ pub fn run() -> Result<i32, String> {
             "--workspace" => {
                 workspace = PathBuf::from(it.next().ok_or("--workspace needs a value")?)
             }
+            "--expires-days" => {
+                let raw = it.next().ok_or("--expires-days needs a value")?;
+                let days: i64 = raw
+                    .parse()
+                    .map_err(|_| format!("--expires-days wants a number, got {raw}"))?;
+                if days <= 0 {
+                    return Err("--expires-days must be greater than zero".into());
+                }
+                expires_days = Some(days);
+            }
             other if !other.starts_with("--") && label.is_none() => {
                 label = Some(other.to_string())
             }
@@ -489,18 +440,76 @@ pub fn run() -> Result<i32, String> {
             println!("Added '{label}' as {}.", role.as_str());
             println!("\nToken (shown once, not stored):\n  {token}\n");
             println!("Use it as a header:  Authorization: Bearer {token}");
-            println!("Accounts: {}", accounts_path(&workspace).display());
+            println!("Accounts: {}", crate::auth_store::db_path(&workspace).display());
             Ok(0)
         }
         "list" => {
-            let accounts = load_accounts(&workspace)?;
+            let store = AuthStore::open(&workspace)?;
+            migrate_accounts_file(&workspace, &store)?;
+            let accounts = store.accounts()?;
             if accounts.is_empty() {
-                println!("No console accounts in {}.", accounts_path(&workspace).display());
+                println!("No console accounts in {}.", crate::auth_store::db_path(&workspace).display());
             }
-            for a in &accounts {
-                println!("{:<24} {}", a.label, a.role.as_str());
+            for (label, role, _) in &accounts {
+                println!("{:<24} {}", label, role.as_str());
             }
             Ok(0)
+        }
+        "key-add" => {
+            let label = label.ok_or("key-add needs a label, e.g. `key-add nightly-loader`")?;
+            let role = role.ok_or("key-add needs --role viewer|operator|admin")?;
+            let store = AuthStore::open(&workspace)?;
+            let expires_at = expires_days.map(|d| crate::auth_store::now_secs() + d * 86_400);
+            let key = store.create_api_key(&label, role, expires_at)?;
+            println!("Added API key '{label}' as {}.", role.as_str());
+            match expires_days {
+                Some(d) => println!("Expires in {d} day(s)."),
+                None => println!("No expiry. Revoke it when the machine is retired."),
+            }
+            println!();
+            println!("Key (shown once, not stored):");
+            println!("  {key}");
+            println!();
+            println!("Use it as a header:  Authorization: Bearer {key}");
+            Ok(0)
+        }
+        "key-list" => {
+            let store = AuthStore::open(&workspace)?;
+            let keys = store.api_keys()?;
+            if keys.is_empty() {
+                println!("No API keys in {}.", crate::auth_store::db_path(&workspace).display());
+            }
+            let now = crate::auth_store::now_secs();
+            for k in &keys {
+                let state = if k.revoked {
+                    "revoked"
+                } else if k.expires_at.is_some_and(|e| e <= now) {
+                    "expired"
+                } else {
+                    "live"
+                };
+                // The question before revoking anything is whether it is still in service.
+                let used = match k.last_used_at {
+                    Some(t) => format!("last used {}d ago", (now - t) / 86_400),
+                    None => "never used".to_string(),
+                };
+                println!("{:<24} {:<9} {:<8} {}", k.label, k.role.as_str(), state, used);
+            }
+            Ok(0)
+        }
+        "key-revoke" => {
+            let label = label.ok_or("key-revoke needs a label")?;
+            let store = AuthStore::open(&workspace)?;
+            match store.revoke_api_key(&label)? {
+                0 => {
+                    println!("No live API key called '{label}'.");
+                    Ok(1)
+                }
+                n => {
+                    println!("Revoked {n} key(s) called '{label}'. It stops working immediately.");
+                    Ok(0)
+                }
+            }
         }
         other => Err(format!("unknown console command: {other}")),
     }
@@ -552,9 +561,9 @@ mod tests {
         assert_eq!(after.label, who.label);
     }
 
-    /// The session store sits in the workspace, which gets backed up and copied around, so
-    /// it must not be a file of working credentials. Only a hash of the id is written; the
-    /// id itself exists in the browser and nowhere else.
+    /// The credential database sits in the workspace, which gets backed up and copied
+    /// around, so it must not be a file of working credentials. Only a hash of the session
+    /// id is written; the id itself exists in the browser and nowhere else.
     #[test]
     fn the_session_store_holds_nothing_that_can_be_replayed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -562,9 +571,29 @@ mod tests {
         let console = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
         let (sid, _) = console.sign_in("s3cret-token").expect("signs in");
 
-        let written = std::fs::read_to_string(sessions_path(ws)).expect("store written");
-        assert!(!written.contains(&sid), "the session id itself was written down");
-        assert!(!written.contains("s3cret-token"), "the token was written down");
+        let bytes = std::fs::read(crate::auth_store::db_path(ws)).expect("database written");
+        let haystack = String::from_utf8_lossy(&bytes);
+        assert!(!haystack.contains(&sid), "the session id itself was written down");
+        assert!(!haystack.contains("s3cret-token"), "the token was written down");
+    }
+
+    /// A session that never expires is a credential that never expires.
+    #[test]
+    fn an_expired_session_is_refused_and_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        {
+            let store = crate::auth_store::AuthStore::open(ws).expect("opens");
+            store
+                .put_session("stale-sid", "alice", Role::Admin, crate::auth_store::now_secs() - 1)
+                .expect("stored");
+        }
+
+        let console = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        assert!(
+            console.identify(None, Some(&format!("{SESSION_COOKIE}=stale-sid"))).is_none(),
+            "an expired session was admitted"
+        );
     }
 
     /// Running `serve` for operations and `web` for authoring against one workspace is a
@@ -613,33 +642,73 @@ mod tests {
         );
     }
 
-    /// A session that never expires is a credential that never expires. The store also
-    /// only ever grew, because nothing was dropped except by signing out.
+    /// An existing deployment has a console-users.json written by the previous version.
+    /// Moving the store must carry those accounts across, not orphan them: the people who
+    /// have those tokens are the ones who would be locked out.
     #[test]
-    fn an_expired_session_is_refused_and_dropped() {
+    fn accounts_in_the_old_file_are_carried_into_the_database() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path();
-        let console = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
-        let (sid, _) = console.sign_in("s3cret-token").expect("signs in");
-        let cookie = format!("{SESSION_COOKIE}={sid}");
+        let token = "an-existing-operator-token";
+        std::fs::create_dir_all(accounts_path(ws).parent().unwrap()).unwrap();
+        std::fs::write(
+            accounts_path(ws),
+            serde_json::to_string(&vec![Account {
+                label: "carol".into(),
+                role: Role::Operator,
+                token_hash: hash_token(token).unwrap(),
+            }])
+            .unwrap(),
+        )
+        .unwrap();
 
-        // Age it past the limit by rewriting the stored expiry, which is the only thing
-        // standing between a live session and a dead one.
-        let raw = std::fs::read_to_string(sessions_path(ws)).unwrap();
-        let mut stored: HashMap<String, Session> = serde_json::from_str(&raw).unwrap();
-        for s in stored.values_mut() {
-            s.expires_at = now_secs() - 1;
-        }
-        std::fs::write(sessions_path(ws), serde_json::to_string(&stored).unwrap()).unwrap();
+        let console = Console::configure(ws, "0.0.0.0", None).expect("starts on existing accounts");
+        let who = console
+            .identify(Some(&format!("Bearer {token}")), None)
+            .expect("an existing token must keep working");
+        assert_eq!(who.label, "carol");
+        assert_eq!(who.role, Role::Operator);
 
-        let restarted = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        let store = crate::auth_store::AuthStore::open(ws).expect("opens");
+        assert_eq!(store.accounts().unwrap().len(), 1, "the account should now live in the database");
+    }
+
+    /// The thing accounts never fitted: a machine has no browser, no session and nobody to
+    /// rotate a password. It presents a key and gets the role that key was made with.
+    #[test]
+    fn an_api_key_identifies_the_machine_it_was_made_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let key = {
+            let store = crate::auth_store::AuthStore::open(ws).expect("opens");
+            store.create_api_key("nightly-loader", Role::Operator, None).expect("mints")
+        };
+
+        let console = Console::configure(ws, "0.0.0.0", Some("admin-token")).expect("starts");
+        let who = console
+            .identify(Some(&format!("Bearer {key}")), None)
+            .expect("an API key should identify its machine");
+        assert_eq!(who.label, "nightly-loader");
+        assert_eq!(who.role, Role::Operator, "a key carries its own role, not the caller's");
+    }
+
+    /// Revoking has to take effect for a process that is already running, or revocation is
+    /// a promise rather than a control.
+    #[test]
+    fn a_revoked_api_key_stops_identifying_without_a_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let store = crate::auth_store::AuthStore::open(ws).expect("opens");
+        let key = store.create_api_key("ci", Role::Viewer, None).expect("mints");
+
+        let console = Console::configure(ws, "0.0.0.0", Some("admin-token")).expect("starts");
+        assert!(console.identify(Some(&format!("Bearer {key}")), None).is_some());
+
+        store.revoke_api_key("ci").expect("revokes");
         assert!(
-            restarted.identify(None, Some(&cookie)).is_none(),
-            "an expired session was admitted"
+            console.identify(Some(&format!("Bearer {key}")), None).is_none(),
+            "a revoked key was still admitted by a running console"
         );
-        let after: HashMap<String, Session> =
-            serde_json::from_str(&std::fs::read_to_string(sessions_path(ws)).unwrap()).unwrap();
-        assert!(after.is_empty(), "an expired session was kept on disk");
     }
 
     #[test]
@@ -680,7 +749,8 @@ mod tests {
         let ws = tmp.path();
 
         let token = add_account(ws, "reporting", Role::Viewer).expect("add account");
-        let stored = std::fs::read_to_string(accounts_path(ws)).unwrap();
+        let bytes = std::fs::read(crate::auth_store::db_path(ws)).expect("database written");
+        let stored = String::from_utf8_lossy(&bytes);
         assert!(!stored.contains(&token), "the token itself was written to disk");
         assert!(stored.contains("argon2"), "expected an Argon2 hash");
 

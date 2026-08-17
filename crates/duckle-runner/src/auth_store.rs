@@ -279,6 +279,23 @@ impl AuthStore {
         Some((label, role_of(&role)))
     }
 
+    /// Whether any machine credential would be accepted right now.
+    ///
+    /// A console with API keys and no user accounts is still a console someone configured,
+    /// so it must not be treated as unconfigured and opened.
+    pub fn has_live_api_key(&self) -> bool {
+        let now = now_secs();
+        self.conn
+            .query_row(
+                "SELECT count(*) FROM api_keys
+                 WHERE revoked = 0 AND (expires_at IS NULL OR expires_at > ?1)",
+                params![now],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0
+    }
+
     pub fn api_keys(&self) -> Result<Vec<ApiKeyInfo>, String> {
         let mut q = self
             .conn

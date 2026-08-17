@@ -55,8 +55,12 @@ coverage/
 .duckle/cache/
 .duckle/engines/
 # Console runtime state: live sessions and account hashes. Never committed.
+.duckle/console.db
+.duckle/console.db-wal
+.duckle/console.db-shm
 .duckle/console-sessions.json
 .duckle/console-users.json
+.duckle/console-users.json.migrated
 
 # Local DuckDB CLI for tests (DUCKLE_DUCKDB_BIN)
 .duckdb-cli/

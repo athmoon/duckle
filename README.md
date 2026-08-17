@@ -37,6 +37,84 @@
 
 ---
 
+## Quick links
+
+<table>
+<tr>
+<td valign="top" width="25%">
+
+**Get started**
+
+- [Where Duckle runs](#where-duckle-runs)
+- [What is Duckle?](#what-is-duckle)
+- [What's new in v0.6.1](#whats-new-in-v061)
+- [What's new in v0.6.0](#whats-new-in-v060)
+- [Quickstart (60 s)](#quickstart-60-seconds)
+- [Download / Install](#download--install)
+- [Build from source](#build-from-source)
+- [Run your first pipeline](#run-your-first-pipeline)
+
+</td>
+<td valign="top" width="25%">
+
+**Use the product**
+
+- [Meet Duckie (AI)](#meet-duckie---the-local-ai-pipeline-assistant)
+- [How to use Duckle](#how-to-use-duckle)
+- [Recipes / examples](#recipes-and-examples)
+- [In-app Git (GitHub/GitLab)](#git-integration-github--gitlab)
+- [Workspace + Git flow](#workspace-and-git-flow)
+- [Schedules](#schedules-and-triggers)
+- [Server deployment](#server-deployment-build-pipeline)
+- [Sign-in and roles](#sign-in-and-roles)
+- [How a request is decided](#how-a-request-is-decided)
+- [API keys, for machines](#api-keys-for-machines)
+- [MCP server: connect Claude, Cursor or any agent](#mcp-server-connect-claude-or-any-llm-to-duckle)
+- [Connection management](#connection-management)
+- [Context variables](#context-variables)
+
+</td>
+<td valign="top" width="25%">
+
+**Reference**
+
+- [Capabilities matrix](#capabilities)
+- [Sources](#sources)
+- [Transforms](#transforms)
+- [Sinks](#sinks)
+- [Data quality](#data-quality)
+- [Custom code](#custom-code)
+- [Control flow](#control-flow)
+- [Advanced settings](#advanced-settings-per-node)
+- [Engines](#engines)
+- [Configuration](#configuration)
+
+</td>
+<td valign="top" width="25%">
+
+**Resources**
+
+- [Architecture](#architecture)
+- [Clean data for AI](#clean-data-before-it-reaches-your-ai)
+- [Performance tips](#performance-tips)
+- [FAQ](#faq)
+- [Troubleshooting](#troubleshooting)
+- [CI / CD](#ci--cd)
+- [Status](#status)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Sponsor Duckle](SPONSORS.md)
+- [License](#license)
+- [Releases](https://github.com/slothflowlabs/duckle/releases)
+- [Roadmap doc](docs/roadmap.md)
+- [Contributing doc](CONTRIBUTING.md)
+
+</td>
+</tr>
+</table>
+
+---
+
 ## What is Duckle?
 
 An open-source ETL platform you run on your own infrastructure. Drag sources, transforms, validators and sinks onto a canvas, wire them together, and press **Run**. Duckle compiles the graph to SQL and executes it on a real columnar engine, with live previews, the generated SQL visible on every node, and no hidden state.
@@ -250,84 +328,6 @@ A worked example using the bundled `samples/orders.csv` data.
 
 ---
 
-## Quick links
-
-<table>
-<tr>
-<td valign="top" width="25%">
-
-**Get started**
-
-- [Where Duckle runs](#where-duckle-runs)
-- [What is Duckle?](#what-is-duckle)
-- [What's new in v0.6.1](#whats-new-in-v061)
-- [What's new in v0.6.0](#whats-new-in-v060)
-- [Quickstart (60 s)](#quickstart-60-seconds)
-- [Download / Install](#download--install)
-- [Build from source](#build-from-source)
-- [Run your first pipeline](#run-your-first-pipeline)
-
-</td>
-<td valign="top" width="25%">
-
-**Use the product**
-
-- [Meet Duckie (AI)](#meet-duckie---the-local-ai-pipeline-assistant)
-- [How to use Duckle](#how-to-use-duckle)
-- [Recipes / examples](#recipes-and-examples)
-- [In-app Git (GitHub/GitLab)](#git-integration-github--gitlab)
-- [Workspace + Git flow](#workspace-and-git-flow)
-- [Schedules](#schedules-and-triggers)
-- [Server deployment](#server-deployment-build-pipeline)
-- [Sign-in and roles](#sign-in-and-roles)
-- [How a request is decided](#how-a-request-is-decided)
-- [API keys, for machines](#api-keys-for-machines)
-- [MCP server: connect Claude, Cursor or any agent](#mcp-server-connect-claude-or-any-llm-to-duckle)
-- [Connection management](#connection-management)
-- [Context variables](#context-variables)
-
-</td>
-<td valign="top" width="25%">
-
-**Reference**
-
-- [Capabilities matrix](#capabilities)
-- [Sources](#sources-103-available)
-- [Transforms](#transforms-130-available)
-- [Sinks](#sinks-64-available)
-- [Data quality](#data-quality-27-available)
-- [Custom code](#custom-code-6-available)
-- [Control flow](#control-flow-18-available)
-- [Advanced settings](#advanced-settings-per-node)
-- [Engines](#engines)
-- [Configuration](#configuration)
-
-</td>
-<td valign="top" width="25%">
-
-**Resources**
-
-- [Architecture](#architecture)
-- [Clean data for AI](#clean-data-before-it-reaches-your-ai)
-- [Performance tips](#performance-tips)
-- [FAQ](#faq)
-- [Troubleshooting](#troubleshooting)
-- [CI / CD](#ci--cd)
-- [Status](#status)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [Sponsor Duckle](SPONSORS.md)
-- [License](#license)
-- [Releases](https://github.com/slothflowlabs/duckle/releases)
-- [Roadmap doc](docs/roadmap.md)
-- [Contributing doc](CONTRIBUTING.md)
-
-</td>
-</tr>
-</table>
-
----
-
 ## Where Duckle runs
 
 You build a pipeline on your laptop. The server runs that same file. Nothing is rewritten, exported or converted in between.
@@ -407,583 +407,6 @@ Measured, rather than asserted:
 - **Oracle extract at 65.0s**, against 68.6s for python-oracledb with pyarrow on the same machine ([details](#whats-new-in-v061))
 
 The one thing Duckle does not do is split a single query across a cluster the way a distributed warehouse does. When you need that, push the work down into the system that has it and let Duckle orchestrate around it.
-
-## Meet Duckie - the local AI pipeline assistant
-
-> Describe what you need. Duckie writes the pipeline.
-
-<p align="center">
-<img src="docs/assets/real-life-screenshot/duckie.png" alt="Duckie AI Assistant panel open beside a real pipeline on the canvas, showing example prompts and a LOCAL badge" width="100%"/>
-</p>
-
-The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Coder 1.5B** running through **llama.cpp**, downloaded once (~1.1 GB) and then run entirely on your CPU. Ask in plain English; Duckie streams back a valid Duckle pipeline definition. One click drops it onto the canvas, ready to inspect, tweak, and run.
-
-| | |
-|---|---|
-| **Truly local** | The Qwen model runs as a `llama-server` subprocess on `127.0.0.1`. No API keys. No network calls. Disconnect your wifi and it keeps working. |
-| **Streamed responses** | Tokens arrive as they're generated, with a blinking caret in the bubble. No "wait 20 seconds for the spinner to vanish" UX. |
-| **One-click insert** | When Duckie produces a JSON pipeline, an **Insert into canvas** button appears. The graph populates with positioned nodes, wired edges, and the props the model chose. |
-| **Bring-your-own-model option** | The chat plumbing is the same OpenAI-compatible HTTP interface used by `xf.ai.llm` / `xf.ai.embed` connectors. Point `baseUrl` at Ollama, llama.cpp, Cohere, OpenAI, Voyage - anything that speaks the OpenAI shape. |
-| **Sandboxed** | The model has no fs / net / tool access. It can only emit text - your pipeline JSON. |
-
----
-
-## Benchmark
-
-### 20M-row CSV into DuckDB
-
-The most common job in data engineering: load a **20M-row CSV into DuckDB**. One identical 2.49 GB file (20M rows of TPC-H lineitem, 16 typed columns), every tool measured at its best configuration, wall-clock time to land the data as a table.
-
-<p align="center">
-  <a href="https://duckle.org/"><img src="docs/assets/ingest-seconds-benchmark.png" alt="Benchmark: loading a 20M-row CSV into DuckDB at each tool's best config. Duckle 15.69s, dlt 40.68s, Talend bulk 90s, Informatica bulk 100s, ingestr 411s, Airbyte about 1150s." width="820"/></a>
-</p>
-
-**How it was measured**
-
-- **Machine:** Intel Core i7-13650HX (14C / 20T), 24 GB RAM, NVMe SSD, Windows 11, DuckDB 1.5.4. Duckle, dlt and ingestr ran here.
-- **Best config per tool:** dlt used the Arrow plus parquet loader path; Talend and Informatica used their bulk output connectors at max config (their default row-by-row sinks were 5-7x slower). Nothing was left on a slow default to pad the gap.
-- **Talend and Informatica** ran on a separate 8 GB VPS, so per-tool peak RAM was not captured for those two.
-- **Airbyte** (source-file to destination-duckdb) is scaled from measured 2M and 5M runs at a steady ~18k rows/s, and it also needs an always-on ~8 GB platform just to start.
-- Wall-clock time, peak working-set of the whole process tree.
-
-**Why Duckle is this fast:** its 15.69s sits right on top of raw DuckDB's own load floor (~16s to fully parse and write all 20M typed rows into an on-disk table). Duckle wraps the engine with pipelines, connectors, and a UI, then gets out of its way. That is the entire design goal. A read-only scan or aggregate over the same CSV is far faster still; this benchmark measures the heavier "materialize it as a table" job that every ETL tool here performs.
-
-### 96M rows, Postgres to Parquet
-
-A second, harder job against a live database: full-refresh extract of **95,988,640 rows** of TPC-H `lineitem` (14 GB in Postgres 16) out to Parquet.
-
-<p align="center">
-  <img src="docs/assets/pg-to-parquet-benchmark.png" alt="Benchmark: 96M rows Postgres to Parquet. Duckle 39.9s, raw DuckDB postgres_scanner floor 44.2s, ingestr 120.8s, dlt 493.6s, sling 1897s." width="880"/>
-</p>
-
-**Run it yourself.** The harness is in this repo at [`benchmarks/pg-to-parquet`](benchmarks/pg-to-parquet). `./bench.sh all` brings up Postgres, generates the data at any scale factor, and times every tool you have installed. No timing is recorded until the output has been reopened and checked for the right row count and the right `sum(l_orderkey)`, so a tool that writes a fast but wrong file gets a failure rather than a number.
-
-**Read it with these caveats**
-
-- **The DuckDB floor is not a competitor.** It is raw `postgres_scanner` plus `COPY TO`: no scheduling, no typing, no incremental state, no UI. It is there to show how much of the clock is the machine reading Postgres. Duckle landing 11% under it is the honest framing, not "Duckle beats DuckDB".
-- **ingestr has no Parquet destination** and writes a DuckDB file, so its output size is not like-for-like. Its time is.
-- **Compression is not normalised.** Duckle wrote zstd, the others snappy.
-- **Airbyte and Meltano are absent.** Airbyte has no local Parquet destination and has only run against an earlier synthetic dataset; Meltano was not wired up. Neither is claimed here.
-
-Hardware, per-run numbers and the two measurement traps that produced wrong figures on the first attempt are written up in [`RESULTS.md`](benchmarks/pg-to-parquet/RESULTS.md).
-
----
-
-## Status
-
-Duckle is in **public beta**. The visual designer, the DuckDB execution engine, the scheduler, the cloud connectors, and the Duckie AI assistant all work today and are covered by 170+ integration tests across Linux, macOS, and Windows. The catalog is still growing and APIs may evolve before 1.0, but the day-to-day surface is stable enough for real work.
-
-**Scope, stated plainly:** Duckle runs as a service on hardware you provision, and uses all of it. What it does not do is split one query across a cluster, so when a job outgrows the largest instance you want to pay for, push the work down into the source system or point the output at a warehouse, object store or lakehouse. It will not pretend to be a cluster.
-
-The component palette ships **384 nodes** so the roadmap is visible in the product itself:
-
-- **366 available** runs on the DuckDB engine today
-- **3 preview** is configurable in the designer (drag, wire, set properties); execution is being wired engine-by-engine
-- **15 planned** is reserved in the palette but not yet executable - see [`docs/roadmap.md`](docs/roadmap.md)
-
----
-
-## Capabilities
-
-Duckle is not a CSV tool with extras. It reads a broad set of formats and sources, ships a deep transform library, and writes to files, databases, object storage, vector DBs, message buses, and email.
-
-### Sources (103 available)
-
-| Group | Connectors | Status |
-|---|---|---|
-| **Files** | CSV, TSV, Parquet, JSON, JSONL / NDJSON, Excel (.xlsx), YAML, TOML, Fixed-width (mainframe / banking positional dumps), XML (slash-separated rowPath), Apache Avro (.avro / .ocf, pure-Rust) | Available |
-| **Geospatial files** | GeoJSON, Shapefile, GeoPackage, KML, GPX, GML via the `spatial` extension | Available (lazy-loaded) |
-| **File Geodatabase** | Esri File Geodatabase (`.gdb`) feature classes via `ST_Read` with a per-layer selector | Available (lazy-loaded) |
-| **Hugging Face** | Hugging Face Hub datasets over `hf://` (Parquet / CSV / JSON, globs, revisions); token for private or gated datasets | Available |
-| **Lakehouse table formats** | Apache Iceberg, Delta Lake, DuckLake | Available |
-| **Embedded databases** | SQLite (read tables), DuckDB (read tables or run a query) | Available |
-| **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB | Available (live CI for PG + MySQL) |
-| **Network relational DBs** | SQL Server (TDS), Oracle (Instant Client at runtime), ClickHouse (HTTP API) | Available |
-| **Network relational DBs** | IBM DB2, generic JDBC | Planned |
-| **Object storage** | Amazon S3, Google Cloud Storage, Azure Blob, HTTP(S), MinIO, Cloudflare R2, Backblaze B2 | Available (live CI for MinIO) |
-| **Cloud warehouses** | MotherDuck, Snowflake (SQL API + PAT/JWT), BigQuery, Redshift (postgres ATTACH), Databricks SQL (Statement Execution + chunk follow), Azure Synapse (TDS), **Teradata** (ODBC, Windows / Linux), **DuckDB Quack** (May 2026 remote protocol - HTTP on :9494, SECRET-based token auth) | Available |
-| **Streaming** | Apache Kafka / Redpanda (pure-Rust `rskafka`), NATS JetStream, GCP Pub/Sub (REST + auto-ack), RabbitMQ (`lapin` AMQP), AWS Kinesis (HTTP + SigV4 - no AWS SDK), WebSocket (`ws://` / `wss://`, optional subscribe frame) | Available |
-| **Streaming** | Pulsar, Event Hubs, multi-shard Kinesis | Planned |
-| **APIs and SaaS (REST)** | Salesforce, HubSpot, Pipedrive, Zendesk, Intercom, Stripe, QuickBooks, Xero, Shopify, Notion, Airtable, Asana, Trello, ClickUp, Monday.com, GitHub, GitLab, Linear, Jira, Slack, Discord, Telegram, Twilio, Mailchimp, SendGrid, Segment - thin pre-configured wrappers over `src.rest` / `src.graphql`. `src.rest` takes a configurable API-key auth header name and offset pagination that stops on a body `total_count`. **Salesforce Bulk** (`src.salesforce.bulk`) - Bulk API 2.0 query source for migration-scale reads: SOQL as an async query job (query / queryAll), paged CSV result sets streamed to disk via `Sforce-Locator`, typed empty relations on 0 records | Available |
-| **APIs (protocols)** | OData v4 (follows `@odata.nextLink`), SOAP / generic XML APIs (XML response parsing with namespace local-name match) | Available |
-| **Health data (DHIS2)** | `src.dhis2` reads the DHIS2 Web API: aggregate `dataValueSets`, paged metadata lists, tracker exports, and `analytics/dataValueSet.json`. `snk.dhis2` imports back: chunked requests, `importStrategy` (CREATE_AND_UPDATE is DHIS2's upsert), `dryRun`, and real import-summary parsing, so conflicts and a non-zero `ignored` count fail the run instead of passing as a green HTTP 200. Auth via personal access token or HTTP Basic. Raw `/api/analytics` (columnar `headers[]` + `rows[][]`) is not supported | Available |
-| **NoSQL and search** | MongoDB (official driver), Cassandra / ScyllaDB (CQL), Elasticsearch / OpenSearch (from+size + search_after), Redis (SCAN + GET), CouchDB (`_all_docs`), DynamoDB (HTTP + SigV4 - no AWS SDK; auto-unwraps typed attributes) | Available |
-| **Vector / AI databases** | pgvector (postgres ATTACH), Qdrant (`/points/scroll`), Weaviate (`/v1/objects`), Milvus (`/v1/vector/query`) | Available |
-| **Vector / AI databases** | Pinecone (no list-all-vectors API), Chroma, LanceDB | Preview |
-| **File transfer** | FTP / FTPS (pure-Rust `suppaftp`) and SFTP (SSH, pure-Rust `russh` + `russh-sftp` on the ring backend; password or private-key auth, optional host-fingerprint pin) - one File Transfer component, pick the protocol. Glob filter, base64 content per file | Available |
-| **Mailbox** | IMAP (rustls TLS, `mail-parser`) - basic auth today, OAuth (gmail / o365) on the roadmap | Available |
-| **Webhook listener** | Binds `127.0.0.1:port`, collects N inbound HTTP requests with a timeout, parses JSON-object / JSON-array bodies into rows | Available |
-| **Desktop** | System clipboard (pure-Rust `arboard`, auto-detects JSON-array shape) | Available |
-| **Repos** | Git (commit log or file tree from a local working copy; shells out to system `git` CLI) | Available |
-
-For CSV / TSV sources, the **Schema** panel accepts an optional per-column **Format** (a `strptime` token string such as `%d/%m/%Y`) on Date and Timestamp columns. Several date columns can each parse a different layout in one read - the column is read as text and re-parsed with its own format, working around DuckDB's single global date format. A value that does not match its format becomes null rather than failing the run. Set a Date or Timestamp column's Format to `excel` to convert Excel day-serials correctly. CSV sources also surface `ignoreErrors` (skip unparseable rows) and `nullPadding` (pad short rows with nulls) toggles in the GUI.
-
-For JSON sources, a **Format** selector picks how the file is read (auto / array / JSON Lines / object), and a **skip malformed records** toggle drops records that fail to parse instead of failing the run.
-
-### Transforms (130 available)
-
-| Group | Operations |
-|---|---|
-| **Fields** | Map (visual mapper: joins a main input to up to 3 lookup inputs with inner / left joins and per-output expressions + filter), Project / Select, Cast, Rename, Add / Drop / Reorder Column, Coalesce, UUID v4 |
-| **Rows** | Filter (visual or raw SQL, with reject port), Distinct, Sample, Top N / Limit, Sort, Skip, Top N per Group, Forward Fill, Backward Fill, Constant Fill |
-| **Aggregate** | Group By, Rollup, Cube, Count, Window Aggregate, Cumulative, Approx Quantile (t-digest), Approx Count Distinct (HyperLogLog) |
-| **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti, Spatial Join (Intersects, Contains, Within, Touches, Crosses, Overlaps, Equals, Covers, Covered by; fails naming both systems when the two geometry columns use different CRS, rather than returning zero rows) |
-| **Set operations** | Union, Union All, Intersect, Except / Minus |
-| **Window** | Row Number, Rank, Dense Rank, Lead, Lag, First Value, Last Value, NTile |
-| **Strings** | Regex Replace, Regex Extract, Regex Match, Split, Concat, Trim, Case Change, Length, Substring, Format, Hash (md5 / sha1 / sha256), IP Parse, URL Parse, Text Similarity (Levenshtein / Jaro-Winkler / Jaccard), Base64, Pad, Text Match |
-| **Date / Time** | Parse, Format, Extract Part, Date Diff / Add, Truncate, Timezone Convert, Time Bin, Current Timestamp, Epoch Convert |
-| **Numeric** | Round, Modulo, Absolute, Logarithm, Power, Square Root, Bucketize, Z-Score, Clamp, Sign |
-| **JSON / nested** | Parse, Stringify, Flatten, JSONPath Extract, Merge Objects, Array Aggregate, jq Filter (a jq program per row over a JSON column, run in-process by the pure-Rust jaq engine - no external jq, no subprocess) |
-| **Array** | Explode / Unnest, Collect List, Element At, Contains, Distinct, Length, Zip Arrays to Table (headings + row-arrays -> one column per heading) |
-| **Pivot / shape** | Pivot, Unpivot, Denormalize, Normalize, Transpose |
-| **CDC / SCD** | Incremental Load (watermark column; saves the high-water mark to workspace state and advances only on a fully successful run), Diff Detect, SCD Type 1, SCD Type 2 (valid_from / valid_to / is_current), Merge / Upsert (universal across embedded, network, warehouse and Mongo sinks, with optional delete propagation driven by a CDC change-type column), DuckLake CDC change-feed reader, Row Hash (md5 / sha1 / sha256 fingerprint), Audit Stamp (`_loaded_at` / `_loaded_date` / `_source` / `_batch_id`) |
-| **AI / Search** | **Vector Similarity Search** (cosine / L2 / inner product over FLOAT[N] via `vss`), **Full-Text Search** (BM25 via `fts`), **Embeddings** (OpenAI-compatible `/v1/embeddings`), **LLM Transform** (per-row chat completion with `{column}` templates), **Classify** (LLM-backed, normalizes to UNKNOWN), **Text Chunker** (RAG-ready, pure local), **PII Redact** (regex - emails / phones / SSNs / cards), **Semantic Dedupe** (cosine over precomputed embeddings) |
-| **Geospatial** | Spatial Distance, Length, Perimeter, Area (each auto-picks the planar or spheroidal function from the geometry CRS, and rejects geometry with no CRS), Spatial Buffer (ST_Buffer), Spatial Intersects (ST_Intersects), Flip Coordinates (ST_FlipCoordinates - fix lat,lon vs lon,lat order), Define Projection (ST_SetCRS - stamp a CRS without moving coordinates), Reproject Geometry (ST_Transform between CRS, target CRS preserved on the output), Create Geometry (from X/Y, WKT, or WKB), Clip Geometry and Erase Geometry (two-layer overlays; the second layer is dissolved with ST_Union_Agg so a feature spanning several polygons is not duplicated, and both refuse to run when the two layers carry different CRS) |
-| **Debug** | Log Rows, Assert (hard-fail on SQL predicate violation) |
-
-> **All 6 AI transforms ship today.** Three need a model API (LLM, Classify, Embeddings) and ride the apiKey-in-props pattern; three are pure-local (Chunk, PII Redact, Dedupe).
-
-### Data quality (27 available)
-
-Validators split their input: passing rows continue on the main port, failures route to a **reject** port you can sink, count, or inspect.
-
-| Component | Behavior |
-|---|---|
-| **Not-Null Check** | Pass rows with no nulls in the chosen columns |
-| **Range Check** | Pass rows inside a numeric range (inclusive or exclusive) |
-| **Regex Match** | Pass rows whose column fully matches a pattern |
-| **Uniqueness Check** | Pass the first row per key; route duplicates to reject |
-| **Schema Validate** | Reject rows where any expected column is null |
-| **Column Profile** | Per-column stats (count, null %, distinct, min / max, quartiles) via `SUMMARIZE` |
-| **Describe** | Column names + types of the input |
-| **Histogram** | Value frequencies for one column, most-frequent first |
-| **Standardize** | Trim + case-normalize + collapse inner whitespace, in place |
-| **Fuzzy Deduplicate** | Keep the first row per near-duplicate cluster |
-| **Record Match** | Self-join: emit pairs of rows above a similarity threshold |
-| **Address Cleanse** | Address parsing / normalization (planned - needs external lib) |
-
-### Custom code (6 available)
-
-| Capability | What it does |
-|---|---|
-| **Inline SQL** | Write a `SELECT`; the upstream node is exposed as `input`, result runs as a real materialized stage. A **raw SQL** mode runs verbatim SQL (a leading `WITH` / multiple CTEs / UNIONs) with no input-CTE wrapper |
-| **SQL Template** | Parameterized SQL with `${context.var}` substitution |
-| **SQL Routines** | Reusable, named SQL saved in the workspace |
-| **dbt** | Run a dbt project (or one inline model) as a node, against the pipeline's DuckDB. Wire several upstream sources in and the project reads them all via dbt `sources`, so one project models across Postgres, MySQL, files, and lakes at once. Powered by the dbt Fusion engine, fetched free at first launch (Apache dbt-core fallback); no Python setup. |
-| **Shell** | Run any shell command; emits `{stdout, stderr, exit_code, duration_ms}`. Platform-aware default shell. Optional `timeoutMs` kills the child. |
-| **WebAssembly UDF** | Per-row WASM transform via pure-Rust `wasmi`. Sandboxed (no fs / net / env). Works with any WASM toolchain (Rust, AssemblyScript, C, TinyGo). |
-| **JavaScript UDF** | Per-row JS transform via pure-Rust `boa` interpreter. Sandboxed. Define a `transform(row)` function. |
-| **Python / Rust UDFs** | Embedded-language stages | Planned |
-
-### Sinks (64 available)
-
-| Group | Connectors | Status |
-|---|---|---|
-| **Files** | CSV, TSV, Parquet (ZSTD), JSON, JSONL / NDJSON, Excel (.xlsx), YAML, TOML, XML (configurable wrappers), Avro (schema inferred from first row). Parquet + CSV support Hive-partitioned writes | Available |
-| **Geospatial files** | GeoJSON, GeoPackage, Shapefile, KML, GPX via GDAL | Available (lazy-loaded) |
-| **Lakehouse** | Apache Iceberg (full table layout), DuckLake - modes: **overwrite**, **append**, **truncate**, **upsert** (set-based delete-by-key + re-insert), **merge** (partial-column `MERGE INTO` that preserves columns the source omits) with optional CDC delete propagation | Available |
-| **Embedded databases** | SQLite, DuckDB - modes: **overwrite**, **append**, **upsert** (set-based delete-by-key + re-insert, no PK required), **merge** (partial-column `MERGE INTO` that preserves columns the source omits) with optional CDC delete propagation | Available |
-| **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB - modes: **overwrite**, **append**, **truncate**, **upsert** (ON CONFLICT / ON DUPLICATE KEY) with optional CDC delete propagation | Available (live CI for PG + MySQL) |
-| **Network relational DBs** | SQL Server / Azure Synapse (TDS, multi-row VALUES batched; auto-creates the table if absent; **upsert** via MERGE), Oracle (Instant Client; INSERT ALL, batched per statement; auto-creates the table if absent; **upsert** via MERGE), ClickHouse (HTTP JSONEachRow; upsert by pointing at a ReplacingMergeTree target table) - every MERGE sink supports **CDC delete propagation** (a delete-flag column removes matched rows) | Available (SQL Server + Oracle + MySQL upsert and delete propagation verified live in Docker) |
-| **Network relational DBs** | IBM DB2, generic JDBC | Planned |
-| **Object storage** | S3, GCS, Azure Blob via DuckDB `httpfs` (MinIO / R2 / B2 via endpoint) | Available |
-| **Hugging Face** | Push to a Hugging Face Hub dataset repo (`snk.huggingface`): the upstream is materialized to Parquet and committed over the Hub API (create-repo → preupload → git-LFS → commit); write token required, repo auto-created (public or private) | Available |
-| **Cloud warehouses** | MotherDuck, Snowflake (PAT or JWT RS256; **upsert** + delete propagation via MERGE), BigQuery, Redshift, Databricks SQL (**upsert** + delete propagation via MERGE), Azure Synapse, **Teradata** (ODBC), **DuckDB Quack** (concurrent writers to remote DuckDB via the May 2026 protocol) | Available (Snowflake MERGE verified live against the SQL-API emulator) |
-| **HTTP APIs** | REST (POST/PUT/PATCH batched JSON-array; configurable API-key auth header name), Webhook (one POST per row), GraphQL mutations | Available |
-| **SaaS / CRM** | Salesforce (`snk.salesforce`) - sObject Collections API: **insert / update / upsert (by external Id) / delete**, ≤200 records/request, Bearer token or OAuth 2.0 client-credentials (fresh token minted per run, same auth as `src.salesforce`). **Salesforce Bulk** (`snk.salesforce.bulk`) - Bulk API 2.0 for migration-scale loads: **insert / update / upsert / delete / hardDelete**, DuckDB streams to CSV and each ≤90 MB part runs as an async job | Available |
-| **Email (SMTP)** | Per-row SMTP send via pure-Rust `lettre` + rustls. Plain text v1; HTML + attachments follow. | Available |
-| **NoSQL** | MongoDB (insert_many batched; **upsert** via replace_one on a key, plus delete propagation via delete_one), Cassandra / ScyllaDB (CQL), Elasticsearch / OpenSearch (`_bulk` NDJSON), Redis (pipelined SET) | Available |
-| **NoSQL** | DynamoDB | Planned |
-| **Streaming** | Kafka / Redpanda (`rskafka`), NATS JetStream, GCP Pub/Sub (REST + OAuth2), RabbitMQ (`lapin`), WebSocket (`ws://` / `wss://`) | Available |
-| **Streaming** | Pulsar, Kinesis | Planned |
-| **Vector / AI databases** | pgvector, Pinecone (`/vectors/upsert`), Qdrant (`/points` PUT), Weaviate (`/v1/batch/objects`), Milvus (`/v1/vector/insert`) | Available |
-| **Vector / AI databases** | Chroma, LanceDB | Preview (need vendor SDK) |
-
-Database sinks support an optional **dead-letter (validate-before-insert)** step: rows that do not match the declared column types are split off to a dead-letter file (parquet / csv / json) and only the clean rows are inserted.
-
-### Control flow (18 available)
-
-| Component | What it does |
-|---|---|
-| **Replicate / Tee** | Send the same data to multiple downstream outputs |
-| **Merge Streams** | Concatenate multiple input streams (UNION ALL) |
-| **Switch / Conditional Split** | Route rows to `case_1..N` outputs by boolean (first match wins); `default` for unmatched |
-| **Wait / Delay** | Sleep `N ms / s / min / h` before passing rows through |
-| **Throttle** | Inter-stage delay derived from a rows-per-second target |
-| **Checkpoint** | Pass rows through and also write a parquet snapshot to a path |
-| **Dead Letter Queue** | Terminal sink for rejected rows (JSON / CSV / Parquet) |
-| **Run Pipeline** | Inline-execute another pipeline file (`ctl.runpipeline`) |
-| **Run Job** | Call a child pipeline (picked from the workspace) passing parent context variables; chain several to build a Master Job (`ctl.runjob`) |
-| **Parallelize** | Run the downstream branches wired to its outputs concurrently; branches are unlimited (`ctl.parallelize`) |
-| **Iterate** | Run a sub-pipeline N times with `${ITER_INDEX}` substitution |
-| **For Each** | Run a sub-pipeline once per input row with `${ITER_ITEM_<FIELD>}` substitution; an optional item key column names each run so per-row watermarks stay separate |
-
-| **Try / Catch** | Install a fallback sub-pipeline if the wrapped stage fails |
-| **Retry** | Per-stage retry policy (configure on Advanced tab) |
-| **Log Message** | Emit an info log line (`{rows}` = upstream count), pass rows through (`ctl.log`) |
-| **Warn** | Emit a warning log line, pass rows through (`ctl.warn`) |
-| **Die / Fail** | Stop the run with a message: always, only when the input has rows, or only when empty (`ctl.die`) |
-| **Schedule** | Cron / interval / file-watch triggers via the orchestration crate |
-
-A sub-pipeline runs under its own name, so its run log lands in
-`logs/<child>/` and an `xf.incremental` watermark inside it is saved to
-`state/<child>/<node>.json`. Two different children driven by the same For Each
-therefore keep separate marks.
-
-Set **For Each -> Item key column** to separate the ITERATIONS too. The child
-then runs as `<child>@<value>`, so loading 400 tables through one sub-pipeline
-keeps 400 watermarks in `state/<child>@<table>/<node>.json` instead of one.
-Leave it blank and every row shares a single mark, which silently skips rows
-when each row is a different table. It is never inferred from the row's
-position, because that would move every watermark the moment the driving query
-is reordered.
-
-Set **For Each -> Dispatch** to *Queue for workers* and the rows are written to
-`batches/<id>.ndjson` instead of being run, one JSON line per row carrying the
-child reference and that row's substitutions. Nothing runs until a worker picks
-the batch up, so the run that queued it reports how many items are waiting
-rather than pretending they loaded. A batch is a file in the workspace like
-everything else here: no queue server, no database, no network service.
-
-Queueing also reports whether the items are actually safe to spread out. Both
-"400 items each loading their own table" and "400 items appending to one file"
-look identical on the canvas - one sink node with a variable in the path - and
-only the first survives being run at once. So each item's variables are put
-into the child and the resulting targets are named with the same function that
-builds the workspace catalog, before anything picks the batch up:
-
-```
-duckle: 400 item(s) write to targets nothing else in the batch writes, so they
-        are safe to run at the same time
-duckle: heads up - 1 target(s) are written by more than one item (400 items
-        write /lake/everything.parquet). Workers run items at the same time, so
-        these will collide unless the sink is an upsert or the target is
-        append-safe
-```
-
-It warns rather than refuses: appending many items into one table is a real
-thing to want, and only you know whether that sink is safe for it. Items whose
-child cannot be read are counted and reported, so a partial check never reads
-as a clean one.
-
-Then run workers against it:
-
-```bash
-duckle-runner work --workspace /path/to/workspace     # drain every batch
-duckle-runner work --batch fe-20260816T101112123      # just this one
-duckle-runner work --once                             # one item, then exit
-```
-
-Start it on several machines pointed at one workspace and they share the batch.
-Each item is claimed with the same OS lock a pipeline run uses, so no two
-workers take the same one, and a worker that is killed mid-item leaves nothing
-to clean up: the kernel drops the lock and the item becomes claimable again.
-There is no lease, no heartbeat and no timeout, because there is nothing to
-expire. Progress is appended to `batches/<id>.ledger.ndjson`, so re-running a
-worker resumes rather than repeats.
-
-Items run **at least once, not exactly once.** The ledger is written after an
-item succeeds, so a worker that finishes an item and then dies leaves it
-looking undone and another worker repeats it. That is the honest trade for
-having no transactional store - the alternative loses items instead of
-repeating them, and a lost load is worse. Make the child idempotent (an upsert
-sink rather than an append) and a repeat costs time, not correctness. A failed
-item stays claimable and is retried on a later pass, with the failure kept in
-the ledger.
-
-The console has a **Batches** view: progress per batch, how many items are
-running right now, how many failed, and the recent attempts with the worker
-that ran each one. "Running" is answered by asking the run lock rather than by
-trusting a heartbeat, so a worker that died is not counted as running and there
-is no lease that could have gone stale. **Retry failed** clears the recorded
-failures so those items are claimable again, keeping the successes so a retry
-never repeats finished work.
-
-Before running anything, a worker **proves the lock actually excludes on that
-filesystem**: it takes a lock and asks a second process whether it can take the
-same one. Some shared filesystems tell every caller it has the lock - NFS with
-no lock daemon is the classic case - and on one of those every worker would
-claim every item and each item would run once per worker, silently, with no
-error anywhere. A worker refuses to start there. Check it yourself with
-`duckle-runner work --check`; `--no-check` overrides, knowing the above. A test
-that could not be *run* is only a warning, because failing to prove exclusion
-is not the same as having disproved it.
-
-Measured on one machine: three workers against a twelve-item batch took four
-items each, with no item run twice. **Several machines against one shared
-filesystem is the design intent and is not yet measured**, so treat it as
-untested until it is. `scripts/measure-multi-host-batch.sh` is the measurement:
-point it at a shared workspace and two or more hosts and it counts duplicate
-executions, failing if there are any.
-
-### Advanced settings (per-node)
-
-Every node has an **Advanced** tab with fields the engine honours at run time:
-
-| Field | What it does |
-|---|---|
-| **Retry attempts** | Total tries on failure (1 = no retry). Sleeps `backoff * attempt` ms between attempts. |
-| **Retry backoff (ms)** | Inter-attempt sleep, linearly scaled by attempt index. |
-| **Memory limit (MB)** | `PRAGMA memory_limit` applied to this stage only. |
-| **Log row count** | Print the post-stage rowcount to the run output. |
-
-### Orchestration and workspace
-
-| Capability | What it does |
-|---|---|
-| **Run feedback** | Streaming run events light nodes up stage by stage, with per-node row counts, real mid-query cancel, and run history. |
-| **Error traceback** | A failed stage reports the exact compiled SQL plus the underlying DuckDB message, in both the Run view and the NDJSON run log, so any component's failure is debuggable. |
-| **Column lineage** | A top-bar **Lineage** button shows, per node, each output column traced back to the source column(s) it derives from. |
-| **Dives + dashboards** | Local-first, live-querying, shareable data views, stitched into multi-chart dashboards. Generate a chart from a plain-language question, export a dive to a self-contained HTML file, open standalone `/dive/<id>` and `/dash/<id>` share pages, and find everything in the top-bar **Dives** gallery. |
-| **Run logs** | Every run writes component-level NDJSON to `<workspace>/logs/<pipeline name>/runtime.log` (start/finish per stage, row counts, durations, `ctl.log` / `ctl.warn` / `ctl.die` messages). Tail it straight into Splunk or Dynatrace. |
-| **Schedules** | Cron, fixed-interval, and file-watch triggers, driven by an in-process scheduler. |
-| **Context variables** | Per-environment variables; bind any field to one via a Manual / Context dropdown, or reference `${var}` inline. Resolved at run time. |
-| **Workspace-relative paths** | Built-in `${workspace}` (alias `${projectroot}`) resolves to the active workspace root, so source / sink paths can be written relative to it and a workspace folder stays portable when copied or moved. No context needed; works in the canvas, schema autodetect, and headless runs. |
-| **Run-time path placeholders** | Built-in `${date}`, `${time}`, `${datetime}`, `${timestamp}`, and `${now}` (UTC) stamp the current run time into any path. They resolve fresh on every run (canvas, schedule, headless runner, built bundle), and a sink's parent folder is created automatically, so a path like `${workspace}/exports/${date}/orders.parquet` lands in a new dated folder each day. No context needed. |
-| **Cloud credentials** | Saved S3 / GCS / Azure connections become DuckDB SECRETs; cloud reads / writes go through `httpfs`. S3-compatible endpoints (MinIO / R2 / B2) supported via `ENDPOINT` + `URL_STYLE`. |
-| **Workspace** | Pipelines, connections, contexts, documents, and routines persist as plain JSON and Markdown files in a folder you choose. |
-
----
-
-## Clean data before it reaches your AI
-
-Models inherit the quality of their inputs. RAG indexes, embedding stores, and training sets quietly accumulate duplicates, nulls, malformed rows, mixed encodings, and inconsistent schemas. Duckle is built to scrub that data before it lands in a vector store:
-
-- **Deduplicate** with exact Distinct, Uniqueness, and **Fuzzy Deduplicate** (Jaro-Winkler / Levenshtein); use **Record Match** to find near-duplicate pairs with a similarity score
-- **Semantic dedupe** with `xf.ai.dedupe` over a precomputed embedding column
-- **Profile + describe** every column up front (Column Profile, Describe, Histogram) so issues surface before they reach a model
-- **Validate and filter** malformed, empty, or out-of-range records and route failures to a reject port
-- **Normalize** types, encodings, casing, and null handling across messy sources (Standardize, Cast, regex / string transforms)
-- **Redact PII** (emails, phones, SSNs, credit cards) via `xf.ai.pii` before embedding
-- **Chunk + embed** long text via `xf.ai.chunk` -> `xf.ai.embed` for RAG indexing
-- **Classify** rows with an LLM (`xf.ai.classify` constrains the model to one of N user-supplied categories)
-- **Retrieve with both halves of hybrid search**, locally, no model API required: **Vector Similarity Search** (cosine / L2 / inner product) and **Full-Text Search** (BM25)
-- **Land it in your store** - pgvector ships, and **Pinecone**, **Qdrant**, **Weaviate**, **Milvus** all have working sinks that POST batches through each vendor's HTTP API
-
----
-
-## Engines
-
-Duckle ships a thin shell and installs its engines on first launch.
-
-| Engine | Role | Status |
-|---|---|---|
-| **DuckDB** | Default execution engine: analytics, file formats, cloud reads, SQL pushdown. Tracking **v1.5.3** (latest stable). A lock-free single-SELECT read (`Engine::query`) powers dives. | Working |
-| **Duckie AI Assistant** | Local chat assistant via **llama.cpp** + **Qwen 2.5 Coder 1.5B GGUF**. Downloads ~1.1 GB; runs entirely offline once installed. Managed as a `llama-server` subprocess exposing an OpenAI-compatible API on `127.0.0.1`. | Installable |
-| **SlothDB** | Alternate embedded analytical engine ([SouravRoy-ETL/slothdb](https://github.com/SouravRoy-ETL/slothdb)), installed the same way and selectable per pipeline. | Installable |
-| **Native** | In-process Rust streaming / incremental engine. | Planned |
-
-### First-launch extension pre-fetch
-
-When the installer downloads the DuckDB CLI it also pre-fetches the extensions Duckle uses, with per-extension progress, so the first time you touch a Postgres source or an Iceberg table there is no surprise network hop mid-pipeline:
-
-`httpfs` (S3 / GCS / HTTP), `azure` (Azure Blob native), `sqlite`, `postgres`, `mysql`, `excel`, `iceberg`, `delta`, `ducklake`, `vss`, `fts`.
-
-`spatial` is lazy-loaded (~50 MB GDAL bundle) - it installs on first use of a geospatial source/sink to keep the initial download small.
-
----
-
-## How to use Duckle
-
-A wider tour of the workflow.
-
-| Step | What you do | Where to look |
-|---|---|---|
-| **1. Sources** | Drag a source, point it at a file / DB / cloud URL / SaaS endpoint. Click **Autodetect schema** to read columns + a sample. | [Sources reference](#sources-103-available) |
-| **2. Transforms** | Wire transforms to source output ports. Configure in the Properties panel. **Preview** tab shows live rows; **Plan** tab shows generated SQL. | [Transforms reference](#transforms-130-available) |
-| **3. Data quality** | Drop in a validator (Not-Null, Range, Regex, Uniqueness). Passing rows continue on the main port; failures route to the **reject** port. | [Data quality reference](#data-quality-27-available) |
-| **4. Sinks** | Finish with a sink (file, DB, cloud, vector DB, message bus, email). Set write mode (overwrite, append, truncate, upsert). | [Sinks reference](#sinks-64-available) |
-| **5. Run** | Press **Run** to execute on DuckDB. Nodes light up stage by stage; **Output** + **Console** show row counts, timing, errors. Stop button kills mid-run. | [Run feedback](#orchestration-and-workspace) |
-| **6. Ask Duckie** | For anything you can describe in English, the AI assistant can sketch a pipeline. Iterate by editing the graph or asking follow-ups. | [Meet Duckie](#meet-duckie---the-local-ai-pipeline-assistant) |
-| **7. Reuse** | Save Connections, Context variables, and SQL Routines in the workspace; reference `${context.var}` in any field. Everything persists as plain files. | [Workspace and Git flow](#workspace-and-git-flow) |
-| **8. Schedule** | Attach a cron, interval, or file-watch trigger to run a pipeline automatically. | [Schedules and triggers](#schedules-and-triggers) |
-
----
-
-## Recipes and examples
-
-Ready-to-adapt patterns. Each one is a few nodes you wire on the canvas (or ask Duckie to sketch).
-
-### CSV cleanup
-
-> "Read orders.csv, drop nulls, deduplicate by order_id, write to orders_clean.parquet"
-
-```
-src.csv -> qa.not_null -> qa.uniqueness -> snk.parquet
-```
-
-Set `qa.not_null` to the columns that must be present; set `qa.uniqueness` to `order_id`. Rejected rows go to a `snk.csv` on the `reject` port for inspection.
-
-### Postgres -> Snowflake nightly load
-
-> "Read all rows from Postgres `events`, upsert into Snowflake table `analytics.events` on `event_id`"
-
-```
-src.postgres -> snk.snowflake (mode=upsert, conflict=event_id)
-```
-
-Attach a `ctl.schedule` with cron `0 2 * * *` to run nightly at 02:00.
-
-### S3 -> partitioned Parquet
-
-> "Read all .json.gz files in `s3://logs/2026/*/*.json.gz`, parse, write Hive-partitioned by `event_date`"
-
-```
-src.s3 (glob, autodetect json.gz)
-  -> xf.derive (event_date = CAST(ts AS DATE))
-  -> snk.parquet (path=out/, partitionBy=event_date, mode=overwrite_or_ignore)
-```
-
-### RAG ingestion
-
-> "Chunk our docs, embed with OpenAI, dedupe near-identicals, store in pgvector"
-
-```
-src.s3 (markdown files)
-  -> xf.ai.chunk (chunkSize=1500, overlap=150)
-  -> xf.ai.pii (redact)
-  -> xf.ai.embed (model=text-embedding-3-small, baseUrl=https://api.openai.com)
-  -> xf.ai.dedupe (threshold=0.95)
-  -> snk.pgvector (table=docs)
-```
-
-### Slack channel digest
-
-> "Pull yesterday's Slack messages from #support, classify by sentiment, email a summary"
-
-```
-src.slack (channels.history with oldest=yesterday)
-  -> xf.ai.classify (categories=positive,negative,neutral)
-  -> xf.aggregate (group by sentiment, count)
-  -> snk.email (to=oncall@..., subject=Daily Support Digest)
-```
-
-### Webhook -> S3 archive
-
-> "Receive 100 webhooks, archive each one as JSON in S3"
-
-```
-src.webhook (port=8080, maxRequests=100, timeoutMs=300000)
-  -> snk.s3 (path=s3://archive/events/, format=jsonl, partitionBy=event_date)
-```
-
-### Git commit-log analytics
-
-> "Build a dashboard of who's been committing what in the last 30 days"
-
-```
-src.git (mode=log, maxRows=10000)
-  -> xf.filter (date > current_date - INTERVAL '30 days')
-  -> xf.aggregate (group by author_email, count)
-  -> snk.csv (path=author-stats.csv)
-```
-
-More examples live in [`samples/`](samples) - drop the pipeline files into a workspace and open them.
-
----
-
-## Git integration (GitHub + GitLab)
-
-> Push, pull, branch, and watch CI from inside Duckle. No terminal required.
-
-Click the **Git icon** in the topbar to open the workspace Git panel. Built-in integration with GitHub and GitLab, on the system `git` CLI (no FFI, no embedded git library):
-
-| Feature | What it does |
-|---|---|
-| **Status snapshot** | Current branch, ahead/behind counts, list of modified / staged / untracked / conflicted files |
-| **Stage all + commit** | One-click `git add -A && git commit -m "..."` with your message |
-| **Push / Pull** | `git push` and `git pull --ff-only` against `origin`. The button stays disabled when there's nothing to push |
-| **Branch list, switch, create** | Lists local branches; click to switch; create new branches inline |
-| **Remote URL config** | Add or change `origin` URL from inside the panel - auto-detects GitHub vs GitLab from the host |
-| **PAT-prompt fallback** | First tries `git push` using your system credential helper (GitHub CLI, osxkeychain, manager-core). On a 401, prompts for a Personal Access Token, saves it AES-encrypted in `<workspace>/.duckle/secrets/git.json` (auto-gitignored), retries with the token injected into the HTTPS URL |
-| **CI build badge in topbar** | Polls GitHub Actions or GitLab CI every 30 s for the latest pipeline on your current branch. Shows green / red / yellow / gray. Click to open the build in your browser |
-
-**Workflow.** Workspaces are plain folders (see [Workspace and Git flow](#workspace-and-git-flow)) - any standard Git workflow works:
-
-```
-Create / clone -> open in Duckle -> edit pipelines -> commit + push -> 
-PR / MR -> CI runs your pipeline tests -> merge -> pull
-```
-
-You can do the entire push / pull / merge loop without leaving Duckle. Heavy operations (interactive rebase, conflict resolution, log archaeology) still live in your terminal or external Git tool - the panel is designed for the everyday flow, not as a full Git replacement.
-
-**Provider detection.** The remote URL host determines which CI API the badge polls:
-
-| Provider | CI source | API |
-|---|---|---|
-| `github.com` | GitHub Actions | `GET /repos/{owner}/{repo}/actions/runs` |
-| `gitlab.com` or self-hosted GitLab | GitLab CI | `GET /api/v4/projects/{id}/pipelines` |
-| Other / bitbucket | (no CI badge for now) | - |
-
-The badge uses the same PAT you saved for pushes - no separate auth step.
-
----
-
-## Workspace and Git flow
-
-A workspace is a folder you pick on first launch. Everything you build lives there as plain text:
-
-```
-my-workspace/
-  pipelines/
-    orders_etl.pipeline.json     # the node graph
-    nightly_load.pipeline.json
-  connections/
-    prod-postgres.connection.json # saved DB credentials (encrypted)
-    snowflake-analytics.connection.json
-  contexts/
-    dev.context.json              # variables for dev environment
-    prod.context.json
-  routines/
-    cleanse-addresses.sql         # reusable SQL snippets
-  documents/
-    runbook.md                    # plain-Markdown docs
-  schedules.json                  # all scheduled runs in this workspace
-  run-history/
-    orders_etl/                   # one folder per pipeline
-      2026-05-25T14-30-00.json    # one file per run
-```
-
-**Git-friendly by design.** Every file is human-readable JSON or Markdown. Standard workflows work:
-
-```bash
-git init my-workspace && cd my-workspace
-git add . && git commit -m "Initial pipelines"
-
-# Pull a teammate's update
-git pull --rebase
-
-# Push your changes
-git push
-
-# Branch for a risky migration
-git checkout -b feature/upsert-mode
-# ...edit pipelines in Duckle...
-git diff       # readable JSON diffs
-git push -u origin feature/upsert-mode
-# open PR / MR
-```
-
-**Sensitive values** in connections get encrypted with a workspace-local key (`workspace/.duckle/keys/`). Don't commit that file - add `**/.duckle/keys/` to `.gitignore`. The connection JSON files themselves only hold the ciphertext, which is safe.
-
----
-
-## Schedules and triggers
-
-Pipelines can run on cron, fixed interval, or file-watch triggers. Configure these in the **Schedule panel** (toolbar -> Schedule icon), not as graph nodes.
-
-| Trigger type | Config | Example |
-|---|---|---|
-| **Cron** | Standard 5-field cron expression with optional timezone | `0 2 * * *` (every day at 2 AM) |
-| **Interval** | `every N {seconds, minutes, hours, days}` | `every 15 minutes` |
-| **File watch** | Watch a directory for new/changed files matching a glob | `/inbox/*.csv` |
-| **Manual** | Run-on-demand only (the default) | - |
-
-Schedules persist to `workspace/schedules.json` and execute via the in-process scheduler crate. They survive app restarts but require Duckle to be running.
-
-For headless / always-on schedules that run when Duckle is closed, build the pipeline into a standalone file and let the operating system's own scheduler run it - see [Server deployment](#server-deployment-build-pipeline) below.
-
----
 
 ## Server deployment (Build Pipeline)
 
@@ -1250,6 +673,611 @@ The webhook payload carries a `text` field as well as structured fields, so Slac
 - **It never breaks a run.** Delivery happens after the run is recorded, is time-bounded, and an unreachable channel is logged rather than raised.
 
 A schedule whose pipeline file has been renamed or deleted also raises an alert, instead of silently doing nothing.
+
+---
+
+## Schedules and triggers
+
+Pipelines can run on cron, fixed interval, or file-watch triggers. Configure these in the **Schedule panel** (toolbar -> Schedule icon), not as graph nodes.
+
+| Trigger type | Config | Example |
+|---|---|---|
+| **Cron** | Standard 5-field cron expression with optional timezone | `0 2 * * *` (every day at 2 AM) |
+| **Interval** | `every N {seconds, minutes, hours, days}` | `every 15 minutes` |
+| **File watch** | Watch a directory for new/changed files matching a glob | `/inbox/*.csv` |
+| **Manual** | Run-on-demand only (the default) | - |
+
+Schedules persist to `workspace/schedules.json` and execute via the in-process scheduler crate. They survive app restarts but require Duckle to be running.
+
+For headless / always-on schedules that run when Duckle is closed, build the pipeline into a standalone file and let the operating system's own scheduler run it - see [Server deployment](#server-deployment-build-pipeline) below.
+
+---
+
+## Meet Duckie - the local AI pipeline assistant
+
+> Describe what you need. Duckie writes the pipeline.
+
+<p align="center">
+<img src="docs/assets/real-life-screenshot/duckie.png" alt="Duckie AI Assistant panel open beside a real pipeline on the canvas, showing example prompts and a LOCAL badge" width="100%"/>
+</p>
+
+The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Coder 1.5B** running through **llama.cpp**, downloaded once (~1.1 GB) and then run entirely on your CPU. Ask in plain English; Duckie streams back a valid Duckle pipeline definition. One click drops it onto the canvas, ready to inspect, tweak, and run.
+
+| | |
+|---|---|
+| **Truly local** | The Qwen model runs as a `llama-server` subprocess on `127.0.0.1`. No API keys. No network calls. Disconnect your wifi and it keeps working. |
+| **Streamed responses** | Tokens arrive as they're generated, with a blinking caret in the bubble. No "wait 20 seconds for the spinner to vanish" UX. |
+| **One-click insert** | When Duckie produces a JSON pipeline, an **Insert into canvas** button appears. The graph populates with positioned nodes, wired edges, and the props the model chose. |
+| **Bring-your-own-model option** | The chat plumbing is the same OpenAI-compatible HTTP interface used by `xf.ai.llm` / `xf.ai.embed` connectors. Point `baseUrl` at Ollama, llama.cpp, Cohere, OpenAI, Voyage - anything that speaks the OpenAI shape. |
+| **Sandboxed** | The model has no fs / net / tool access. It can only emit text - your pipeline JSON. |
+
+---
+
+## Benchmark
+
+### 20M-row CSV into DuckDB
+
+The most common job in data engineering: load a **20M-row CSV into DuckDB**. One identical 2.49 GB file (20M rows of TPC-H lineitem, 16 typed columns), every tool measured at its best configuration, wall-clock time to land the data as a table.
+
+<p align="center">
+  <a href="https://duckle.org/"><img src="docs/assets/ingest-seconds-benchmark.png" alt="Benchmark: loading a 20M-row CSV into DuckDB at each tool's best config. Duckle 15.69s, dlt 40.68s, Talend bulk 90s, Informatica bulk 100s, ingestr 411s, Airbyte about 1150s." width="820"/></a>
+</p>
+
+**How it was measured**
+
+- **Machine:** Intel Core i7-13650HX (14C / 20T), 24 GB RAM, NVMe SSD, Windows 11, DuckDB 1.5.4. Duckle, dlt and ingestr ran here.
+- **Best config per tool:** dlt used the Arrow plus parquet loader path; Talend and Informatica used their bulk output connectors at max config (their default row-by-row sinks were 5-7x slower). Nothing was left on a slow default to pad the gap.
+- **Talend and Informatica** ran on a separate 8 GB VPS, so per-tool peak RAM was not captured for those two.
+- **Airbyte** (source-file to destination-duckdb) is scaled from measured 2M and 5M runs at a steady ~18k rows/s, and it also needs an always-on ~8 GB platform just to start.
+- Wall-clock time, peak working-set of the whole process tree.
+
+**Why Duckle is this fast:** its 15.69s sits right on top of raw DuckDB's own load floor (~16s to fully parse and write all 20M typed rows into an on-disk table). Duckle wraps the engine with pipelines, connectors, and a UI, then gets out of its way. That is the entire design goal. A read-only scan or aggregate over the same CSV is far faster still; this benchmark measures the heavier "materialize it as a table" job that every ETL tool here performs.
+
+### 96M rows, Postgres to Parquet
+
+A second, harder job against a live database: full-refresh extract of **95,988,640 rows** of TPC-H `lineitem` (14 GB in Postgres 16) out to Parquet.
+
+<p align="center">
+  <img src="docs/assets/pg-to-parquet-benchmark.png" alt="Benchmark: 96M rows Postgres to Parquet. Duckle 39.9s, raw DuckDB postgres_scanner floor 44.2s, ingestr 120.8s, dlt 493.6s, sling 1897s." width="880"/>
+</p>
+
+**Run it yourself.** The harness is in this repo at [`benchmarks/pg-to-parquet`](benchmarks/pg-to-parquet). `./bench.sh all` brings up Postgres, generates the data at any scale factor, and times every tool you have installed. No timing is recorded until the output has been reopened and checked for the right row count and the right `sum(l_orderkey)`, so a tool that writes a fast but wrong file gets a failure rather than a number.
+
+**Read it with these caveats**
+
+- **The DuckDB floor is not a competitor.** It is raw `postgres_scanner` plus `COPY TO`: no scheduling, no typing, no incremental state, no UI. It is there to show how much of the clock is the machine reading Postgres. Duckle landing 11% under it is the honest framing, not "Duckle beats DuckDB".
+- **ingestr has no Parquet destination** and writes a DuckDB file, so its output size is not like-for-like. Its time is.
+- **Compression is not normalised.** Duckle wrote zstd, the others snappy.
+- **Airbyte and Meltano are absent.** Airbyte has no local Parquet destination and has only run against an earlier synthetic dataset; Meltano was not wired up. Neither is claimed here.
+
+Hardware, per-run numbers and the two measurement traps that produced wrong figures on the first attempt are written up in [`RESULTS.md`](benchmarks/pg-to-parquet/RESULTS.md).
+
+---
+
+## Status
+
+Duckle is in **public beta**. The visual designer, the DuckDB execution engine, the scheduler, the cloud connectors, and the Duckie AI assistant all work today and are covered by 170+ integration tests across Linux, macOS, and Windows. The catalog is still growing and APIs may evolve before 1.0, but the day-to-day surface is stable enough for real work.
+
+**Scope, stated plainly:** Duckle runs as a service on hardware you provision, and uses all of it. What it does not do is split one query across a cluster, so when a job outgrows the largest instance you want to pay for, push the work down into the source system or point the output at a warehouse, object store or lakehouse. It will not pretend to be a cluster.
+
+The component palette ships **384 nodes** so the roadmap is visible in the product itself:
+
+- **366 available** runs on the DuckDB engine today
+- **3 preview** is configurable in the designer (drag, wire, set properties); execution is being wired engine-by-engine
+- **15 planned** is reserved in the palette but not yet executable - see [`docs/roadmap.md`](docs/roadmap.md)
+
+---
+
+## Capabilities
+
+Duckle is not a CSV tool with extras. It reads a broad set of formats and sources, ships a deep transform library, and writes to files, databases, object storage, vector DBs, message buses, and email.
+
+### Sources
+
+**113 sources available today.**
+
+| Group | Connectors | Status |
+|---|---|---|
+| **Files** | CSV, TSV, Parquet, JSON, JSONL / NDJSON, Excel (.xlsx), YAML, TOML, Fixed-width (mainframe / banking positional dumps), XML (slash-separated rowPath), Apache Avro (.avro / .ocf, pure-Rust) | Available |
+| **Geospatial files** | GeoJSON, Shapefile, GeoPackage, KML, GPX, GML via the `spatial` extension | Available (lazy-loaded) |
+| **File Geodatabase** | Esri File Geodatabase (`.gdb`) feature classes via `ST_Read` with a per-layer selector | Available (lazy-loaded) |
+| **Hugging Face** | Hugging Face Hub datasets over `hf://` (Parquet / CSV / JSON, globs, revisions); token for private or gated datasets | Available |
+| **Lakehouse table formats** | Apache Iceberg, Delta Lake, DuckLake | Available |
+| **Embedded databases** | SQLite (read tables), DuckDB (read tables or run a query) | Available |
+| **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB | Available (live CI for PG + MySQL) |
+| **Network relational DBs** | SQL Server (TDS), Oracle (Instant Client at runtime), ClickHouse (HTTP API) | Available |
+| **Network relational DBs** | IBM DB2, generic JDBC | Planned |
+| **Object storage** | Amazon S3, Google Cloud Storage, Azure Blob, HTTP(S), MinIO, Cloudflare R2, Backblaze B2 | Available (live CI for MinIO) |
+| **Cloud warehouses** | MotherDuck, Snowflake (SQL API + PAT/JWT), BigQuery, Redshift (postgres ATTACH), Databricks SQL (Statement Execution + chunk follow), Azure Synapse (TDS), **Teradata** (ODBC, Windows / Linux), **DuckDB Quack** (May 2026 remote protocol - HTTP on :9494, SECRET-based token auth) | Available |
+| **Streaming** | Apache Kafka / Redpanda (pure-Rust `rskafka`), NATS JetStream, GCP Pub/Sub (REST + auto-ack), RabbitMQ (`lapin` AMQP), AWS Kinesis (HTTP + SigV4 - no AWS SDK), WebSocket (`ws://` / `wss://`, optional subscribe frame) | Available |
+| **Streaming** | Pulsar, Event Hubs, multi-shard Kinesis | Planned |
+| **APIs and SaaS (REST)** | Salesforce, HubSpot, Pipedrive, Zendesk, Intercom, Stripe, QuickBooks, Xero, Shopify, Notion, Airtable, Asana, Trello, ClickUp, Monday.com, GitHub, GitLab, Linear, Jira, Slack, Discord, Telegram, Twilio, Mailchimp, SendGrid, Segment - thin pre-configured wrappers over `src.rest` / `src.graphql`. `src.rest` takes a configurable API-key auth header name and offset pagination that stops on a body `total_count`. **Salesforce Bulk** (`src.salesforce.bulk`) - Bulk API 2.0 query source for migration-scale reads: SOQL as an async query job (query / queryAll), paged CSV result sets streamed to disk via `Sforce-Locator`, typed empty relations on 0 records | Available |
+| **APIs (protocols)** | OData v4 (follows `@odata.nextLink`), SOAP / generic XML APIs (XML response parsing with namespace local-name match) | Available |
+| **Health data (DHIS2)** | `src.dhis2` reads the DHIS2 Web API: aggregate `dataValueSets`, paged metadata lists, tracker exports, and `analytics/dataValueSet.json`. `snk.dhis2` imports back: chunked requests, `importStrategy` (CREATE_AND_UPDATE is DHIS2's upsert), `dryRun`, and real import-summary parsing, so conflicts and a non-zero `ignored` count fail the run instead of passing as a green HTTP 200. Auth via personal access token or HTTP Basic. Raw `/api/analytics` (columnar `headers[]` + `rows[][]`) is not supported | Available |
+| **NoSQL and search** | MongoDB (official driver), Cassandra / ScyllaDB (CQL), Elasticsearch / OpenSearch (from+size + search_after), Redis (SCAN + GET), CouchDB (`_all_docs`), DynamoDB (HTTP + SigV4 - no AWS SDK; auto-unwraps typed attributes) | Available |
+| **Vector / AI databases** | pgvector (postgres ATTACH), Qdrant (`/points/scroll`), Weaviate (`/v1/objects`), Milvus (`/v1/vector/query`) | Available |
+| **Vector / AI databases** | Pinecone (no list-all-vectors API), Chroma, LanceDB | Preview |
+| **File transfer** | FTP / FTPS (pure-Rust `suppaftp`) and SFTP (SSH, pure-Rust `russh` + `russh-sftp` on the ring backend; password or private-key auth, optional host-fingerprint pin) - one File Transfer component, pick the protocol. Glob filter, base64 content per file | Available |
+| **Mailbox** | IMAP (rustls TLS, `mail-parser`) - basic auth today, OAuth (gmail / o365) on the roadmap | Available |
+| **Webhook listener** | Binds `127.0.0.1:port`, collects N inbound HTTP requests with a timeout, parses JSON-object / JSON-array bodies into rows | Available |
+| **Desktop** | System clipboard (pure-Rust `arboard`, auto-detects JSON-array shape) | Available |
+| **Repos** | Git (commit log or file tree from a local working copy; shells out to system `git` CLI) | Available |
+
+For CSV / TSV sources, the **Schema** panel accepts an optional per-column **Format** (a `strptime` token string such as `%d/%m/%Y`) on Date and Timestamp columns. Several date columns can each parse a different layout in one read - the column is read as text and re-parsed with its own format, working around DuckDB's single global date format. A value that does not match its format becomes null rather than failing the run. Set a Date or Timestamp column's Format to `excel` to convert Excel day-serials correctly. CSV sources also surface `ignoreErrors` (skip unparseable rows) and `nullPadding` (pad short rows with nulls) toggles in the GUI.
+
+For JSON sources, a **Format** selector picks how the file is read (auto / array / JSON Lines / object), and a **skip malformed records** toggle drops records that fail to parse instead of failing the run.
+
+### Transforms
+
+**130 transforms available today.**
+
+| Group | Operations |
+|---|---|
+| **Fields** | Map (visual mapper: joins a main input to up to 3 lookup inputs with inner / left joins and per-output expressions + filter), Project / Select, Cast, Rename, Add / Drop / Reorder Column, Coalesce, UUID v4 |
+| **Rows** | Filter (visual or raw SQL, with reject port), Distinct, Sample, Top N / Limit, Sort, Skip, Top N per Group, Forward Fill, Backward Fill, Constant Fill |
+| **Aggregate** | Group By, Rollup, Cube, Count, Window Aggregate, Cumulative, Approx Quantile (t-digest), Approx Count Distinct (HyperLogLog) |
+| **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti, Spatial Join (Intersects, Contains, Within, Touches, Crosses, Overlaps, Equals, Covers, Covered by; fails naming both systems when the two geometry columns use different CRS, rather than returning zero rows) |
+| **Set operations** | Union, Union All, Intersect, Except / Minus |
+| **Window** | Row Number, Rank, Dense Rank, Lead, Lag, First Value, Last Value, NTile |
+| **Strings** | Regex Replace, Regex Extract, Regex Match, Split, Concat, Trim, Case Change, Length, Substring, Format, Hash (md5 / sha1 / sha256), IP Parse, URL Parse, Text Similarity (Levenshtein / Jaro-Winkler / Jaccard), Base64, Pad, Text Match |
+| **Date / Time** | Parse, Format, Extract Part, Date Diff / Add, Truncate, Timezone Convert, Time Bin, Current Timestamp, Epoch Convert |
+| **Numeric** | Round, Modulo, Absolute, Logarithm, Power, Square Root, Bucketize, Z-Score, Clamp, Sign |
+| **JSON / nested** | Parse, Stringify, Flatten, JSONPath Extract, Merge Objects, Array Aggregate, jq Filter (a jq program per row over a JSON column, run in-process by the pure-Rust jaq engine - no external jq, no subprocess) |
+| **Array** | Explode / Unnest, Collect List, Element At, Contains, Distinct, Length, Zip Arrays to Table (headings + row-arrays -> one column per heading) |
+| **Pivot / shape** | Pivot, Unpivot, Denormalize, Normalize, Transpose |
+| **CDC / SCD** | Incremental Load (watermark column; saves the high-water mark to workspace state and advances only on a fully successful run), Diff Detect, SCD Type 1, SCD Type 2 (valid_from / valid_to / is_current), Merge / Upsert (universal across embedded, network, warehouse and Mongo sinks, with optional delete propagation driven by a CDC change-type column), DuckLake CDC change-feed reader, Row Hash (md5 / sha1 / sha256 fingerprint), Audit Stamp (`_loaded_at` / `_loaded_date` / `_source` / `_batch_id`) |
+| **AI / Search** | **Vector Similarity Search** (cosine / L2 / inner product over FLOAT[N] via `vss`), **Full-Text Search** (BM25 via `fts`), **Embeddings** (OpenAI-compatible `/v1/embeddings`), **LLM Transform** (per-row chat completion with `{column}` templates), **Classify** (LLM-backed, normalizes to UNKNOWN), **Text Chunker** (RAG-ready, pure local), **PII Redact** (regex - emails / phones / SSNs / cards), **Semantic Dedupe** (cosine over precomputed embeddings) |
+| **Geospatial** | Spatial Distance, Length, Perimeter, Area (each auto-picks the planar or spheroidal function from the geometry CRS, and rejects geometry with no CRS), Spatial Buffer (ST_Buffer), Spatial Intersects (ST_Intersects), Flip Coordinates (ST_FlipCoordinates - fix lat,lon vs lon,lat order), Define Projection (ST_SetCRS - stamp a CRS without moving coordinates), Reproject Geometry (ST_Transform between CRS, target CRS preserved on the output), Create Geometry (from X/Y, WKT, or WKB), Clip Geometry and Erase Geometry (two-layer overlays; the second layer is dissolved with ST_Union_Agg so a feature spanning several polygons is not duplicated, and both refuse to run when the two layers carry different CRS) |
+| **Debug** | Log Rows, Assert (hard-fail on SQL predicate violation) |
+
+> **All 6 AI transforms ship today.** Three need a model API (LLM, Classify, Embeddings) and ride the apiKey-in-props pattern; three are pure-local (Chunk, PII Redact, Dedupe).
+
+### Data quality
+
+**27 validators available today.**
+
+Validators split their input: passing rows continue on the main port, failures route to a **reject** port you can sink, count, or inspect.
+
+| Component | Behavior |
+|---|---|
+| **Not-Null Check** | Pass rows with no nulls in the chosen columns |
+| **Range Check** | Pass rows inside a numeric range (inclusive or exclusive) |
+| **Regex Match** | Pass rows whose column fully matches a pattern |
+| **Uniqueness Check** | Pass the first row per key; route duplicates to reject |
+| **Schema Validate** | Reject rows where any expected column is null |
+| **Column Profile** | Per-column stats (count, null %, distinct, min / max, quartiles) via `SUMMARIZE` |
+| **Describe** | Column names + types of the input |
+| **Histogram** | Value frequencies for one column, most-frequent first |
+| **Standardize** | Trim + case-normalize + collapse inner whitespace, in place |
+| **Fuzzy Deduplicate** | Keep the first row per near-duplicate cluster |
+| **Record Match** | Self-join: emit pairs of rows above a similarity threshold |
+| **Expectation Suite** | A reusable suite of rules plus a data-quality scorecard, so one node carries the whole expectation set |
+| **Data Contract** | Enforcement gate holding the same rule suite, failing the run when the contract is broken |
+| **Freshness / SLA** | Age is now minus the newest value in a column, checked against a maximum you set |
+| **Outlier Detection** | Statistical outlier detection; inliers continue, outliers route to reject |
+| **Referential Integrity** | Orphan check across two inputs: rows whose key is absent from the reference route to reject |
+| **Reconciliation** | Source-versus-target report, for proving a load matches what it came from |
+| **Record Linkage** | Fuzzy linkage across two inputs, matching records that are not identical |
+| **Match Grouping** | Turns matched record pairs into stable clusters, so a chain of matches becomes one group |
+| **Survivorship** | Collapses duplicates sharing a group key into a single surviving record |
+| **Mask / Anonymize** | Irreversibly masks or anonymizes selected columns in place |
+| **Column Classification** | Heuristic column classification and PII tagging. No LLM, no data leaves the machine |
+| **Advanced Column Profile** | A richer single-column profile than Describe |
+| **Reproducible Sample** | A repeatable random sample of the upstream rows |
+| **Validate Geometry** | Flags invalid geometries with `ST_IsValid` |
+| **Repair Geometry** | Replaces the geometry column in place with a repaired one |
+| **Check Empty Geometry** | Flags empty geometries with `ST_IsEmpty` |
+| **Address Cleanse** | Address parsing / normalization (planned - needs external lib) |
+
+### Custom code
+
+**7 ways to drop into code available today.**
+
+| Capability | What it does |
+|---|---|
+| **Inline SQL** | Write a `SELECT`; the upstream node is exposed as `input`, result runs as a real materialized stage. A **raw SQL** mode runs verbatim SQL (a leading `WITH` / multiple CTEs / UNIONs) with no input-CTE wrapper |
+| **SQL Template** | Parameterized SQL with `${context.var}` substitution |
+| **SQL Routines** | Reusable, named SQL saved in the workspace |
+| **dbt** | Run a dbt project (or one inline model) as a node, against the pipeline's DuckDB. Wire several upstream sources in and the project reads them all via dbt `sources`, so one project models across Postgres, MySQL, files, and lakes at once. Powered by the dbt Fusion engine, fetched free at first launch (Apache dbt-core fallback); no Python setup. |
+| **Shell** | Run any shell command; emits `{stdout, stderr, exit_code, duration_ms}`. Platform-aware default shell. Optional `timeoutMs` kills the child. |
+| **WebAssembly UDF** | Per-row WASM transform via pure-Rust `wasmi`. Sandboxed (no fs / net / env). Works with any WASM toolchain (Rust, AssemblyScript, C, TinyGo). |
+| **JavaScript UDF** | Per-row JS transform via pure-Rust `boa` interpreter. Sandboxed. Define a `transform(row)` function. |
+| **Python / Rust UDFs** | Embedded-language stages | Planned |
+
+### Sinks
+
+**73 sinks available today.**
+
+| Group | Connectors | Status |
+|---|---|---|
+| **Files** | CSV, TSV, Parquet (ZSTD), JSON, JSONL / NDJSON, Excel (.xlsx), YAML, TOML, XML (configurable wrappers), Avro (schema inferred from first row). Parquet + CSV support Hive-partitioned writes | Available |
+| **Geospatial files** | GeoJSON, GeoPackage, Shapefile, KML, GPX via GDAL | Available (lazy-loaded) |
+| **Lakehouse** | Apache Iceberg (full table layout), DuckLake - modes: **overwrite**, **append**, **truncate**, **upsert** (set-based delete-by-key + re-insert), **merge** (partial-column `MERGE INTO` that preserves columns the source omits) with optional CDC delete propagation | Available |
+| **Embedded databases** | SQLite, DuckDB - modes: **overwrite**, **append**, **upsert** (set-based delete-by-key + re-insert, no PK required), **merge** (partial-column `MERGE INTO` that preserves columns the source omits) with optional CDC delete propagation | Available |
+| **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB - modes: **overwrite**, **append**, **truncate**, **upsert** (ON CONFLICT / ON DUPLICATE KEY) with optional CDC delete propagation | Available (live CI for PG + MySQL) |
+| **Network relational DBs** | SQL Server / Azure Synapse (TDS, multi-row VALUES batched; auto-creates the table if absent; **upsert** via MERGE), Oracle (Instant Client; INSERT ALL, batched per statement; auto-creates the table if absent; **upsert** via MERGE), ClickHouse (HTTP JSONEachRow; upsert by pointing at a ReplacingMergeTree target table) - every MERGE sink supports **CDC delete propagation** (a delete-flag column removes matched rows) | Available (SQL Server + Oracle + MySQL upsert and delete propagation verified live in Docker) |
+| **Network relational DBs** | IBM DB2, generic JDBC | Planned |
+| **Object storage** | S3, GCS, Azure Blob via DuckDB `httpfs` (MinIO / R2 / B2 via endpoint) | Available |
+| **Hugging Face** | Push to a Hugging Face Hub dataset repo (`snk.huggingface`): the upstream is materialized to Parquet and committed over the Hub API (create-repo → preupload → git-LFS → commit); write token required, repo auto-created (public or private) | Available |
+| **Cloud warehouses** | MotherDuck, Snowflake (PAT or JWT RS256; **upsert** + delete propagation via MERGE), BigQuery, Redshift, Databricks SQL (**upsert** + delete propagation via MERGE), Azure Synapse, **Teradata** (ODBC), **DuckDB Quack** (concurrent writers to remote DuckDB via the May 2026 protocol) | Available (Snowflake MERGE verified live against the SQL-API emulator) |
+| **HTTP APIs** | REST (POST/PUT/PATCH batched JSON-array; configurable API-key auth header name), Webhook (one POST per row), GraphQL mutations | Available |
+| **SaaS / CRM** | Salesforce (`snk.salesforce`) - sObject Collections API: **insert / update / upsert (by external Id) / delete**, ≤200 records/request, Bearer token or OAuth 2.0 client-credentials (fresh token minted per run, same auth as `src.salesforce`). **Salesforce Bulk** (`snk.salesforce.bulk`) - Bulk API 2.0 for migration-scale loads: **insert / update / upsert / delete / hardDelete**, DuckDB streams to CSV and each ≤90 MB part runs as an async job | Available |
+| **Email (SMTP)** | Per-row SMTP send via pure-Rust `lettre` + rustls. Plain text v1; HTML + attachments follow. | Available |
+| **NoSQL** | MongoDB (insert_many batched; **upsert** via replace_one on a key, plus delete propagation via delete_one), Cassandra / ScyllaDB (CQL), Elasticsearch / OpenSearch (`_bulk` NDJSON), Redis (pipelined SET) | Available |
+| **NoSQL** | DynamoDB | Planned |
+| **Streaming** | Kafka / Redpanda (`rskafka`), NATS JetStream, GCP Pub/Sub (REST + OAuth2), RabbitMQ (`lapin`), WebSocket (`ws://` / `wss://`) | Available |
+| **Streaming** | Pulsar, Kinesis | Planned |
+| **Vector / AI databases** | pgvector, Pinecone (`/vectors/upsert`), Qdrant (`/points` PUT), Weaviate (`/v1/batch/objects`), Milvus (`/v1/vector/insert`) | Available |
+| **Vector / AI databases** | Chroma, LanceDB | Preview (need vendor SDK) |
+
+Database sinks support an optional **dead-letter (validate-before-insert)** step: rows that do not match the declared column types are split off to a dead-letter file (parquet / csv / json) and only the clean rows are inserted.
+
+### Control flow
+
+**18 control-flow components available today.**
+
+| Component | What it does |
+|---|---|
+| **Replicate / Tee** | Send the same data to multiple downstream outputs |
+| **Merge Streams** | Concatenate multiple input streams (UNION ALL) |
+| **Switch / Conditional Split** | Route rows to `case_1..N` outputs by boolean (first match wins); `default` for unmatched |
+| **Wait / Delay** | Sleep `N ms / s / min / h` before passing rows through |
+| **Throttle** | Inter-stage delay derived from a rows-per-second target |
+| **Checkpoint** | Pass rows through and also write a parquet snapshot to a path |
+| **Dead Letter Queue** | Terminal sink for rejected rows (JSON / CSV / Parquet) |
+| **Run Pipeline** | Inline-execute another pipeline file (`ctl.runpipeline`) |
+| **Run Job** | Call a child pipeline (picked from the workspace) passing parent context variables; chain several to build a Master Job (`ctl.runjob`) |
+| **Parallelize** | Run the downstream branches wired to its outputs concurrently; branches are unlimited (`ctl.parallelize`) |
+| **Iterate** | Run a sub-pipeline N times with `${ITER_INDEX}` substitution |
+| **For Each** | Run a sub-pipeline once per input row with `${ITER_ITEM_<FIELD>}` substitution; an optional item key column names each run so per-row watermarks stay separate |
+
+| **Try / Catch** | Install a fallback sub-pipeline if the wrapped stage fails |
+| **Retry** | Per-stage retry policy (configure on Advanced tab) |
+| **Log Message** | Emit an info log line (`{rows}` = upstream count), pass rows through (`ctl.log`) |
+| **Warn** | Emit a warning log line, pass rows through (`ctl.warn`) |
+| **Die / Fail** | Stop the run with a message: always, only when the input has rows, or only when empty (`ctl.die`) |
+| **Schedule** | Cron / interval / file-watch triggers via the orchestration crate |
+
+A sub-pipeline runs under its own name, so its run log lands in
+`logs/<child>/` and an `xf.incremental` watermark inside it is saved to
+`state/<child>/<node>.json`. Two different children driven by the same For Each
+therefore keep separate marks.
+
+Set **For Each -> Item key column** to separate the ITERATIONS too. The child
+then runs as `<child>@<value>`, so loading 400 tables through one sub-pipeline
+keeps 400 watermarks in `state/<child>@<table>/<node>.json` instead of one.
+Leave it blank and every row shares a single mark, which silently skips rows
+when each row is a different table. It is never inferred from the row's
+position, because that would move every watermark the moment the driving query
+is reordered.
+
+Set **For Each -> Dispatch** to *Queue for workers* and the rows are written to
+`batches/<id>.ndjson` instead of being run, one JSON line per row carrying the
+child reference and that row's substitutions. Nothing runs until a worker picks
+the batch up, so the run that queued it reports how many items are waiting
+rather than pretending they loaded. A batch is a file in the workspace like
+everything else here: no queue server, no database, no network service.
+
+Queueing also reports whether the items are actually safe to spread out. Both
+"400 items each loading their own table" and "400 items appending to one file"
+look identical on the canvas - one sink node with a variable in the path - and
+only the first survives being run at once. So each item's variables are put
+into the child and the resulting targets are named with the same function that
+builds the workspace catalog, before anything picks the batch up:
+
+```
+duckle: 400 item(s) write to targets nothing else in the batch writes, so they
+        are safe to run at the same time
+duckle: heads up - 1 target(s) are written by more than one item (400 items
+        write /lake/everything.parquet). Workers run items at the same time, so
+        these will collide unless the sink is an upsert or the target is
+        append-safe
+```
+
+It warns rather than refuses: appending many items into one table is a real
+thing to want, and only you know whether that sink is safe for it. Items whose
+child cannot be read are counted and reported, so a partial check never reads
+as a clean one.
+
+Then run workers against it:
+
+```bash
+duckle-runner work --workspace /path/to/workspace     # drain every batch
+duckle-runner work --batch fe-20260816T101112123      # just this one
+duckle-runner work --once                             # one item, then exit
+```
+
+Start it on several machines pointed at one workspace and they share the batch.
+Each item is claimed with the same OS lock a pipeline run uses, so no two
+workers take the same one, and a worker that is killed mid-item leaves nothing
+to clean up: the kernel drops the lock and the item becomes claimable again.
+There is no lease, no heartbeat and no timeout, because there is nothing to
+expire. Progress is appended to `batches/<id>.ledger.ndjson`, so re-running a
+worker resumes rather than repeats.
+
+Items run **at least once, not exactly once.** The ledger is written after an
+item succeeds, so a worker that finishes an item and then dies leaves it
+looking undone and another worker repeats it. That is the honest trade for
+having no transactional store - the alternative loses items instead of
+repeating them, and a lost load is worse. Make the child idempotent (an upsert
+sink rather than an append) and a repeat costs time, not correctness. A failed
+item stays claimable and is retried on a later pass, with the failure kept in
+the ledger.
+
+The console has a **Batches** view: progress per batch, how many items are
+running right now, how many failed, and the recent attempts with the worker
+that ran each one. "Running" is answered by asking the run lock rather than by
+trusting a heartbeat, so a worker that died is not counted as running and there
+is no lease that could have gone stale. **Retry failed** clears the recorded
+failures so those items are claimable again, keeping the successes so a retry
+never repeats finished work.
+
+Before running anything, a worker **proves the lock actually excludes on that
+filesystem**: it takes a lock and asks a second process whether it can take the
+same one. Some shared filesystems tell every caller it has the lock - NFS with
+no lock daemon is the classic case - and on one of those every worker would
+claim every item and each item would run once per worker, silently, with no
+error anywhere. A worker refuses to start there. Check it yourself with
+`duckle-runner work --check`; `--no-check` overrides, knowing the above. A test
+that could not be *run* is only a warning, because failing to prove exclusion
+is not the same as having disproved it.
+
+Measured on one machine: three workers against a twelve-item batch took four
+items each, with no item run twice. **Several machines against one shared
+filesystem is the design intent and is not yet measured**, so treat it as
+untested until it is. `scripts/measure-multi-host-batch.sh` is the measurement:
+point it at a shared workspace and two or more hosts and it counts duplicate
+executions, failing if there are any.
+
+### Advanced settings (per-node)
+
+Every node has an **Advanced** tab with fields the engine honours at run time:
+
+| Field | What it does |
+|---|---|
+| **Retry attempts** | Total tries on failure (1 = no retry). Sleeps `backoff * attempt` ms between attempts. |
+| **Retry backoff (ms)** | Inter-attempt sleep, linearly scaled by attempt index. |
+| **Memory limit (MB)** | `PRAGMA memory_limit` applied to this stage only. |
+| **Log row count** | Print the post-stage rowcount to the run output. |
+
+### Orchestration and workspace
+
+| Capability | What it does |
+|---|---|
+| **Run feedback** | Streaming run events light nodes up stage by stage, with per-node row counts, real mid-query cancel, and run history. |
+| **Error traceback** | A failed stage reports the exact compiled SQL plus the underlying DuckDB message, in both the Run view and the NDJSON run log, so any component's failure is debuggable. |
+| **Column lineage** | A top-bar **Lineage** button shows, per node, each output column traced back to the source column(s) it derives from. |
+| **Dives + dashboards** | Local-first, live-querying, shareable data views, stitched into multi-chart dashboards. Generate a chart from a plain-language question, export a dive to a self-contained HTML file, open standalone `/dive/<id>` and `/dash/<id>` share pages, and find everything in the top-bar **Dives** gallery. |
+| **Run logs** | Every run writes component-level NDJSON to `<workspace>/logs/<pipeline name>/runtime.log` (start/finish per stage, row counts, durations, `ctl.log` / `ctl.warn` / `ctl.die` messages). Tail it straight into Splunk or Dynatrace. |
+| **Schedules** | Cron, fixed-interval, and file-watch triggers, driven by an in-process scheduler. |
+| **Context variables** | Per-environment variables; bind any field to one via a Manual / Context dropdown, or reference `${var}` inline. Resolved at run time. |
+| **Workspace-relative paths** | Built-in `${workspace}` (alias `${projectroot}`) resolves to the active workspace root, so source / sink paths can be written relative to it and a workspace folder stays portable when copied or moved. No context needed; works in the canvas, schema autodetect, and headless runs. |
+| **Run-time path placeholders** | Built-in `${date}`, `${time}`, `${datetime}`, `${timestamp}`, and `${now}` (UTC) stamp the current run time into any path. They resolve fresh on every run (canvas, schedule, headless runner, built bundle), and a sink's parent folder is created automatically, so a path like `${workspace}/exports/${date}/orders.parquet` lands in a new dated folder each day. No context needed. |
+| **Cloud credentials** | Saved S3 / GCS / Azure connections become DuckDB SECRETs; cloud reads / writes go through `httpfs`. S3-compatible endpoints (MinIO / R2 / B2) supported via `ENDPOINT` + `URL_STYLE`. |
+| **Workspace** | Pipelines, connections, contexts, documents, and routines persist as plain JSON and Markdown files in a folder you choose. |
+
+---
+
+## Clean data before it reaches your AI
+
+Models inherit the quality of their inputs. RAG indexes, embedding stores, and training sets quietly accumulate duplicates, nulls, malformed rows, mixed encodings, and inconsistent schemas. Duckle is built to scrub that data before it lands in a vector store:
+
+- **Deduplicate** with exact Distinct, Uniqueness, and **Fuzzy Deduplicate** (Jaro-Winkler / Levenshtein); use **Record Match** to find near-duplicate pairs with a similarity score
+- **Semantic dedupe** with `xf.ai.dedupe` over a precomputed embedding column
+- **Profile + describe** every column up front (Column Profile, Describe, Histogram) so issues surface before they reach a model
+- **Validate and filter** malformed, empty, or out-of-range records and route failures to a reject port
+- **Normalize** types, encodings, casing, and null handling across messy sources (Standardize, Cast, regex / string transforms)
+- **Redact PII** (emails, phones, SSNs, credit cards) via `xf.ai.pii` before embedding
+- **Chunk + embed** long text via `xf.ai.chunk` -> `xf.ai.embed` for RAG indexing
+- **Classify** rows with an LLM (`xf.ai.classify` constrains the model to one of N user-supplied categories)
+- **Retrieve with both halves of hybrid search**, locally, no model API required: **Vector Similarity Search** (cosine / L2 / inner product) and **Full-Text Search** (BM25)
+- **Land it in your store** - pgvector ships, and **Pinecone**, **Qdrant**, **Weaviate**, **Milvus** all have working sinks that POST batches through each vendor's HTTP API
+
+---
+
+## Engines
+
+Duckle ships a thin shell and installs its engines on first launch.
+
+| Engine | Role | Status |
+|---|---|---|
+| **DuckDB** | Default execution engine: analytics, file formats, cloud reads, SQL pushdown. Tracking **v1.5.3** (latest stable). A lock-free single-SELECT read (`Engine::query`) powers dives. | Working |
+| **Duckie AI Assistant** | Local chat assistant via **llama.cpp** + **Qwen 2.5 Coder 1.5B GGUF**. Downloads ~1.1 GB; runs entirely offline once installed. Managed as a `llama-server` subprocess exposing an OpenAI-compatible API on `127.0.0.1`. | Installable |
+| **SlothDB** | Alternate embedded analytical engine ([SouravRoy-ETL/slothdb](https://github.com/SouravRoy-ETL/slothdb)), installed the same way and selectable per pipeline. | Installable |
+| **Native** | In-process Rust streaming / incremental engine. | Planned |
+
+### First-launch extension pre-fetch
+
+When the installer downloads the DuckDB CLI it also pre-fetches the extensions Duckle uses, with per-extension progress, so the first time you touch a Postgres source or an Iceberg table there is no surprise network hop mid-pipeline:
+
+`httpfs` (S3 / GCS / HTTP), `azure` (Azure Blob native), `sqlite`, `postgres`, `mysql`, `excel`, `iceberg`, `delta`, `ducklake`, `vss`, `fts`.
+
+`spatial` is lazy-loaded (~50 MB GDAL bundle) - it installs on first use of a geospatial source/sink to keep the initial download small.
+
+---
+
+## How to use Duckle
+
+A wider tour of the workflow.
+
+| Step | What you do | Where to look |
+|---|---|---|
+| **1. Sources** | Drag a source, point it at a file / DB / cloud URL / SaaS endpoint. Click **Autodetect schema** to read columns + a sample. | [Sources reference](#sources) |
+| **2. Transforms** | Wire transforms to source output ports. Configure in the Properties panel. **Preview** tab shows live rows; **Plan** tab shows generated SQL. | [Transforms reference](#transforms) |
+| **3. Data quality** | Drop in a validator (Not-Null, Range, Regex, Uniqueness). Passing rows continue on the main port; failures route to the **reject** port. | [Data quality reference](#data-quality) |
+| **4. Sinks** | Finish with a sink (file, DB, cloud, vector DB, message bus, email). Set write mode (overwrite, append, truncate, upsert). | [Sinks reference](#sinks) |
+| **5. Run** | Press **Run** to execute on DuckDB. Nodes light up stage by stage; **Output** + **Console** show row counts, timing, errors. Stop button kills mid-run. | [Run feedback](#orchestration-and-workspace) |
+| **6. Ask Duckie** | For anything you can describe in English, the AI assistant can sketch a pipeline. Iterate by editing the graph or asking follow-ups. | [Meet Duckie](#meet-duckie---the-local-ai-pipeline-assistant) |
+| **7. Reuse** | Save Connections, Context variables, and SQL Routines in the workspace; reference `${context.var}` in any field. Everything persists as plain files. | [Workspace and Git flow](#workspace-and-git-flow) |
+| **8. Schedule** | Attach a cron, interval, or file-watch trigger to run a pipeline automatically. | [Schedules and triggers](#schedules-and-triggers) |
+
+---
+
+## Recipes and examples
+
+Ready-to-adapt patterns. Each one is a few nodes you wire on the canvas (or ask Duckie to sketch).
+
+### CSV cleanup
+
+> "Read orders.csv, drop nulls, deduplicate by order_id, write to orders_clean.parquet"
+
+```
+src.csv -> qa.not_null -> qa.uniqueness -> snk.parquet
+```
+
+Set `qa.not_null` to the columns that must be present; set `qa.uniqueness` to `order_id`. Rejected rows go to a `snk.csv` on the `reject` port for inspection.
+
+### Postgres -> Snowflake nightly load
+
+> "Read all rows from Postgres `events`, upsert into Snowflake table `analytics.events` on `event_id`"
+
+```
+src.postgres -> snk.snowflake (mode=upsert, conflict=event_id)
+```
+
+Attach a `ctl.schedule` with cron `0 2 * * *` to run nightly at 02:00.
+
+### S3 -> partitioned Parquet
+
+> "Read all .json.gz files in `s3://logs/2026/*/*.json.gz`, parse, write Hive-partitioned by `event_date`"
+
+```
+src.s3 (glob, autodetect json.gz)
+  -> xf.derive (event_date = CAST(ts AS DATE))
+  -> snk.parquet (path=out/, partitionBy=event_date, mode=overwrite_or_ignore)
+```
+
+### RAG ingestion
+
+> "Chunk our docs, embed with OpenAI, dedupe near-identicals, store in pgvector"
+
+```
+src.s3 (markdown files)
+  -> xf.ai.chunk (chunkSize=1500, overlap=150)
+  -> xf.ai.pii (redact)
+  -> xf.ai.embed (model=text-embedding-3-small, baseUrl=https://api.openai.com)
+  -> xf.ai.dedupe (threshold=0.95)
+  -> snk.pgvector (table=docs)
+```
+
+### Slack channel digest
+
+> "Pull yesterday's Slack messages from #support, classify by sentiment, email a summary"
+
+```
+src.slack (channels.history with oldest=yesterday)
+  -> xf.ai.classify (categories=positive,negative,neutral)
+  -> xf.aggregate (group by sentiment, count)
+  -> snk.email (to=oncall@..., subject=Daily Support Digest)
+```
+
+### Webhook -> S3 archive
+
+> "Receive 100 webhooks, archive each one as JSON in S3"
+
+```
+src.webhook (port=8080, maxRequests=100, timeoutMs=300000)
+  -> snk.s3 (path=s3://archive/events/, format=jsonl, partitionBy=event_date)
+```
+
+### Git commit-log analytics
+
+> "Build a dashboard of who's been committing what in the last 30 days"
+
+```
+src.git (mode=log, maxRows=10000)
+  -> xf.filter (date > current_date - INTERVAL '30 days')
+  -> xf.aggregate (group by author_email, count)
+  -> snk.csv (path=author-stats.csv)
+```
+
+More examples live in [`samples/`](samples) - drop the pipeline files into a workspace and open them.
+
+---
+
+## Git integration (GitHub + GitLab)
+
+> Push, pull, branch, and watch CI from inside Duckle. No terminal required.
+
+Click the **Git icon** in the topbar to open the workspace Git panel. Built-in integration with GitHub and GitLab, on the system `git` CLI (no FFI, no embedded git library):
+
+| Feature | What it does |
+|---|---|
+| **Status snapshot** | Current branch, ahead/behind counts, list of modified / staged / untracked / conflicted files |
+| **Stage all + commit** | One-click `git add -A && git commit -m "..."` with your message |
+| **Push / Pull** | `git push` and `git pull --ff-only` against `origin`. The button stays disabled when there's nothing to push |
+| **Branch list, switch, create** | Lists local branches; click to switch; create new branches inline |
+| **Remote URL config** | Add or change `origin` URL from inside the panel - auto-detects GitHub vs GitLab from the host |
+| **PAT-prompt fallback** | First tries `git push` using your system credential helper (GitHub CLI, osxkeychain, manager-core). On a 401, prompts for a Personal Access Token, saves it AES-encrypted in `<workspace>/.duckle/secrets/git.json` (auto-gitignored), retries with the token injected into the HTTPS URL |
+| **CI build badge in topbar** | Polls GitHub Actions or GitLab CI every 30 s for the latest pipeline on your current branch. Shows green / red / yellow / gray. Click to open the build in your browser |
+
+**Workflow.** Workspaces are plain folders (see [Workspace and Git flow](#workspace-and-git-flow)) - any standard Git workflow works:
+
+```
+Create / clone -> open in Duckle -> edit pipelines -> commit + push -> 
+PR / MR -> CI runs your pipeline tests -> merge -> pull
+```
+
+You can do the entire push / pull / merge loop without leaving Duckle. Heavy operations (interactive rebase, conflict resolution, log archaeology) still live in your terminal or external Git tool - the panel is designed for the everyday flow, not as a full Git replacement.
+
+**Provider detection.** The remote URL host determines which CI API the badge polls:
+
+| Provider | CI source | API |
+|---|---|---|
+| `github.com` | GitHub Actions | `GET /repos/{owner}/{repo}/actions/runs` |
+| `gitlab.com` or self-hosted GitLab | GitLab CI | `GET /api/v4/projects/{id}/pipelines` |
+| Other / bitbucket | (no CI badge for now) | - |
+
+The badge uses the same PAT you saved for pushes - no separate auth step.
+
+---
+
+## Workspace and Git flow
+
+A workspace is a folder you pick on first launch. Everything you build lives there as plain text:
+
+```
+my-workspace/
+  pipelines/
+    orders_etl.pipeline.json     # the node graph
+    nightly_load.pipeline.json
+  connections/
+    prod-postgres.connection.json # saved DB credentials (encrypted)
+    snowflake-analytics.connection.json
+  contexts/
+    dev.context.json              # variables for dev environment
+    prod.context.json
+  routines/
+    cleanse-addresses.sql         # reusable SQL snippets
+  documents/
+    runbook.md                    # plain-Markdown docs
+  schedules.json                  # all scheduled runs in this workspace
+  run-history/
+    orders_etl/                   # one folder per pipeline
+      2026-05-25T14-30-00.json    # one file per run
+```
+
+**Git-friendly by design.** Every file is human-readable JSON or Markdown. Standard workflows work:
+
+```bash
+git init my-workspace && cd my-workspace
+git add . && git commit -m "Initial pipelines"
+
+# Pull a teammate's update
+git pull --rebase
+
+# Push your changes
+git push
+
+# Branch for a risky migration
+git checkout -b feature/upsert-mode
+# ...edit pipelines in Duckle...
+git diff       # readable JSON diffs
+git push -u origin feature/upsert-mode
+# open PR / MR
+```
+
+**Sensitive values** in connections get encrypted with a workspace-local key (`workspace/.duckle/keys/`). Don't commit that file - add `**/.duckle/keys/` to `.gitignore`. The connection JSON files themselves only hold the ciphertext, which is safe.
 
 ---
 

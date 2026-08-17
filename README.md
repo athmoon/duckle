@@ -57,7 +57,7 @@ Nothing here depends on a person's machine being switched on:
 
 Working recipes for **AWS (EC2, ECS, EKS)**, **Azure (VM, Container Apps, AKS)** and **Google Cloud (Compute Engine, GKE)**, with manifests and the mistakes worth avoiding, are at **[duckle.org/deploy](https://duckle.org/deploy.html)**. Three things worth knowing before you start:
 
-- The console **refuses to start** on a non-loopback bind without a credential. Pass `--token`, set `DUCKLE_CONSOLE_TOKEN`, or create accounts with `duckle-runner console add-user`.
+- The console **refuses to start** on a non-loopback bind without a credential. Pass `--token`, set `DUCKLE_CONSOLE_TOKEN`, or create accounts with `duckle-runner console add-user`. Who can do what, and [how one request is decided](#how-a-request-is-decided), is set out under [Sign-in and roles](#sign-in-and-roles).
 - The **scheduler runs in `serve`**, not in the editor. Start the editor with schedules armed and it now says so rather than leaving you to wonder why nothing fired.
 - **`GET /healthz`** needs no credential and answers `ok`, so a Kubernetes probe or a load balancer can check liveness without holding a token. Every other route is authenticated, so pointing a probe anywhere else reports the pod unhealthy forever.
 
@@ -87,7 +87,7 @@ duckle-runner console key-revoke ci-deployer
 
 A key carries **its own role**, so a deploy runner can be `admin` while a metrics scraper is `viewer`. It is printed once and stored only as a hash, so a lost key is replaced rather than recovered. `key-list` shows when each was last used, which is the question actually worth answering before revoking one, and **revoking takes effect immediately on a console that is already running** rather than at the next restart. Revoked keys are marked rather than deleted, so a key that turns up in an old log can still be named.
 
-Accounts, sessions and keys live in `.duckle/console.db`. An existing `console-users.json` is carried into it on first start and renamed to `.migrated`, so an upgrade neither locks anyone out nor destroys the only copy of a credential store.
+Accounts, sessions and keys live in `.duckle/console.db`. An existing `console-users.json` is carried into it on first start and renamed to `.migrated`, so an upgrade neither locks anyone out nor destroys the only copy of a credential store. For the roles, and a diagram of [how one request is decided](#how-a-request-is-decided), see [Sign-in and roles](#sign-in-and-roles).
 
 ### Scaling it
 
@@ -135,6 +135,9 @@ The one thing Duckle does not do is split a single query across a cluster the wa
 - [Workspace + Git flow](#workspace-and-git-flow)
 - [Schedules](#schedules-and-triggers)
 - [Server deployment](#server-deployment-build-pipeline)
+- [Sign-in and roles](#sign-in-and-roles)
+- [How a request is decided](#how-a-request-is-decided)
+- [API keys, for machines](#api-keys-for-machines)
 - [MCP server: connect Claude, Cursor or any agent](#mcp-server-connect-claude-or-any-llm-to-duckle)
 - [Connection management](#connection-management)
 - [Context variables](#context-variables)
@@ -1120,11 +1123,11 @@ Three ways to prove who you are, one identity, one check, and every outcome reco
 ```mermaid
 flowchart LR
     R([Request]) --> C{"Session cookie?"}
-    C -->|"yes, within 12h"| ID["Identity<br/>name + role"]
-    C -->|no| B{"Authorization: Bearer"}
-    B -->|"API key"| ID
-    B -->|"account token"| ID
-    B -->|"nothing"| U["401<br/>sign in"]
+    C -->|within 12h| ID["Identity<br/>name + role"]
+    C -->|no| B{"Bearer token?"}
+    B -->|API key| ID
+    B -->|account token| ID
+    B -->|nothing| U["401<br/>sign in"]
     ID --> P{"Role enough<br/>for this route?"}
     P -->|yes| OK["It happens"]
     P -->|no| F["403<br/>refused"]

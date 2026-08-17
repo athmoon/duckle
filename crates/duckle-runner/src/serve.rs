@@ -403,42 +403,50 @@ pub fn run_web() -> Result<(), String> {
 }
 
 /// Exchange a token for a session cookie, for the editor.
-fn web_sign_in(stream: &mut TcpStream, state: &WebState, req: &Request) -> Result<(), String> {
+fn web_sign_in(state: &WebState, req: &Request) -> Reply {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
     let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
     match state.console.sign_in(token) {
         Some((sid, who)) => {
             audit::record(&state.workspace, Some(&who), "session.sign_in", "editor", audit::Outcome::Allowed);
-            let payload = json!({ "label": who.label, "role": who.role.as_str() }).to_string();
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Set-Cookie: {}={}{}\r\nConnection: close\r\n\r\n",
-                payload.len(),
-                console_auth::SESSION_COOKIE,
-                sid,
-                cookie_attributes(req.forwarded_proto.as_deref())
-            );
-            stream.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
-            stream.write_all(payload.as_bytes()).map_err(|e| e.to_string())
+            respond_json(&json!({ "label": who.label, "role": who.role.as_str() })).with_header(
+                format!(
+                    "Set-Cookie: {}={}{}",
+                    console_auth::SESSION_COOKIE,
+                    sid,
+                    cookie_attributes(req.forwarded_proto.as_deref())
+                ),
+            )
         }
         None => {
             audit::record(&state.workspace, None, "session.sign_in", "editor", audit::Outcome::Unauthenticated);
-            respond_err(stream, "401 Unauthorized", "that token was not accepted")
+            respond_err("401 Unauthorized", "that token was not accepted")
         }
     }
 }
 
 fn handle_web(mut stream: TcpStream, state: &WebState) -> Result<(), String> {
     let req = read_request(&mut stream)?;
+    // Server-Sent Events keep the socket: there is no finished response to hand back.
+    if req.method == "POST" && req.path == "/api/run_stream" {
+        let body = req.body.clone();
+        return run_stream(&mut stream, state, &body);
+    }
+    let reply = route_web(&req, state);
+    write_reply(&mut stream, &reply)
+}
+
+/// Decide what the editor answers, without touching a socket.
+fn route_web(req: &Request, state: &WebState) -> Reply {
     // Block cross-origin / non-local state-changing POSTs (CSRF + DNS-rebind).
     if req.method == "POST" && req.path.starts_with("/api/") && !guard_local(&req, &state.host) {
-        return respond_403(&mut stream, "blocked: cross-origin or non-local request");
+        return respond_403("blocked: cross-origin or non-local request");
     }
     if is_public_route(&req.method, &req.path) {
         if req.path == HEALTH_PATH {
-            return respond(&mut stream, "200 OK", "text/plain; charset=utf-8", b"ok");
+            return respond("200 OK", "text/plain; charset=utf-8", b"ok");
         }
-        return web_sign_in(&mut stream, state, &req);
+        return web_sign_in(state, &req);
     }
     // Parse the route ONCE, here, and let both the gate and the dispatcher use
     // the result. They used to parse the path separately - the gate with
@@ -464,15 +472,13 @@ fn handle_web(mut stream: TcpStream, state: &WebState) -> Result<(), String> {
     let Some(who) = who else {
         audit::record(&state.workspace, None, action, &req.path, audit::Outcome::Unauthenticated);
         if req.method == "GET" && !req.path.starts_with("/api/") {
-            return respond(&mut stream, "401 Unauthorized", "text/html; charset=utf-8", SIGNIN_HTML.as_bytes());
+            return respond("401 Unauthorized", "text/html; charset=utf-8", SIGNIN_HTML.as_bytes());
         }
-        return respond_err(&mut stream, "401 Unauthorized", "sign in to use the editor");
+        return respond_err("401 Unauthorized", "sign in to use the editor");
     };
     if !who.role.allows(needed) {
         audit::record(&state.workspace, Some(&who), action, &req.path, audit::Outcome::Denied);
-        return respond_403(
-            &mut stream,
-            &format!("this needs the {} role; you have {}", needed.as_str(), who.role.as_str()),
+        return respond_403(&format!("this needs the {} role; you have {}", needed.as_str(), who.role.as_str()),
         );
     }
     if req.method == "POST" {
@@ -487,47 +493,42 @@ fn handle_web(mut stream: TcpStream, state: &WebState) -> Result<(), String> {
             // opaque "Failed to fetch". Catch it and answer with a real 500 the
             // editor can show.
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                dispatch_cmd(&mut stream, state, &cmd, &req.body)
+                dispatch_cmd(state, &cmd, &req.body)
             }));
             return match outcome {
                 Ok(r) => r,
-                Err(_) => respond_err(
-                    &mut stream,
-                    "500 Internal Server Error",
+                Err(_) => respond_err("500 Internal Server Error",
                     &format!("command '{cmd}' failed unexpectedly"),
                 ),
             };
         }
         if let Some(op) = fs_op {
-            return dispatch_fs(&mut stream, state, &op.to_string(), &req.body);
+            return dispatch_fs(state, &op.to_string(), &req.body);
         }
     }
-    if req.method == "POST" && req.path == "/api/run_stream" {
-        return run_stream(&mut stream, state, &req.body);
-    }
     if req.method == "POST" && req.path == "/api/inspect" {
-        return inspect_schema(&mut stream, state, &req.body);
+        return inspect_schema(state, &req.body);
     }
     // Static frontend: map the URL path into the dist dir; unknown non-asset
     // paths fall back to index.html (SPA routing).
-    serve_static(&mut stream, state, &req.path)
+    serve_static(state, &req.path)
 }
 
 /// Server-side filesystem bridge for the web editor. The browser cannot touch
 /// the server's disk, so the frontend's workspace file ops (read/write/list)
 /// route here. Every path is confined to the workspace dir (no traversal out).
-fn dispatch_fs(stream: &mut TcpStream, state: &WebState, op: &str, body: &[u8]) -> Result<(), String> {
+fn dispatch_fs(state: &WebState, op: &str, body: &[u8]) -> Reply {
     let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let target = match confine_to_workspace(&state.workspace, path_arg) {
         Ok(p) => p,
-        Err(e) => return respond_err(stream, "400 Bad Request", &e),
+        Err(e) => return respond_err("400 Bad Request", &e),
     };
     match op {
-        "exists" => respond_json(stream, &serde_json::json!({ "exists": target.exists() })),
+        "exists" => respond_json(&serde_json::json!({ "exists": target.exists() })),
         "read" => match std::fs::read_to_string(&target) {
-            Ok(content) => respond_json(stream, &serde_json::json!({ "content": content })),
-            Err(e) => respond_err(stream, "404 Not Found", &e.to_string()),
+            Ok(content) => respond_json(&serde_json::json!({ "content": content })),
+            Err(e) => respond_err("404 Not Found", &e.to_string()),
         },
         "write" => {
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -535,19 +536,19 @@ fn dispatch_fs(stream: &mut TcpStream, state: &WebState, op: &str, body: &[u8]) 
                 let _ = std::fs::create_dir_all(parent);
             }
             match std::fs::write(&target, content) {
-                Ok(()) => respond_json(stream, &serde_json::json!({ "ok": true })),
-                Err(e) => respond_err(stream, "500 Internal Server Error", &e.to_string()),
+                Ok(()) => respond_json(&serde_json::json!({ "ok": true })),
+                Err(e) => respond_err("500 Internal Server Error", &e.to_string()),
             }
         }
         "mkdir" => match std::fs::create_dir_all(&target) {
-            Ok(()) => respond_json(stream, &serde_json::json!({ "ok": true })),
-            Err(e) => respond_err(stream, "500 Internal Server Error", &e.to_string()),
+            Ok(()) => respond_json(&serde_json::json!({ "ok": true })),
+            Err(e) => respond_err("500 Internal Server Error", &e.to_string()),
         },
         "remove" => {
             let r = if target.is_dir() { std::fs::remove_dir_all(&target) } else { std::fs::remove_file(&target) };
             match r {
-                Ok(()) => respond_json(stream, &serde_json::json!({ "ok": true })),
-                Err(e) => respond_err(stream, "500 Internal Server Error", &e.to_string()),
+                Ok(()) => respond_json(&serde_json::json!({ "ok": true })),
+                Err(e) => respond_err("500 Internal Server Error", &e.to_string()),
             }
         }
         "readdir" => {
@@ -562,9 +563,9 @@ fn dispatch_fs(stream: &mut TcpStream, state: &WebState, op: &str, body: &[u8]) 
                     }));
                 }
             }
-            respond_json(stream, &Value::Array(entries))
+            respond_json(&Value::Array(entries))
         }
-        _ => respond_err(stream, "404 Not Found", &format!("unknown fs op: {}", op)),
+        _ => respond_err("404 Not Found", &format!("unknown fs op: {}", op)),
     }
 }
 
@@ -617,10 +618,10 @@ fn connection_secret_cmd(workspace: &Path, cmd: &str, body: &[u8]) -> Result<Str
     }
 }
 
-fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]) -> Result<(), String> {
+fn dispatch_cmd(state: &WebState, cmd: &str, body: &[u8]) -> Reply {
     match cmd {
         // Drives the editor's runtime indicator offline -> ready.
-        "ping" => respond_json(stream, &Value::String("pong".into())),
+        "ping" => respond_json(&Value::String("pong".into())),
         // Connection secrets, encrypted at rest with the same AES-256-GCM
         // primitives and the same per-workspace key the desktop app uses, so a
         // workspace stays readable whichever edition wrote it.
@@ -635,10 +636,8 @@ fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]
         // returned as-is so connections saved before this change keep opening.
         "connection_encrypt_payload" | "connection_decrypt_payload" => {
             match connection_secret_cmd(&state.workspace, cmd, body) {
-                Ok(out) => respond_json(stream, &Value::String(out)),
-                Err(e) => respond_err(
-                    stream,
-                    "500 Internal Server Error",
+                Ok(out) => respond_json(&Value::String(out)),
+                Err(e) => respond_err("500 Internal Server Error",
                     &format!("connection secrets: {e}"),
                 ),
             }
@@ -651,12 +650,12 @@ fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]
             let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
             let mut doc: PipelineDoc = match serde_json::from_value(args.get("pipeline").cloned().unwrap_or(Value::Null)) {
                 Ok(d) => d,
-                Err(e) => return respond_err(stream, "400 Bad Request", &format!("bad pipeline: {}", e)),
+                Err(e) => return respond_err("400 Bad Request", &format!("bad pipeline: {}", e)),
             };
             // Saved Salesforce connection refs resolve server-side against this
             // workspace (#166 stage 2) - the browser never sees the secret.
             if let Err(e) = duckle_secrets::resolve_connection_refs(&state.workspace, &mut doc.nodes) {
-                return respond_err(stream, "400 Bad Request", &e);
+                return respond_err("400 Bad Request", &e);
             }
             // Same placeholder resolution as /api/run (execute_one) and the
             // desktop: expand ${ENV:KEY} secrets - so a connection field stored as
@@ -664,7 +663,7 @@ fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]
             // ${date}/${datetime} builtins, before the workspace-context pass.
             let env_file = state.workspace.join("secrets.env");
             if let Err(e) = crate::apply_env_pass(&mut doc, &state.workspace, &env_file) {
-                return respond_err(stream, "400 Bad Request", &e);
+                return respond_err("400 Bad Request", &e);
             }
             duckle_duckdb_engine::context::apply_time_builtins(&mut doc);
             duckle_duckdb_engine::context::apply_workspace_context(&mut doc, &state.workspace);
@@ -673,8 +672,8 @@ fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]
             let engine = DuckdbEngine::new(state.duckdb.clone());
             let result = engine.execute_pipeline_named(&doc, &name);
             match serde_json::to_value(&result) {
-                Ok(v) => respond_json(stream, &v),
-                Err(e) => respond_err(stream, "500 Internal Server Error", &e.to_string()),
+                Ok(v) => respond_json(&v),
+                Err(e) => respond_err("500 Internal Server Error", &e.to_string()),
             }
         }
         // Compile to per-stage SQL for the Plan tab.
@@ -682,31 +681,31 @@ fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]
             let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
             let mut doc: PipelineDoc = match serde_json::from_value(args.get("pipeline").cloned().unwrap_or(Value::Null)) {
                 Ok(d) => d,
-                Err(e) => return respond_err(stream, "400 Bad Request", &format!("bad pipeline: {}", e)),
+                Err(e) => return respond_err("400 Bad Request", &format!("bad pipeline: {}", e)),
             };
             duckle_duckdb_engine::context::apply_workspace_context(&mut doc, &state.workspace);
             match duckle_duckdb_engine::compile_pipeline_sql(&doc) {
                 Ok(stages) => match serde_json::to_value(&stages) {
-                    Ok(v) => respond_json(stream, &v),
-                    Err(e) => respond_err(stream, "500 Internal Server Error", &e.to_string()),
+                    Ok(v) => respond_json(&v),
+                    Err(e) => respond_err("500 Internal Server Error", &e.to_string()),
                 },
-                Err(e) => respond_err(stream, "400 Bad Request", &e.to_string()),
+                Err(e) => respond_err("400 Bad Request", &e.to_string()),
             }
         }
         "pipeline_column_lineage" => {
             let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
             let mut doc: PipelineDoc = match serde_json::from_value(args.get("pipeline").cloned().unwrap_or(Value::Null)) {
                 Ok(d) => d,
-                Err(e) => return respond_err(stream, "400 Bad Request", &format!("bad pipeline: {}", e)),
+                Err(e) => return respond_err("400 Bad Request", &format!("bad pipeline: {}", e)),
             };
             duckle_duckdb_engine::context::apply_workspace_context(&mut doc, &state.workspace);
             let engine = DuckdbEngine::new(state.duckdb.clone());
             match engine.pipeline_column_lineage(&doc) {
                 Ok(result) => match serde_json::to_value(&result) {
-                    Ok(v) => respond_json(stream, &v),
-                    Err(e) => respond_err(stream, "500 Internal Server Error", &e.to_string()),
+                    Ok(v) => respond_json(&v),
+                    Err(e) => respond_err("500 Internal Server Error", &e.to_string()),
                 },
-                Err(e) => respond_err(stream, "400 Bad Request", &e.to_string()),
+                Err(e) => respond_err("400 Bad Request", &e.to_string()),
             }
         }
         // Trust scorecard for the open pipeline (compile + structural risks +
@@ -723,26 +722,22 @@ fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]
                     duckle_duckdb_engine::context::apply_workspace_context(&mut doc, &state.workspace);
                     let resolved = match serde_json::to_value(&doc) {
                         Ok(v) => v,
-                        Err(e) => return respond_err(stream, "500 Internal Server Error", &e.to_string()),
+                        Err(e) => return respond_err("500 Internal Server Error", &e.to_string()),
                     };
                     let engine = DuckdbEngine::new(state.duckdb.clone());
                     let report = duckle_duckdb_engine::trust::trust_report(&resolved, Some(&engine));
-                    return respond_json(stream, &report);
+                    return respond_json(&report);
                 }
             }
             let report = duckle_duckdb_engine::trust::trust_report(&pipeline, None);
-            respond_json(stream, &report)
+            respond_json(&report)
         }
         // Tells the browser editor which server workspace it is editing, so it
         // can auto-load it (there is no native folder picker on the web).
-        "web_bootstrap" => respond_json(
-            stream,
-            &serde_json::json!({ "workspace": state.workspace.to_string_lossy() }),
+        "web_bootstrap" => respond_json(&serde_json::json!({ "workspace": state.workspace.to_string_lossy() }),
         ),
         // The browser build skips the engine-setup gate, but answer truthfully.
-        "engine_status" => respond_json(
-            stream,
-            &serde_json::json!([{
+        "engine_status" => respond_json(&serde_json::json!([{
                 "id": "duckdb",
                 "name": "DuckDB",
                 "description": "DuckDB engine",
@@ -760,7 +755,7 @@ fn dispatch_cmd(stream: &mut TcpStream, state: &WebState, cmd: &str, body: &[u8]
         // commands the shared frontend still invokes on the web build are kept
         // graceful by the web shim, which maps a 404 to a null no-op so the
         // editor keeps booting.
-        _ => respond_err(stream, "404 Not Found", &format!("unknown command: {}", cmd)),
+        _ => respond_err("404 Not Found", &format!("unknown command: {}", cmd)),
     }
 }
 
@@ -772,12 +767,15 @@ fn run_stream(stream: &mut TcpStream, state: &WebState, body: &[u8]) -> Result<(
     let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let mut doc: PipelineDoc = match serde_json::from_value(args.get("pipeline").cloned().unwrap_or(Value::Null)) {
         Ok(d) => d,
-        Err(e) => return respond_err(stream, "400 Bad Request", &format!("bad pipeline: {}", e)),
+        Err(e) => {
+            let msg = format!("bad pipeline: {}", e);
+            return write_reply(stream, &respond_err("400 Bad Request", &msg));
+        }
     };
     // Saved Salesforce connection refs resolve server-side against this
     // workspace (#166 stage 2) - the browser never sees the secret.
     if let Err(e) = duckle_secrets::resolve_connection_refs(&state.workspace, &mut doc.nodes) {
-        return respond_err(stream, "400 Bad Request", &e);
+        return write_reply(stream, &respond_err("400 Bad Request", &e));
     }
     // Same placeholder resolution as /api/run (execute_one) and the desktop:
     // expand ${ENV:KEY} secrets - so a connection field stored as ${ENV:...}
@@ -785,7 +783,7 @@ fn run_stream(stream: &mut TcpStream, state: &WebState, body: &[u8]) -> Result<(
     // ${date}/${datetime} builtins, before the workspace-context pass.
     let env_file = state.workspace.join("secrets.env");
     if let Err(e) = crate::apply_env_pass(&mut doc, &state.workspace, &env_file) {
-        return respond_err(stream, "400 Bad Request", &e);
+        return write_reply(stream, &respond_err("400 Bad Request", &e));
     }
     duckle_duckdb_engine::context::apply_time_builtins(&mut doc);
     duckle_duckdb_engine::context::apply_workspace_context(&mut doc, &state.workspace);
@@ -827,11 +825,11 @@ fn run_stream(stream: &mut TcpStream, state: &WebState, body: &[u8]) -> Result<(
 /// resolved engine-side, and honest errors. Without this the web editor could
 /// only fall back to a fabricated col_1/col_2/col_3 schema. The response shape
 /// ({ columns, sampleRows }) matches the desktop InspectionPayload exactly.
-fn inspect_schema(stream: &mut TcpStream, state: &WebState, body: &[u8]) -> Result<(), String> {
+fn inspect_schema(state: &WebState, body: &[u8]) -> Reply {
     let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("");
     if format.is_empty() {
-        return respond_err(stream, "400 Bad Request", "inspect: missing format");
+        return respond_err("400 Bad Request", "inspect: missing format");
     }
     let options = args
         .get("options")
@@ -839,15 +837,13 @@ fn inspect_schema(stream: &mut TcpStream, state: &WebState, body: &[u8]) -> Resu
         .unwrap_or_else(|| serde_json::json!({}));
     let engine = DuckdbEngine::new(state.duckdb.clone());
     match engine.inspect(format, options) {
-        Ok(insp) => respond_json(
-            stream,
-            &serde_json::json!({ "columns": insp.schema, "sampleRows": insp.sample_rows }),
+        Ok(insp) => respond_json(&serde_json::json!({ "columns": insp.schema, "sampleRows": insp.sample_rows }),
         ),
-        Err(e) => respond_err(stream, "422 Unprocessable Entity", &e.to_string()),
+        Err(e) => respond_err("422 Unprocessable Entity", &e.to_string()),
     }
 }
 
-fn serve_static(stream: &mut TcpStream, state: &WebState, url_path: &str) -> Result<(), String> {
+fn serve_static(state: &WebState, url_path: &str) -> Reply {
     let rel = url_path.trim_start_matches('/');
     let candidate = if rel.is_empty() { state.dist.join("index.html") } else { state.dist.join(rel) };
     // Confine to the dist dir, and SPA-fallback to index.html for non-asset paths.
@@ -856,8 +852,8 @@ fn serve_static(stream: &mut TcpStream, state: &WebState, url_path: &str) -> Res
         _ => state.dist.join("index.html"),
     };
     match std::fs::read(&file) {
-        Ok(bytes) => respond(stream, "200 OK", web_content_type(&file), &bytes),
-        Err(e) => respond_err(stream, "404 Not Found", &format!("{}: {}", file.display(), e)),
+        Ok(bytes) => respond("200 OK", web_content_type(&file), &bytes),
+        Err(e) => respond_err("404 Not Found", &format!("{}: {}", file.display(), e)),
     }
 }
 
@@ -1095,16 +1091,6 @@ fn guard_local(req: &Request, bind_host: &str) -> bool {
     true
 }
 
-fn respond_403(stream: &mut TcpStream, msg: &str) -> Result<(), String> {
-    let body = msg.as_bytes();
-    let head = format!(
-        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
-    stream.write_all(body).map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
@@ -1161,28 +1147,84 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) -> Result<(), String> {
-    let header = format!(
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        status,
-        content_type,
-        body.len()
+/// One HTTP response, built rather than written.
+///
+/// Handlers return this instead of writing to a socket. It is what lets the router be
+/// exercised without opening a port, and it is the shape a framework wants: a request goes
+/// in, a value comes out, and exactly one function knows how bytes reach a wire.
+#[derive(Debug, Clone)]
+pub struct Reply {
+    pub status: String,
+    pub content_type: String,
+    pub body: Vec<u8>,
+    /// Whole header lines, for the rare response needing one. Set-Cookie is the only user
+    /// today, which is why this is a list of lines rather than a map.
+    pub headers: Vec<String>,
+}
+
+impl Reply {
+    pub fn with_header(mut self, line: String) -> Reply {
+        self.headers.push(line);
+        self
+    }
+
+    /// The numeric status, for tests and for the eventual framework mapping.
+    pub fn code(&self) -> u16 {
+        self.status.split_whitespace().next().and_then(|c| c.parse().ok()).unwrap_or(500)
+    }
+}
+
+/// The only function that still knows about a socket.
+fn write_reply(stream: &mut TcpStream, reply: &Reply) -> Result<(), String> {
+    let mut head = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n",
+        reply.status,
+        reply.content_type,
+        reply.body.len()
     );
-    stream.write_all(header.as_bytes()).map_err(|e| e.to_string())?;
-    stream.write_all(body).map_err(|e| e.to_string())?;
-    stream.flush().map_err(|e| e.to_string())
+    for line in &reply.headers {
+        head.push_str(line);
+        head.push_str("\r\n");
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    stream.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
+    stream.write_all(&reply.body).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
-fn respond_json(stream: &mut TcpStream, value: &Value) -> Result<(), String> {
-    respond(stream, "200 OK", "application/json", value.to_string().as_bytes())
+fn respond(status: &str, content_type: &str, body: &[u8]) -> Reply {
+    Reply {
+        status: status.to_string(),
+        content_type: content_type.to_string(),
+        body: body.to_vec(),
+        headers: Vec::new(),
+    }
 }
 
-fn respond_err(stream: &mut TcpStream, status: &str, msg: &str) -> Result<(), String> {
-    respond(stream, status, "application/json", json!({ "error": msg }).to_string().as_bytes())
+fn respond_json(value: &Value) -> Reply {
+    respond("200 OK", "application/json", value.to_string().as_bytes())
+}
+
+fn respond_err(status: &str, msg: &str) -> Reply {
+    respond(status, "application/json", json!({ "error": msg }).to_string().as_bytes())
+}
+
+fn respond_403(msg: &str) -> Reply {
+    respond("403 Forbidden", "text/plain", msg.as_bytes())
 }
 
 fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
     let req = read_request(&mut stream)?;
+    let reply = route_console(&req, state);
+    write_reply(&mut stream, &reply)
+}
+
+/// Decide what the console answers, without touching a socket.
+///
+/// Every authorisation decision lives here, which is what makes it testable: a request
+/// goes in and a response comes out, so the 401 and 403 paths can be exercised without
+/// standing up a server.
+fn route_console(req: &Request, state: &State) -> Reply {
     let route = (req.method.as_str(), req.path.as_str());
 
     // A loopback console with no token treats every caller as a local admin,
@@ -1193,14 +1235,14 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
     // `fetch('http://127.0.0.1:8080/api/run', ...)` from a random site ran a
     // workspace pipeline. Same guard, same place in the request.
     if req.method != "GET" && req.path.starts_with("/api/") && !guard_local(&req, &state.host) {
-        return respond_403(&mut stream, "blocked: cross-origin or non-local request");
+        return respond_403("blocked: cross-origin or non-local request");
     }
 
     if is_public_route(&req.method, &req.path) {
         if req.path == HEALTH_PATH {
-            return respond(&mut stream, "200 OK", "text/plain; charset=utf-8", b"ok");
+            return respond("200 OK", "text/plain; charset=utf-8", b"ok");
         }
-        return sign_in(&mut stream, state, &req);
+        return sign_in(state, &req);
     }
 
     // Everything else is identified and authorised before it is dispatched, so
@@ -1213,15 +1255,13 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
         // A browser asking for the page gets the sign-in form; an API client
         // gets a 401 it can act on.
         if req.method == "GET" && (req.path == "/" || req.path == "/index.html") {
-            return respond(&mut stream, "401 Unauthorized", "text/html; charset=utf-8", SIGNIN_HTML.as_bytes());
+            return respond("401 Unauthorized", "text/html; charset=utf-8", SIGNIN_HTML.as_bytes());
         }
-        return respond_err(&mut stream, "401 Unauthorized", "sign in to use the console");
+        return respond_err("401 Unauthorized", "sign in to use the console");
     };
     if !who.role.allows(needed) {
         audit::record(&state.workspace, Some(&who), action, &target, audit::Outcome::Denied);
-        return respond_err(
-            &mut stream,
-            "403 Forbidden",
+        return respond_err("403 Forbidden",
             &format!("this needs the {} role; you have {}", needed.as_str(), who.role.as_str()),
         );
     }
@@ -1234,34 +1274,30 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
 
     if route == ("DELETE", "/api/session") {
         state.console.sign_out(req.cookie.as_deref());
-        return respond_json(&mut stream, &json!({ "ok": true }));
+        return respond_json(&json!({ "ok": true }));
     }
     if route == ("GET", "/api/whoami") {
-        return respond_json(
-            &mut stream,
-            &json!({ "label": who.label, "role": who.role.as_str(), "open": state.console.is_open() }),
+        return respond_json(&json!({ "label": who.label, "role": who.role.as_str(), "open": state.console.is_open() }),
         );
     }
 
     match route {
         ("GET", "/") | ("GET", "/index.html") => {
-            respond(&mut stream, "200 OK", "text/html; charset=utf-8", PANEL_HTML.as_bytes())
+            respond("200 OK", "text/html; charset=utf-8", PANEL_HTML.as_bytes())
         }
-        ("GET", "/api/summary") => respond_json(&mut stream, &api_summary(state)),
-        ("GET", "/api/pipelines") => respond_json(&mut stream, &api_pipelines(state)),
+        ("GET", "/api/summary") => respond_json(&api_summary(state)),
+        ("GET", "/api/pipelines") => respond_json(&api_pipelines(state)),
         ("GET", "/api/pipeline") => match req.query.get("file") {
             Some(f) => match read_pipeline_file(state, f) {
-                Ok(v) => respond_json(&mut stream, &v),
-                Err(e) => respond_err(&mut stream, "404 Not Found", &e),
+                Ok(v) => respond_json(&v),
+                Err(e) => respond_err("404 Not Found", &e),
             },
-            None => respond_err(&mut stream, "400 Bad Request", "missing file"),
+            None => respond_err("400 Bad Request", "missing file"),
         },
-        ("GET", "/api/runs") => respond_json(&mut stream, &api_runs(state, req.query.get("id").map(|s| s.as_str()))),
-        ("GET", "/api/log") => respond_json(&mut stream, &api_log(state, &req.query)),
-        ("GET", "/api/catalog") => respond_json(&mut stream, &api_catalog(state)),
-        ("GET", "/api/batches") => respond_json(
-            &mut stream,
-            &json!({ "batches": duckle_duckdb_engine::batch::statuses(&state.workspace) }),
+        ("GET", "/api/runs") => respond_json(&api_runs(state, req.query.get("id").map(|s| s.as_str()))),
+        ("GET", "/api/log") => respond_json(&api_log(state, &req.query)),
+        ("GET", "/api/catalog") => respond_json(&api_catalog(state)),
+        ("GET", "/api/batches") => respond_json(&json!({ "batches": duckle_duckdb_engine::batch::statuses(&state.workspace) }),
         ),
         ("GET", "/api/batch") => match req.query.get("id") {
             Some(id) => {
@@ -1272,22 +1308,20 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
                 let mut recent: Vec<_> = ledger.into_iter().collect();
                 recent.reverse();
                 recent.truncate(200);
-                respond_json(&mut stream, &json!({ "status": status, "recent": recent }))
+                respond_json(&json!({ "status": status, "recent": recent }))
             }
-            None => respond_err(&mut stream, "400 Bad Request", "missing id"),
+            None => respond_err("400 Bad Request", "missing id"),
         },
         ("POST", "/api/batch/redrive") => {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             match body.get("id").and_then(|v| v.as_str()) {
                 Some(id) => match duckle_duckdb_engine::batch::redrive(&state.workspace, id) {
-                    Ok(cleared) => respond_json(
-                        &mut stream,
-                        &json!({ "ok": true, "cleared": cleared,
+                    Ok(cleared) => respond_json(&json!({ "ok": true, "cleared": cleared,
                                  "status": duckle_duckdb_engine::batch::status(&state.workspace, id) }),
                     ),
-                    Err(e) => respond_err(&mut stream, "400 Bad Request", &e.to_string()),
+                    Err(e) => respond_err("400 Bad Request", &e.to_string()),
                 },
-                None => respond_err(&mut stream, "400 Bad Request", "missing id"),
+                None => respond_err("400 Bad Request", "missing id"),
             }
         }
         ("GET", "/api/audit") => {
@@ -1306,54 +1340,54 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
                     .clamp(1, 1000),
             };
             match audit::read(&state.workspace, &filter) {
-                Ok(page) => respond_json(&mut stream, &json!(page)),
-                Err(e) => respond_err(&mut stream, "500 Internal Server Error", &e),
+                Ok(page) => respond_json(&json!(page)),
+                Err(e) => respond_err("500 Internal Server Error", &e),
             }
         }
         ("POST", "/api/catalog") => {
             match duckle_duckdb_engine::catalog::build_and_save(&state.workspace) {
-                Ok(_) => respond_json(&mut stream, &api_catalog(state)),
-                Err(e) => respond_err(&mut stream, "500 Internal Server Error", &e),
+                Ok(_) => respond_json(&api_catalog(state)),
+                Err(e) => respond_err("500 Internal Server Error", &e),
             }
         }
         ("GET", "/api/schedules") => match load_schedules(state) {
-            Ok(v) => respond_json(&mut stream, &v),
-            Err(e) => respond_err(&mut stream, "500 Internal Server Error", &e),
+            Ok(v) => respond_json(&v),
+            Err(e) => respond_err("500 Internal Server Error", &e),
         },
         ("POST", "/api/schedules") => {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             match save_schedule(state, &body) {
-                Ok(v) => respond_json(&mut stream, &v),
-                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+                Ok(v) => respond_json(&v),
+                Err(e) => respond_err("400 Bad Request", &e),
             }
         }
         ("POST", "/api/deploy") => {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             match deploy_into(&state.workspace, &body) {
-                Ok(v) => respond_json(&mut stream, &v),
-                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+                Ok(v) => respond_json(&v),
+                Err(e) => respond_err("400 Bad Request", &e),
             }
         }
         ("GET", "/api/params") => match req.query.get("file") {
             Some(f) => match discover_pipeline_params(state, f) {
-                Ok(names) => respond_json(&mut stream, &json!({ "params": names })),
-                Err(e) => respond_err(&mut stream, "404 Not Found", &e),
+                Ok(names) => respond_json(&json!({ "params": names })),
+                Err(e) => respond_err("404 Not Found", &e),
             },
-            None => respond_err(&mut stream, "400 Bad Request", "missing file"),
+            None => respond_err("400 Bad Request", "missing file"),
         },
         ("POST", "/api/run") => {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             let file = match body.get("file").and_then(|v| v.as_str()) {
                 Some(f) => f.to_string(),
-                None => return respond_err(&mut stream, "400 Bad Request", "missing file"),
+                None => return respond_err("400 Bad Request", "missing file"),
             };
             let params = parse_run_params(body.get("params"));
             match execute_one(state, &file, "manual", &params) {
-                Ok(v) => respond_json(&mut stream, &v),
-                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+                Ok(v) => respond_json(&v),
+                Err(e) => respond_err("400 Bad Request", &e),
             }
         }
-        _ => respond_err(&mut stream, "404 Not Found", "not found"),
+        _ => respond_err("404 Not Found", "not found"),
     }
 }
 
@@ -1377,7 +1411,7 @@ fn audit_target(req: &Request) -> String {
 ///
 /// The token arrives in the body, never in the URL: a query string reaches the
 /// server log, the browser history and any proxy in between.
-fn sign_in(stream: &mut TcpStream, state: &State, req: &Request) -> Result<(), String> {
+fn sign_in(state: &State, req: &Request) -> Reply {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
     let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
     match state.console.sign_in(token) {
@@ -1394,15 +1428,8 @@ fn sign_in(stream: &mut TcpStream, state: &State, req: &Request) -> Result<(), S
                 sid,
                 cookie_attributes(req.forwarded_proto.as_deref())
             );
-            let payload = json!({ "label": who.label, "role": who.role.as_str() }).to_string();
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Set-Cookie: {}\r\nConnection: close\r\n\r\n",
-                payload.len(),
-                cookie
-            );
-            stream.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
-            stream.write_all(payload.as_bytes()).map_err(|e| e.to_string())
+            respond_json(&json!({ "label": who.label, "role": who.role.as_str() }))
+                .with_header(format!("Set-Cookie: {cookie}"))
         }
         None => {
             audit::record(
@@ -1412,7 +1439,7 @@ fn sign_in(stream: &mut TcpStream, state: &State, req: &Request) -> Result<(), S
                 "-",
                 audit::Outcome::Unauthenticated,
             );
-            respond_err(stream, "401 Unauthorized", "that token was not accepted")
+            respond_err("401 Unauthorized", "that token was not accepted")
         }
     }
 }
@@ -2351,7 +2378,7 @@ fn spawn_scheduler(state: Arc<State>) {
 mod tests {
     use super::{
         connection_secret_cmd, console_auth, cookie_attributes, cron_decision, deploy_into,
-        deploy_target, is_public_route, scheduler_notice,
+        deploy_target, is_public_route, route_console, scheduler_notice, Request,
         migrate_legacy_schedules, normalize_cron, read_pipeline_file, read_request,
         save_schedule_at, RunGate, State, HEALTH_PATH, MAX_BODY,
     };
@@ -2493,6 +2520,82 @@ mod tests {
             assert!(a.contains("HttpOnly"), "{proto:?}");
             assert!(a.contains("SameSite=Strict"), "{proto:?}");
         }
+    }
+
+    fn request(method: &str, path: &str, auth: Option<&str>) -> Request {
+        Request {
+            method: method.into(),
+            path: path.into(),
+            query: std::collections::HashMap::new(),
+            origin: None,
+            host: Some("127.0.0.1".into()),
+            authorization: auth.map(String::from),
+            cookie: None,
+            forwarded_proto: None,
+            body: Vec::new(),
+        }
+    }
+
+    fn guarded_state(ws: &std::path::Path) -> State {
+        State {
+            workspace: ws.to_path_buf(),
+            duckdb: std::path::PathBuf::from("duckdb"),
+            run_lock: RunGate::new(1),
+            running: Mutex::new(std::collections::HashSet::new()),
+            console: console_auth::Console::configure(ws, "0.0.0.0", Some("s3cret")).unwrap(),
+            host: "0.0.0.0".into(),
+            tick_interval: std::time::Duration::from_secs(15),
+        }
+    }
+
+    /// The point of routing to a value rather than a socket: the authorisation decisions
+    /// can be exercised directly. Before this they needed a listening server, so in
+    /// practice they were only ever checked by hand.
+    #[test]
+    fn the_console_decides_who_gets_in_without_a_socket() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let state = guarded_state(&ws);
+
+        assert_eq!(route_console(&request("GET", "/healthz", None), &state).code(), 200);
+        assert_eq!(route_console(&request("GET", "/api/catalog", None), &state).code(), 401);
+        assert_eq!(
+            route_console(&request("GET", "/api/catalog", Some("Bearer wrong")), &state).code(),
+            401
+        );
+        assert_eq!(
+            route_console(&request("GET", "/api/catalog", Some("Bearer s3cret")), &state).code(),
+            200
+        );
+    }
+
+    /// A --token caller is an admin, so this proves the role gate rather than the token
+    /// gate: an unknown route falls to admin and a viewer must not reach it.
+    #[test]
+    fn a_role_that_is_not_enough_is_refused_not_admitted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        {
+            let store = crate::auth_store::AuthStore::open(&ws).unwrap();
+            store.create_api_key("dashboard", console_auth::Role::Viewer, None).unwrap();
+        }
+        let state = guarded_state(&ws);
+        let key = {
+            let store = crate::auth_store::AuthStore::open(&ws).unwrap();
+            store.create_api_key("dash2", console_auth::Role::Viewer, None).unwrap()
+        };
+
+        let viewer = format!("Bearer {key}");
+        assert_eq!(
+            route_console(&request("GET", "/api/catalog", Some(&viewer)), &state).code(),
+            200,
+            "a viewer may read the catalog"
+        );
+        assert_eq!(
+            route_console(&request("POST", "/api/deploy", Some(&viewer)), &state).code(),
+            403,
+            "a viewer must not deploy"
+        );
     }
 
     /// An orchestrator has to be able to ask whether the process is alive without holding

@@ -480,7 +480,7 @@ A schedule runs one pipeline. A **plan** runs several, in steps: everything insi
 
 That is the shape most nightly loads already have. Without it they get written as three schedules set a few minutes apart and hoped over, which works until the extract takes four minutes instead of two.
 
-Build one in the **Plans** tab: add a step, put pipelines in it, and the card draws the chain it will run.
+Build one wherever you are: the **Plans** tab in the web console, or the **Plans** tile under Operate in the desktop app. Add a step, put pipelines in it, and the card draws the chain it will run.
 
 ```
 EXTRACT                    PUBLISH
@@ -492,6 +492,7 @@ Two things worth knowing:
 
 - **Every pipeline keeps its own run history.** A plan does not collapse into one opaque run, because at three in the morning the question is which step broke, not that the nightly load did.
 - **A plan can be scheduled like anything else**, from its own card. The same plan runs whether the schedule is fired by `serve` on your server or by the desktop app on a shared workspace - both read `plans.json` and `schedules.json`, and both decide it the same way.
+- **It is one file, so it travels.** A plan written in the desktop app opens in the console and the other way round, and it goes to your server with everything else in the workspace.
 
 Plans live in `<workspace>/plans.json`, so they are a file in git alongside the pipelines they order.
 

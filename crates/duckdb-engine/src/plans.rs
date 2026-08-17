@@ -93,6 +93,33 @@ impl Plan {
     }
 }
 
+/// The bare pipeline id a plan step names, however the step was spelled.
+///
+/// One `plans.json` is read by two products that identify a pipeline differently. The
+/// console works in workspace-relative files (`pipelines/orders.json`), because that is what
+/// its run API takes. The desktop app and the engine work in bare ids (`orders`), because
+/// that is what [`crate::context::resolve_workspace`] takes - it builds
+/// `<workspace>/pipelines/<id>.json` itself.
+///
+/// Neither spelling is wrong, but a reader that understands only one turns a plan authored
+/// in the other product into a plan that fails on every step. So both readers normalise
+/// here, and both writers emit [`step_pipeline_file`]: tolerant readers, consistent writers.
+pub fn step_pipeline_id(step: &str) -> &str {
+    let s = step.trim();
+    let s = s
+        .strip_prefix("pipelines/")
+        .or_else(|| s.strip_prefix("pipelines\\"))
+        .unwrap_or(s);
+    s.strip_suffix(".json").unwrap_or(s)
+}
+
+/// The workspace-relative file a plan step names, however the step was spelled.
+///
+/// Derived from [`step_pipeline_id`] so the two can never disagree about what a step means.
+pub fn step_pipeline_file(step: &str) -> String {
+    format!("pipelines/{}.json", step_pipeline_id(step))
+}
+
 /// What became of one pipeline in a plan.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -338,6 +365,23 @@ mod tests {
         let back = load(ws).unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0], plan(true));
+    }
+
+    /// The console and the desktop app spell a step differently, and one file is read by
+    /// both. A reader that understands only its own spelling fails on every step of a plan
+    /// the other product wrote.
+    #[test]
+    fn a_step_means_the_same_pipeline_however_it_was_spelled() {
+        for spelling in ["orders", "orders.json", "pipelines/orders.json", "pipelines/orders"] {
+            assert_eq!(step_pipeline_id(spelling), "orders", "spelled {spelling}");
+            assert_eq!(step_pipeline_file(spelling), "pipelines/orders.json");
+        }
+        // Written on Windows, where a hand-edited path may carry backslashes.
+        assert_eq!(step_pipeline_id("pipelines\\orders.json"), "orders");
+        // A name that merely contains the word survives intact: only a leading directory
+        // and a trailing extension are structure, the rest is somebody's pipeline name.
+        assert_eq!(step_pipeline_id("pipelines-archive"), "pipelines-archive");
+        assert_eq!(step_pipeline_id("orders.json.json"), "orders.json");
     }
 
     /// An older store written before a field existed must still load, or upgrading breaks

@@ -167,8 +167,16 @@ fn run_one_blocking(
     workspace: &Path,
     pipeline_id: &str,
 ) -> Result<RunResult, String> {
-    let mut pipeline =
-        duckle_duckdb_engine::context::resolve_workspace(workspace, pipeline_id, None)?.doc;
+    // Normalised because a plan step may name a pipeline the console's way, as a
+    // workspace-relative file. `resolve_workspace` takes a bare id and builds the path
+    // itself, so an un-normalised step asked it for `pipelines/pipelines/orders.json.json`.
+    // A bare id normalises to itself, so an ordinary schedule is unaffected.
+    let mut pipeline = duckle_duckdb_engine::context::resolve_workspace(
+        workspace,
+        plans::step_pipeline_id(pipeline_id),
+        None,
+    )?
+    .doc;
     duckle_duckdb_engine::context::apply_time_builtins(&mut pipeline);
     duckle_secrets::resolve_connection_refs(workspace, &mut pipeline.nodes)?;
     duckle_duckdb_engine::context::apply_env(&mut pipeline);
@@ -486,45 +494,7 @@ impl Scheduler {
     async fn run_plan(&self, workspace: &Path, sched: &Schedule) -> Result<RunResult, String> {
         let plan = work_of(workspace, sched)?;
         let started = Utc::now();
-        let mut outcomes: Vec<(String, RunResult)> = Vec::new();
-
-        let run = plans::execute(&plan, |pipeline| {
-            // A lock this process cannot take means somebody else is running that pipeline
-            // now. Treated as a failure of the step rather than a skip, because carrying on
-            // to the next step would run it against data this one did not produce.
-            let _claim = match claim_run(Some(workspace), pipeline) {
-                Claim::Ours(lock) => lock,
-                Claim::Taken => {
-                    return Err(format!("{pipeline} is already running in another process"))
-                }
-                Claim::Unusable(why) => {
-                    return Err(format!("Cannot take a run lock for {pipeline}: {why}"))
-                }
-            };
-            let result = run_one_blocking(&self.engine, workspace, pipeline);
-            let answer = match &result {
-                Ok(r) if r.status == "error" => {
-                    Err(r.error.clone().unwrap_or_else(|| "the run failed".into()))
-                }
-                Ok(_) => Ok(()),
-                Err(e) => Err(e.clone()),
-            };
-            // Every pipeline gets its own history entry and its own alert, exactly as it
-            // would under a schedule of its own. Whoever watches a pipeline does not have
-            // to know it was a plan that ran it.
-            let record = match result {
-                Ok(r) => r,
-                Err(e) => failed_run(started, &e),
-            };
-            duckle_duckdb_engine::alerts::notify(workspace, pipeline, &record);
-            let _ = append_run_record(
-                workspace,
-                pipeline,
-                RunRecord::from_result_in(workspace, pipeline, &record, "scheduled"),
-            );
-            outcomes.push((pipeline.to_string(), record));
-            answer
-        });
+        let run = self.execute_plan(workspace, plan.clone(), "scheduled").await?;
 
         // One aggregate result for the schedule itself, so the Schedules view shows a plan
         // going green or red like anything else. The detail is in the per-pipeline history
@@ -545,10 +515,95 @@ impl Scheduler {
             duration_ms: elapsed,
             nodes: Default::default(),
             preview: Vec::new(),
-            category: outcomes.iter().find_map(|(_, r)| r.category.clone()),
+            category: None,
             error: (!broken.is_empty())
                 .then(|| format!("Plan '{}' - {}", plan.id, broken.join("; "))),
         })
+    }
+
+    /// Run a plan by name, right now, and answer with what became of each pipeline.
+    ///
+    /// This is what an editor calls. It answers with the whole `PlanRun` rather than the
+    /// one aggregate a schedule records, because somebody watching a plan they just started
+    /// wants to see which step is which, including the ones an earlier failure meant nobody
+    /// attempted.
+    pub async fn run_plan_now(
+        &self,
+        workspace: &Path,
+        plan_id: &str,
+    ) -> Result<plans::PlanRun, String> {
+        let plan = plans::load(workspace)?
+            .into_iter()
+            .find(|p| p.id == plan_id)
+            .ok_or_else(|| format!("There is no plan called '{plan_id}'"))?;
+        // Refused before anything runs rather than half way through. A plan with an empty
+        // step would otherwise report two pipelines fine and then stop for a reason that
+        // has nothing to do with either of them.
+        let problems = plan.problems();
+        if !problems.is_empty() {
+            return Err(problems.join("; "));
+        }
+        self.execute_plan(workspace, plan, "manual").await
+    }
+
+    /// Run a plan's pipelines, with the locking, run history and alerting each one would
+    /// get under a schedule of its own.
+    ///
+    /// The work is blocking - it waits on a DuckDB child process per pipeline - so it goes
+    /// to a blocking thread. Running it inline on the async runtime, as this briefly did,
+    /// parks a tokio worker for the whole length of the plan, and a plan is the longest
+    /// thing this crate runs.
+    async fn execute_plan(
+        &self,
+        workspace: &Path,
+        plan: plans::Plan,
+        trigger: &str,
+    ) -> Result<plans::PlanRun, String> {
+        let engine = self.engine.clone();
+        let ws = workspace.to_path_buf();
+        let trigger = trigger.to_string();
+        tokio::task::spawn_blocking(move || {
+            plans::execute(&plan, |pipeline| {
+                let started = Utc::now();
+                // A lock this process cannot take means somebody else is running that
+                // pipeline now. Treated as a failure of the step rather than a skip,
+                // because carrying on would run the next step against data this one did
+                // not produce.
+                let _claim = match claim_run(Some(&ws), pipeline) {
+                    Claim::Ours(lock) => lock,
+                    Claim::Taken => {
+                        return Err(format!("{pipeline} is already running in another process"))
+                    }
+                    Claim::Unusable(why) => {
+                        return Err(format!("Cannot take a run lock for {pipeline}: {why}"))
+                    }
+                };
+                let result = run_one_blocking(&engine, &ws, pipeline);
+                let answer = match &result {
+                    Ok(r) if r.status == "error" => {
+                        Err(r.error.clone().unwrap_or_else(|| "the run failed".into()))
+                    }
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e.clone()),
+                };
+                // Every pipeline gets its own history entry and its own alert, exactly as
+                // it would under a schedule of its own. Whoever watches a pipeline does not
+                // have to know it was a plan that ran it.
+                let record = match result {
+                    Ok(r) => r,
+                    Err(e) => failed_run(started, &e),
+                };
+                duckle_duckdb_engine::alerts::notify(&ws, pipeline, &record);
+                let _ = append_run_record(
+                    &ws,
+                    pipeline,
+                    RunRecord::from_result_in(&ws, pipeline, &record, &trigger),
+                );
+                answer
+            })
+        })
+        .await
+        .map_err(|e| format!("the plan could not be run: {e}"))
     }
 
     /// Fire a schedule and make sure the outcome is recorded whichever way it
@@ -1481,6 +1536,38 @@ mod tests {
             "the edit dropped the plan this schedule runs"
         );
         assert!(matches!(stored.kind, ScheduleKind::Interval { seconds: 900 }));
+    }
+
+    /// One plans.json, two products, and they spelled a pipeline differently.
+    ///
+    /// The console writes a step as a workspace-relative file (`pipelines/orders.json`),
+    /// because its run API takes a path. This crate hands the step straight to
+    /// `context::resolve_workspace`, which builds `<workspace>/pipelines/<id>.json` from a
+    /// BARE id. So a plan authored in the console asked the desktop app for
+    /// `pipelines/pipelines/orders.json.json` and failed on every step.
+    ///
+    /// The plan tests above never caught it because they inject the runner as a closure -
+    /// deliberately, so ordering is testable without DuckDB - and so nothing ever resolved
+    /// a real name. This one goes through the real resolution path.
+    #[test]
+    fn a_plan_step_written_as_a_file_path_still_finds_its_pipeline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::create_dir_all(ws.join("pipelines")).unwrap();
+        std::fs::write(
+            ws.join("pipelines").join("orders.json"),
+            r#"{"name":"orders","nodes":[],"edges":[]}"#,
+        )
+        .unwrap();
+
+        let engine = DuckdbEngine::new(PathBuf::from("duckdb"));
+        for spelling in ["orders", "pipelines/orders.json"] {
+            // Whether DuckDB is installed is not this test's business: resolving the name
+            // is. A failure to RESOLVE comes back as Err before the engine is ever asked.
+            if let Err(e) = run_one_blocking(&engine, ws, spelling) {
+                panic!("a plan step spelled '{spelling}' could not be resolved: {e}");
+            }
+        }
     }
 
     /// A plan schedule locks nothing up front, because it is not one pipeline. Each pipeline

@@ -563,7 +563,13 @@ impl Scheduler {
         let ws = workspace.to_path_buf();
         let trigger = trigger.to_string();
         tokio::task::spawn_blocking(move || {
-            plans::execute(&plan, |pipeline| {
+            plans::execute(&plan, |step| {
+                // Normalised ONCE, here, and everything below uses it. The run lock, the
+                // run history and the alert are all keyed by a pipeline's bare id, because
+                // that is what a schedule of its own uses and what the Runs views read.
+                // Passing the raw step filed a plan's runs at `runs/pipelines/x.json.json`,
+                // where they were recorded and invisible.
+                let pipeline = plans::step_pipeline_id(step);
                 let started = Utc::now();
                 // A lock this process cannot take means somebody else is running that
                 // pipeline now. Treated as a failure of the step rather than a skip,
@@ -1568,6 +1574,76 @@ mod tests {
                 panic!("a plan step spelled '{spelling}' could not be resolved: {e}");
             }
         }
+    }
+
+    /// A plan's runs have to land where everything else looks for them.
+    ///
+    /// Run history, alerts and the run lock are all keyed by the pipeline's bare id, because
+    /// that is what a schedule of its own would use and what the Runs views read. Handing
+    /// them the raw step instead put the history at `runs/pipelines/j1.json.json` - a real
+    /// file, holding real runs, that nothing in either product ever looks at. The run was
+    /// recorded and invisible, which is worse than not recorded at all.
+    ///
+    /// Caught by running a plan in the actual desktop app and looking at the folder, not by
+    /// any test: every earlier test either injected the runner or never got as far as
+    /// writing history.
+    #[test]
+    fn a_plans_runs_land_in_the_same_history_a_schedule_would_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        std::fs::create_dir_all(ws.join("pipelines")).unwrap();
+        std::fs::write(
+            ws.join("pipelines").join("orders.json"),
+            r#"{"name":"orders","nodes":[],"edges":[]}"#,
+        )
+        .unwrap();
+
+        let plan = plans::Plan {
+            id: "nightly".into(),
+            name: String::new(),
+            stop_on_failure: true,
+            // The console's spelling, which is what a plan written there contains.
+            steps: vec![plans::Step {
+                name: "Extract".into(),
+                pipelines: vec!["pipelines/orders.json".into()],
+            }],
+        };
+        plans::update(&ws, |list| list.push(plan)).unwrap();
+
+        let sched = Scheduler::new(DuckdbEngine::new(PathBuf::from("duckdb")));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            // Whether DuckDB is installed decides the run's STATUS, not where it is filed.
+            let _ = sched.run_plan_now(&ws, "nightly").await.expect("the plan should run");
+        });
+
+        assert!(
+            ws.join("runs").join("orders.json").exists(),
+            "no history at runs/orders.json; what was written: {:?}",
+            walk(&ws.join("runs"))
+        );
+        assert!(
+            !ws.join("runs").join("pipelines").exists(),
+            "the raw step was used as the history key, so these runs are invisible"
+        );
+    }
+
+    /// Every file under a directory, for an assertion that needs to say what it found.
+    fn walk(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else { continue };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if let Ok(rel) = p.strip_prefix(dir) {
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+        out
     }
 
     /// A plan schedule locks nothing up front, because it is not one pipeline. Each pipeline

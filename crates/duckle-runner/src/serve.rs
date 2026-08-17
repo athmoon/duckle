@@ -233,30 +233,29 @@ pub fn run() -> Result<(), String> {
     spawn_scheduler(state.clone());
 
     let addr = format!("{}:{}", args.host, args.port);
-    let listener = TcpListener::bind(&addr).map_err(|e| format!("bind {}: {}", addr, e))?;
-    eprintln!("duckle-runner: management console on http://{}", addr);
-    eprintln!("duckle-runner: workspace {}", workspace.display());
-    eprintln!("duckle-runner: DuckDB {}", duckdb.display());
-    if console_open {
-        eprintln!("duckle-runner: no token set; reachable only from this machine");
-    } else {
-        eprintln!("duckle-runner: sign-in required");
-    }
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                let st = state.clone();
-                std::thread::spawn(move || {
-                    if let Err(e) = handle(s, &st) {
-                        eprintln!("duckle-runner: request error: {}", e);
-                    }
-                });
-            }
-            Err(e) => eprintln!("duckle-runner: accept error: {}", e),
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("runtime: {e}"))?;
+    runtime.block_on(async move {
+        // Bound once, by the runtime that will serve it. Binding with std first to keep
+        // the error message and then dropping it leaves a window where the port can be
+        // taken between the two, and reports a confusing failure when it is.
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .map_err(|e| format!("bind {}: {}", addr, e))?;
+        eprintln!("duckle-runner: management console on http://{}", addr);
+        eprintln!("duckle-runner: workspace {}", workspace.display());
+        eprintln!("duckle-runner: DuckDB {}", duckdb.display());
+        if console_open {
+            eprintln!("duckle-runner: no token set; reachable only from this machine");
+        } else {
+            eprintln!("duckle-runner: sign-in required");
         }
-    }
-    Ok(())
+        axum::serve(listener, console_router(state).into_make_service())
+            .await
+            .map_err(|e| format!("serve: {e}"))
+    })
 }
 
 // ── Web editor mode (#75 phase 2 spike): serve the full frontend + an
@@ -1224,53 +1223,92 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
 /// Every authorisation decision lives here, which is what makes it testable: a request
 /// goes in and a response comes out, so the 401 and 403 paths can be exercised without
 /// standing up a server.
-fn route_console(req: &Request, state: &State) -> Reply {
-    let route = (req.method.as_str(), req.path.as_str());
+/// What a request is allowed to do, decided once.
+///
+/// Either the caller, or the response to send them instead. The extractor and the router
+/// both call this, because a second copy of an authorisation rule is a second thing to
+/// forget when the rule changes.
+///
+/// A public route yields no caller and no refusal: it is handled before anything needs an
+/// identity, which is why sign-in can work without being signed in.
+pub enum Access {
+    /// Reachable without a credential. Nothing has been decided about a caller.
+    Public,
+    /// Who this is. Already checked against what the route requires.
+    Caller(console_auth::Identity),
+    /// Send this instead, and do not dispatch.
+    Refused(Reply),
+}
 
-    // A loopback console with no token treats every caller as a local admin,
-    // on the reasoning that reaching the socket means already being on the
-    // machine. A browser breaks that reasoning: any page the operator visits
-    // can POST to 127.0.0.1 from their machine. The editor has blocked
-    // cross-origin state changes since it shipped and the console did not, so
-    // `fetch('http://127.0.0.1:8080/api/run', ...)` from a random site ran a
-    // workspace pipeline. Same guard, same place in the request.
-    if req.method != "GET" && req.path.starts_with("/api/") && !guard_local(&req, &state.host) {
-        return respond_403("blocked: cross-origin or non-local request");
+fn authorize(req: &Request, state: &State) -> Access {
+    // A loopback console with no token treats every caller as a local admin, on the
+    // reasoning that reaching the socket means already being on the machine. A browser
+    // breaks that reasoning: any page the operator visits can POST to 127.0.0.1 from their
+    // machine. The editor has blocked cross-origin state changes since it shipped and the
+    // console did not, so `fetch('http://127.0.0.1:8080/api/run', ...)` from a random site
+    // ran a workspace pipeline. Same guard, same place in the request.
+    if req.method != "GET" && req.path.starts_with("/api/") && !guard_local(req, &state.host) {
+        return Access::Refused(respond_403("blocked: cross-origin or non-local request"));
     }
 
     if is_public_route(&req.method, &req.path) {
-        if req.path == HEALTH_PATH {
-            return respond("200 OK", "text/plain; charset=utf-8", b"ok");
-        }
-        return sign_in(state, &req);
+        return Access::Public;
     }
 
-    // Everything else is identified and authorised before it is dispatched, so
-    // a route cannot be reached by forgetting to check it at the call site.
+    // Everything else is identified and authorised before it is dispatched, so a route
+    // cannot be reached by forgetting to check it at the call site.
     let (needed, action) = audit::requirement(&req.method, &req.path);
-    let target = audit_target(&req);
+    let target = audit_target(req);
     let who = state.console.identify(req.authorization.as_deref(), req.cookie.as_deref());
     let Some(who) = who else {
         audit::record(&state.workspace, None, action, &target, audit::Outcome::Unauthenticated);
-        // A browser asking for the page gets the sign-in form; an API client
-        // gets a 401 it can act on.
+        // A browser asking for the page gets the sign-in form; an API client gets a 401 it
+        // can act on.
         if req.method == "GET" && (req.path == "/" || req.path == "/index.html") {
-            return respond("401 Unauthorized", "text/html; charset=utf-8", SIGNIN_HTML.as_bytes());
+            return Access::Refused(respond(
+                "401 Unauthorized",
+                "text/html; charset=utf-8",
+                SIGNIN_HTML.as_bytes(),
+            ));
         }
-        return respond_err("401 Unauthorized", "sign in to use the console");
+        return Access::Refused(respond_err("401 Unauthorized", "sign in to use the console"));
     };
     if !who.role.allows(needed) {
         audit::record(&state.workspace, Some(&who), action, &target, audit::Outcome::Denied);
-        return respond_err("403 Forbidden",
+        return Access::Refused(respond_err(
+            "403 Forbidden",
             &format!("this needs the {} role; you have {}", needed.as_str(), who.role.as_str()),
-        );
+        ));
     }
-    // Reads are not recorded: they would bury the events worth seeing under a
-    // dashboard that polls every few seconds. Anything that changes something,
-    // and every refusal above, is.
+    // Reads are not recorded: they would bury the events worth seeing under a dashboard
+    // that polls every few seconds. Anything that changes something, and every refusal
+    // above, is.
     if req.method != "GET" {
         audit::record(&state.workspace, Some(&who), action, &target, audit::Outcome::Allowed);
     }
+    Access::Caller(who)
+}
+
+fn route_console(req: &Request, state: &State) -> Reply {
+    match authorize(req, state) {
+        Access::Refused(reply) => reply,
+        Access::Public => {
+            if req.path == HEALTH_PATH {
+                respond("200 OK", "text/plain; charset=utf-8", b"ok")
+            } else {
+                sign_in(state, req)
+            }
+        }
+        Access::Caller(who) => dispatch_console(req, state, who),
+    }
+}
+
+/// Answer a request whose caller has already been authorised.
+///
+/// Split from [`route_console`] so the axum path does not authorise a second time:
+/// authorising twice would write two audit entries for one request.
+fn dispatch_console(req: &Request, state: &State, who: console_auth::Identity) -> Reply {
+    let route = (req.method.as_str(), req.path.as_str());
 
     if route == ("DELETE", "/api/session") {
         state.console.sign_out(req.cookie.as_deref());
@@ -2372,6 +2410,145 @@ fn spawn_scheduler(state: Arc<State>) {
             }
         }
     });
+}
+
+// ---------------------------------------------------------------------------------
+// HTTP transport for the console.
+// ---------------------------------------------------------------------------------
+
+use axum::response::IntoResponse as _;
+
+impl axum::response::IntoResponse for Reply {
+    fn into_response(self) -> axum::response::Response {
+        let code = axum::http::StatusCode::from_u16(self.code())
+            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let mut builder = axum::response::Response::builder()
+            .status(code)
+            .header(axum::http::header::CONTENT_TYPE, self.content_type.clone());
+        for line in &self.headers {
+            if let Some((name, value)) = line.split_once(": ") {
+                builder = builder.header(name, value);
+            }
+        }
+        builder
+            .body(axum::body::Body::from(self.body))
+            .unwrap_or_else(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    }
+}
+
+/// A caller who has already been authorised for the route they asked for.
+///
+/// This is the whole reason for the framework. A handler that takes a `Caller` cannot run
+/// for a request that was refused, because the refusal happens before the handler is
+/// entered. The permission table still decides what each route needs; what changes is that
+/// there is no longer a call site at which to forget to consult it.
+pub struct Caller(pub console_auth::Identity);
+
+#[axum::async_trait]
+impl axum::extract::FromRequestParts<Arc<State>> for Caller {
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<State>,
+    ) -> Result<Self, Self::Rejection> {
+        let req = request_from_parts(parts, Vec::new());
+        match authorize(&req, state) {
+            Access::Caller(who) => Ok(Caller(who)),
+            Access::Refused(reply) => Err(reply.into_response()),
+            // A public route is served by its own handler, which takes no Caller. Reaching
+            // here would mean one was wired to an authorised handler by mistake.
+            Access::Public => Err(
+                respond_err("500 Internal Server Error", "public route reached an authorised handler")
+                    .into_response(),
+            ),
+        }
+    }
+}
+
+/// Rebuild the request shape the router already understands from axum's parts.
+///
+/// One conversion, so the handlers and every test keep speaking the same language.
+fn request_from_parts(parts: &axum::http::request::Parts, body: Vec<u8>) -> Request {
+    let uri = &parts.uri;
+    let mut query = HashMap::new();
+    if let Some(q) = uri.query() {
+        for pair in q.split('&').filter(|p| !p.is_empty()) {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            query.insert(url_decode(k), url_decode(v));
+        }
+    }
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    };
+    Request {
+        method: parts.method.as_str().to_string(),
+        path: uri.path().to_string(),
+        query,
+        origin: header("origin"),
+        host: header("host"),
+        authorization: header("authorization"),
+        cookie: header("cookie"),
+        forwarded_proto: header("x-forwarded-proto"),
+        body,
+    }
+}
+
+/// Everything that needs a credential. The `Caller` argument is the enforcement.
+async fn console_authed(
+    caller: Caller,
+    axum::extract::State(state): axum::extract::State<Arc<State>>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let (parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, MAX_BODY).await.unwrap_or_default();
+    let req = request_from_parts(&parts, bytes.to_vec());
+    // A handler can run a pipeline, which blocks for as long as the pipeline takes, so it
+    // does not belong on a thread the runtime needs for accepting connections.
+    match tokio::task::spawn_blocking(move || dispatch_console(&req, &state, caller.0)).await {
+        Ok(reply) => reply.into_response(),
+        Err(e) => respond_err("500 Internal Server Error", &format!("handler panicked: {e}"))
+            .into_response(),
+    }
+}
+
+/// The routes reachable without a credential, which take no `Caller` and so cannot
+/// accidentally be treated as authorised.
+async fn console_public(
+    axum::extract::State(state): axum::extract::State<Arc<State>>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let (parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, MAX_BODY).await.unwrap_or_default();
+    let req = request_from_parts(&parts, bytes.to_vec());
+    match authorize(&req, &state) {
+        Access::Refused(reply) => reply.into_response(),
+        _ => {
+            if req.path == HEALTH_PATH {
+                respond("200 OK", "text/plain; charset=utf-8", b"ok").into_response()
+            } else {
+                match tokio::task::spawn_blocking(move || sign_in(&state, &req)).await {
+                    Ok(reply) => reply.into_response(),
+                    Err(_) => respond_err("500 Internal Server Error", "sign-in failed")
+                        .into_response(),
+                }
+            }
+        }
+    }
+}
+
+fn console_router(state: Arc<State>) -> axum::Router {
+    axum::Router::new()
+        .route(HEALTH_PATH, axum::routing::get(console_public))
+        .route("/api/session", axum::routing::post(console_public))
+        // Everything else goes through the extractor, so a route added later is
+        // authorised by existing, rather than by someone remembering to ask.
+        .fallback(console_authed)
+        .with_state(state)
 }
 
 #[cfg(test)]

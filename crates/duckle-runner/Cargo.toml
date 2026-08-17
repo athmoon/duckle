@@ -33,6 +33,11 @@ argon2 = "0.5"
 # `web`, which is what a transactional store is for. rusqlite (bundled) is
 # already declared in the workspace and adds no second SQLite to the binary.
 rusqlite = { workspace = true }
+# The console's HTTP layer. axum 0.7 is already resolved in the lock (pulled
+# transitively), so this adds the router and the extractor rather than a new
+# dependency tree. `net` is what tokio needs to accept connections.
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "query"] }
+tokio = { workspace = true, features = ["net"] }
 base64 = "0.22"
 getrandom = "0.3"
 ed25519-dalek = "2"

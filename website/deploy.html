@@ -53,9 +53,20 @@
   /* The brand maya and gold sit at about 1.9:1 on the light panel, so the diagram picks
      darker equivalents there and uses the brand values on the dark ground, where they
      have plenty of contrast. Same meaning, readable in both. */
-  .authfig { --dg-ok:#0b6ba8; --dg-no:#b45309;
-             background:var(--bg-2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:22px 16px; overflow-x:auto; margin:18px 0 8px; }
-  :root[data-theme="dark"] .authfig { --dg-ok:var(--maya); --dg-no:var(--gold); }
+  .dgram { --dg-ok:#0b6ba8; --dg-no:#b45309; --dg-go:#c2410c;
+           background:var(--bg-2); border:1px solid var(--border); border-radius:var(--radius-sm);
+           padding:22px 16px; overflow-x:auto; margin:18px 0 8px; }
+  :root[data-theme="dark"] .dgram { --dg-ok:var(--maya); --dg-no:var(--gold); --dg-go:var(--lemon); }
+  .dgram svg { display:block; max-width:100%; height:auto; margin:0 auto; }
+  .dgram + p.cap { color:var(--ink-2); font-size:.92rem; max-width:72ch; margin-top:10px; }
+  .a-go { fill:none; stroke:var(--dg-go); stroke-width:2.5; }
+  .lb-go { fill:var(--dg-go); font-size:11.5px; font-weight:700; }
+  .lb-q { fill:var(--ink-2); font-size:11px; }
+  .lane { fill:var(--ink-3); font-size:10.5px; letter-spacing:.11em; font-weight:700; }
+  .bound { stroke:var(--ink-3); opacity:.4; stroke-width:1; stroke-dasharray:4 5; }
+  .pend { fill:none; stroke:var(--ink-3); stroke-dasharray:3 3; opacity:.7; }
+  .pend-t { fill:var(--ink-3); font-size:9.5px; font-weight:700; letter-spacing:.05em; }
+  .authfig { background:var(--bg-2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:22px 16px; overflow-x:auto; margin:18px 0 8px; }
   .authfig svg { display:block; max-width:100%; height:auto; margin:0 auto; }
   .authfig + p { color:var(--ink-2); font-size:.9rem; }
   .a-box { fill:var(--bg-3); stroke:var(--border); }
@@ -74,6 +85,8 @@
   .rung b { font-family:var(--mono); font-size:.9rem; }
   .rung span { color:var(--ink-2); font-size:.92rem; line-height:1.6; }
   .rung em { color:var(--ink); font-style:normal; font-weight:600; }
+  ul.tight { margin:10px 0 16px; padding-left:20px; color:var(--ink-2); font-size:.92rem; line-height:1.7; }
+  ul.tight li { margin:2px 0; }
 </style>
 </head>
 <body>
@@ -105,7 +118,76 @@
   <div class="wrap">
     <div class="eyebrow">Deployment</div>
     <h1>Run Duckle on your own cloud</h1>
-    <p class="lead">You author on a laptop and ship the same workspace to a server. Duckle is one binary and a directory, so deployment is ordinary: a systemd unit on a VM, a container on ECS or Container Apps, or a StatefulSet on Kubernetes. Below are the working shapes for AWS, Azure and Google Cloud, plus the three things that stop people on their first attempt.</p>
+    <p class="lead">You draw a pipeline on a laptop and it runs, on a schedule, on a server you own. Here is the whole path.</p>
+
+    <div class="dgram">
+      <svg viewBox="0 0 900 360" role="img"
+           aria-label="A pipeline crosses from your machine to your server three times. The desktop deploys it and the schedule arrives switched off. A browser console turns that schedule on. The scheduler then runs it, and run history, metrics, alerts and an audit log come back to the browser.">
+        <defs>
+          <marker id="f-go" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--dg-go)"/>
+          </marker>
+          <marker id="f-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--dg-ok)"/>
+          </marker>
+          <marker id="f-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--ink-2)" opacity=".8"/>
+          </marker>
+        </defs>
+
+        <text class="lane" x="152" y="22" text-anchor="middle">YOUR MACHINE</text>
+        <text class="lane" x="614" y="22" text-anchor="middle">YOUR SERVER</text>
+
+        <line class="bound" x1="332" y1="32" x2="332" y2="72"/>
+        <line class="bound" x1="332" y1="100" x2="332" y2="226"/>
+        <line class="bound" x1="332" y1="254" x2="332" y2="330"/>
+
+        <rect class="a-box" x="24" y="48" width="256" height="76" rx="8"/>
+        <text class="a-t" x="44" y="76">Duckle Desktop</text>
+        <text class="a-s" x="44" y="97">draw it, try it on a sample</text>
+        <rect class="pend" x="186" y="102" width="80" height="15" rx="3"/>
+        <text class="pend-t" x="226" y="113" text-anchor="middle">UI PENDING</text>
+
+        <rect class="a-box" x="24" y="210" width="256" height="76" rx="8"/>
+        <text class="a-t" x="44" y="240">Console, in a browser</text>
+        <text class="a-s" x="44" y="262">switch it on, then watch it</text>
+
+        <rect class="a-box" x="392" y="48" width="210" height="76" rx="8"/>
+        <text class="a-t" x="410" y="74">Workspace</text>
+        <text class="a-s" x="410" y="95">pipelines and schedules</text>
+        <text class="a-s" x="410" y="113">a new schedule lands OFF</text>
+
+        <rect class="a-box" x="392" y="160" width="210" height="64" rx="8"/>
+        <text class="a-t" x="410" y="186">Scheduler</text>
+        <text class="a-s" x="410" y="206">every 15s, takes what is due</text>
+
+        <rect class="a-box" x="392" y="262" width="210" height="64" rx="8"/>
+        <text class="a-t" x="410" y="288">It runs</text>
+        <text class="a-s" x="410" y="308">on that box, unattended</text>
+
+        <rect class="a-box" x="650" y="160" width="226" height="166" rx="8"/>
+        <text class="a-t" x="670" y="186">What it leaves behind</text>
+        <text class="a-s" x="670" y="212">run history and logs</text>
+        <text class="a-s" x="670" y="234">metrics for Prometheus</text>
+        <text class="a-s" x="670" y="256">alerts when it fails</text>
+        <text class="a-s" x="670" y="284">an audit log naming</text>
+        <text class="a-s" x="670" y="302">who did what</text>
+
+        <line class="a-go" x1="284" y1="86" x2="388" y2="86" marker-end="url(#f-go)"/>
+        <text class="lb-go" x="336" y="74" text-anchor="middle">DEPLOY</text>
+
+        <polyline class="a-go" points="284,240 366,240 366,108 388,108" marker-end="url(#f-go)"/>
+        <text class="lb-go" x="286" y="230">TURN IT ON</text>
+
+        <line class="a-line" x1="497" y1="124" x2="497" y2="156" marker-end="url(#f-p)"/>
+        <line class="a-line" x1="497" y1="224" x2="497" y2="258" marker-end="url(#f-p)"/>
+        <line class="a-line" x1="606" y1="294" x2="646" y2="294" marker-end="url(#f-p)"/>
+
+        <polyline class="a-ok" points="763,326 763,344 300,344 300,262 284,262" marker-end="url(#f-ok)"/>
+        <text class="lb-q" x="520" y="338" text-anchor="middle">you watch it here</text>
+      </svg>
+    </div>
+    <p class="cap">Three crossings, and the boundary is drawn only where something crosses it. <b>Deploying needs the admin role and turning the schedule on needs only operator</b>, because shipping code to a host and deciding when trusted code runs are different sizes of decision.</p>
 
     <div class="dep-toc">
       <a href="#modes">Two server modes</a>
@@ -225,7 +307,7 @@ volume /workspace                         # pipelines, state, logs, keys</code><
 
     <h3 class="dep-h3">How a request is decided</h3>
 
-    <div class="authfig">
+    <div class="dgram authfig">
       <svg viewBox="0 0 880 340" role="img"
            aria-label="Three credentials, a session cookie, an API key and an account token, each resolve to one identity carrying a name and a role. That identity is checked against the role the route requires, producing either the action or a refusal. A request with no credential is turned away before the check. All three outcomes are written to the audit log.">
         <defs>
@@ -327,8 +409,24 @@ duckle-runner console key-revoke ci-deployer</code></pre>
     <p class="muted">A token or key is printed once and kept only as a hash, so a lost one is replaced rather than recovered. <b>Revoking a key takes effect on a console that is already running</b>, not at the next restart, and revoked keys are marked rather than deleted so one that turns up in an old log can still be named. Before revoking anything, <code>key-list</code> answers the question that actually matters: whether it is still in use.</p>
 
     <h3 class="dep-h3">Where credentials live</h3>
-    <p class="muted">All of it in <code>&lt;workspace&gt;/.duckle/console.db</code>, and none of it replayable. An account token is an Argon2id hash, because a person may have chosen it. A session id and an API key are both generated with 256 bits of entropy and stored as SHA-256, which is why an integration polling every few seconds does not pay for a password hash on every call. A copy of that file, or a backup of the workspace, admits nobody.</p>
-    <p class="muted">The browser holds a random session id rather than the credential itself. The cookie is <code>HttpOnly</code> so page scripts cannot read it, <code>SameSite=Strict</code> so another site cannot ride it, and <code>Secure</code> whenever your proxy reports the browser is on https. Sessions last 12 hours and survive a restart, so a rolling deploy does not sign your team out. An older <code>console-users.json</code> is carried in on first start and renamed <code>.migrated</code>, so upgrading neither locks anyone out nor destroys the only copy of a credential store.</p>
+    <p class="muted">All three in <code>&lt;workspace&gt;/.duckle/console.db</code>. A copy of that file, or a backup of the workspace, admits nobody.</p>
+
+    <table class="dep-table">
+      <tr><th>Credential</th><th>Kept as</th><th>Why that one</th></tr>
+      <tr><td>Account token</td><td>Argon2id</td><td>A person may have chosen it, so it is treated as a password.</td></tr>
+      <tr><td>Session id</td><td>SHA-256</td><td>Generated here with 256 bits of entropy. No dictionary to defend against.</td></tr>
+      <tr><td>API key</td><td>SHA-256</td><td>Same, and an integration polling every few seconds must not pay for a password hash on every call.</td></tr>
+    </table>
+
+    <p class="muted">The browser holds a random session id, never the credential. Its cookie is:</p>
+    <ul class="tight">
+      <li><code>HttpOnly</code> so page scripts cannot read it</li>
+      <li><code>SameSite=Strict</code> so another site cannot ride it</li>
+      <li><code>Secure</code> whenever your proxy reports the browser is on https</li>
+      <li>good for 12 hours, and it survives a restart, so a rolling deploy does not sign your team out</li>
+    </ul>
+
+    <p class="muted">Upgrading from an older release carries <code>console-users.json</code> into the database on first start and renames it <code>.migrated</code>, so nobody is locked out and the only copy of a credential store is not destroyed.</p>
   </div>
 </section>
 
@@ -544,7 +642,7 @@ az containerapp update --name duckle --resource-group data \
     <h3 class="dep-h3">Cloud Run</h3>
     <div class="warn">
       <b>Cloud Run is the wrong home for the scheduler.</b>
-      <p>Instances are reclaimed when idle and CPU is throttled outside a request, so an in-process cron will not fire reliably no matter what minimum instance count you set. If you want serverless on Google Cloud, invert it: keep pipelines in a bucket or repo, and have <b>Cloud Scheduler</b> trigger a <b>Cloud Run Job</b> that runs <code>duckle-runner --pipeline p.json</code> once and exits. Cloud Run Jobs are built for exactly that, and Duckle exits with a real status code and NDJSON logs. Use Compute Engine or GKE when you want the console and its scheduler.</p>
+      <p>Instances are reclaimed when idle and CPU is throttled between requests, so an in-process cron will not fire reliably whatever minimum instance count you set. Invert it instead: have <b>Cloud Scheduler</b> trigger a <b>Cloud Run Job</b> running <code>duckle-runner --pipeline p.json</code>, which exits with a real status code and NDJSON logs. For the console and its scheduler, use Compute Engine or GKE.</p>
     </div>
 
     <h3 class="dep-h3">GKE</h3>

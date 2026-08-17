@@ -41,6 +41,17 @@
 
 The laptop is where you author. The work runs wherever you deploy it, on the same file.
 
+```mermaid
+flowchart LR
+    D["Duckle Desktop<br/>your machine"] -->|deploy, needs admin| W
+    B["Console in a browser<br/>your machine"] -->|turn it on, needs operator| W
+    W["Workspace on your server<br/>a new schedule lands OFF"] --> C["Scheduler<br/>every 15s, takes what is due"]
+    C --> R["It runs<br/>on that box, unattended"]
+    R --> O["Run history, logs, metrics,<br/>alerts, and an audit log"]
+    O -->|you watch it here| B
+```
+
+
 | | How | What you get |
 |---|---|---|
 | **Server** | `duckle-runner serve --workspace /srv/pipelines` | Headless web console, cron scheduler, roles, audit log, alerts |

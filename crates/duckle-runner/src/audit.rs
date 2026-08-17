@@ -372,6 +372,13 @@ pub fn requirement(method: &str, path: &str) -> (Role, &'static str) {
         // deliberately two acts needing two different roles.
         ("POST", "/api/deploy") => (Role::Admin, "pipeline.deploy"),
 
+        // A plan is an ordering of pipelines. Reading one is reading; saving one changes
+        // what will run and when, which is the same size of decision as a schedule.
+        ("GET", "/api/plans") => (Role::Viewer, "plans.read"),
+        ("POST", "/api/plans") => (Role::Operator, "plan.write"),
+        ("DELETE", "/api/plans") => (Role::Operator, "plan.remove"),
+        ("POST", "/api/plans/run") => (Role::Operator, "plan.run"),
+
         // Managing who may use the console, and what machines may. These would reach
         // admin through the fallback anyway; naming them means the audit log calls them
         // what they are rather than "unknown", and a later reshuffle has to decide

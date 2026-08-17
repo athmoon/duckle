@@ -38,6 +38,7 @@ pub mod alerts;
 pub mod catalog;
 pub mod runlock;
 pub mod batch;
+pub mod plans;
 pub mod schedules;
 pub mod talend;
 pub mod trust;

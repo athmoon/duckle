@@ -1457,6 +1457,60 @@ fn dispatch_console(req: &Request, state: &State, who: console_auth::Identity) -
                 Err(e) => respond_err("400 Bad Request", &e),
             }
         }
+        ("GET", "/api/plans") => match duckle_duckdb_engine::plans::load(&state.workspace) {
+            Ok(plans) => respond_json(&json!({ "plans": plans })),
+            Err(e) => respond_err("500 Internal Server Error", &e),
+        },
+        ("POST", "/api/plans") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let plan: duckle_duckdb_engine::plans::Plan = match serde_json::from_value(body) {
+                Ok(p) => p,
+                Err(e) => return respond_err("400 Bad Request", &format!("that is not a plan: {e}")),
+            };
+            // Refused where it was written rather than at three in the morning.
+            let problems = plan.problems();
+            if !problems.is_empty() {
+                return respond_err("400 Bad Request", &problems.join("; "));
+            }
+            let id = plan.id.clone();
+            match duckle_duckdb_engine::plans::update(&state.workspace, |list| {
+                list.retain(|p| p.id != id);
+                list.push(plan);
+                list.sort_by(|a, b| a.id.cmp(&b.id));
+            }) {
+                Ok(_) => respond_json(&json!({ "saved": id })),
+                Err(e) => respond_err("500 Internal Server Error", &e),
+            }
+        }
+        ("DELETE", "/api/plans") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            match duckle_duckdb_engine::plans::update(&state.workspace, |list| {
+                list.retain(|p| p.id != id)
+            }) {
+                Ok(_) => respond_json(&json!({ "removed": id })),
+                Err(e) => respond_err("500 Internal Server Error", &e),
+            }
+        }
+        ("POST", "/api/plans/run") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let plan = match duckle_duckdb_engine::plans::load(&state.workspace) {
+                Ok(list) => list.into_iter().find(|p| p.id == id),
+                Err(e) => return respond_err("500 Internal Server Error", &e),
+            };
+            let Some(plan) = plan else {
+                return respond_err("404 Not Found", "no plan with that id");
+            };
+            let params = parse_run_params(body.get("params"));
+            // Each pipeline goes through the ordinary run path, so every one of them lands
+            // in run history under its own name. A plan that produced a single opaque run
+            // would answer "the nightly load failed" without answering which part.
+            let outcome = duckle_duckdb_engine::plans::execute(&plan, |pipeline| {
+                execute_one(state, pipeline, "plan", &params).map(|_| ())
+            });
+            respond_json(&serde_json::to_value(&outcome).unwrap_or(json!({})))
+        }
         ("GET", "/api/admin/users") => match state.console.list_accounts() {
             Ok(list) => respond_json(&json!({
                 "users": list.iter().map(|(label, role)| json!({

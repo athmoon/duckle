@@ -37,9 +37,300 @@
 
 ---
 
+## What is Duckle?
+
+An open-source ETL platform you run on your own infrastructure. Drag sources, transforms, validators and sinks onto a canvas, wire them together, and press **Run**. Duckle compiles the graph to SQL and executes it on a real columnar engine, with live previews, the generated SQL visible on every node, and no hidden state.
+
+You build a pipeline on a laptop and deploy that same file to a server, where it runs on a schedule under a web console with roles, alerts and an audit log. Nothing is rewritten in between, and nothing is metered.
+
+In short: a free, open-source, single-engine alternative to hosted, per-row-priced ETL platforms like Fivetran and Airbyte - one pipeline for ingest, transform, and load that runs anywhere, and can also run dbt on DuckDB inside the same tool.
+
+Three things set it apart:
+
+1. **An AI assistant that ships in the box.** Describe the pipeline you want in English; Duckie writes the JSON and drops it onto the canvas. The model runs locally - no API key, no telemetry, no cloud round-trip.
+2. **366 components ready at install time.** Files, lakehouses, SQL databases, warehouses, NoSQL, vector DBs, streaming brokers, SaaS REST/GraphQL APIs, even FTP and IMAP - working today, not coming-soon.
+3. **A self-contained binary you can audit.** 73 to 110 MB depending on your platform. Engines install on first launch. Workspaces are plain files in a folder you choose. Diff them, branch them, ship them.
+
+<div align="center">
+<img src="docs/assets/flow.svg" alt="Sources flow through 50+ transforms into files, databases, object storage, vector stores, and AI" width="100%"/>
+</div>
+
+---
+
+## Why Duckle is different
+
+| | |
+|---|---|
+| **Visual, never opaque** | The canvas compiles to SQL you can read, and every node has a live preview tab. No black box. |
+| **Local-first AI** | An assistant that runs on your laptop without an API key. Your prompts, your data, your machine. |
+| **Single-file binary, no bundled DB** | 73 to 110 MB depending on platform (it embeds the headless runner + MCP server). DuckDB downloads on first launch with a guided step. AI engine is opt-in. |
+| **Native speed** | Execution runs through DuckDB: vectorized, columnar, local. A clean-and-export job that crawls in a spreadsheet finishes in milliseconds. |
+| **Git-friendly by design** | Pipelines, connections, contexts, and routines persist as plain files in a folder you pick. Diff them, branch them, review them. |
+| **366 components ready today** | Files, databases, warehouses, lakehouses, object stores, SaaS APIs, NoSQL, streaming brokers, vector DBs, FTP, IMAP, SMTP. Each is covered by tests. |
+| **Honest about scope** | Single-machine and embedded by design. Built to make local and small-team data work fast, not to replace a distributed warehouse. |
+| **60 UI languages** | Topbar, palette, chat assistant, properties panel, and common dialogs ship localized. English, Spanish, Chinese (Simplified + Traditional), Hindi, Arabic, Portuguese (Brazil), Bengali, Russian, Japanese, Punjabi, German, Korean, French, Vietnamese, Telugu, Marathi, Turkish, Tamil, Urdu, Persian, Polish, Italian, Ukrainian, Indonesian, Thai, Dutch, Hebrew, Swedish, Greek, Czech, Hungarian, Romanian, Filipino, Malay, Norwegian, Danish, Finnish, Catalan, Bulgarian, Slovak, Croatian, Serbian, Slovenian, Lithuanian, Latvian, Estonian, Khmer, Burmese, Sinhala, Nepali, Swahili, Afrikaans, Welsh, Irish, Icelandic, Albanian, Azerbaijani, Mongolian, Kazakh. RTL (Arabic, Hebrew, Persian, Urdu) supported. Switch languages from the topbar globe. |
+| **Open source** | Dual-licensed MIT OR Apache-2.0. Yours to use, fork, and extend. |
+
+---
+
+## Screenshots
+
+Real pipelines, built and run in Duckle - not mockups.
+
+<p align="center">
+  <img src="docs/assets/real-life-screenshot/mega-pipeline-join.png" alt="A 5-million-row pipeline joining a CSV, a Parquet file, a DuckDB table, and a SQLite table through the visual Map node" width="100%"/>
+  <br/>
+  <sub>A 5M-row pipeline: a CSV, a Parquet file, a DuckDB table, and a SQLite table enriched through one visual <b>Map</b> (3-way join), no SQL.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/assets/real-life-screenshot/visual-mapper.png" alt="The visual Map editor showing a main input, two lookups, per-output expressions, and an inline filter" width="49%"/>
+  <img src="docs/assets/real-life-screenshot/parallelize-canvas.png" alt="A Parallelize node fanning out aggregate, window, and top-N branches across the canvas" width="49%"/>
+</p>
+<p align="center">
+  <sub>Left: the visual <b>Map</b> editor - main plus lookups, per-output expressions, an inline filter. Right: <b>Parallelize</b> fanning out aggregate, window, and top-N branches.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/assets/real-life-screenshot/mega-pipeline-parallelize.png" alt="A run summary showing 16 nodes finishing in roughly three seconds across parallel branches writing to Parquet, CSV, DuckDB, and SQLite" width="100%"/>
+  <br/>
+  <sub>One run, many branches: 16 nodes finish in a few seconds. Concurrency auto-detects from CPU cores; branches write to Parquet, CSV, DuckDB, and SQLite at once.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/assets/real-life-screenshot/cdc-ducklake.png" alt="A DuckLake CDC change-feed pipeline mirroring 100k changes into a DuckDB table with upsert and delete propagation" width="49%"/>
+  <img src="docs/assets/real-life-screenshot/incremental-load.png" alt="A watermark incremental load reading 5 million rows and appending only new rows" width="49%"/>
+</p>
+<p align="center">
+  <sub>Left: <b>DuckLake CDC</b> change-feed mirrored via <b>upsert + delete propagation</b> (100k rows). Right: <b>watermark incremental load</b> over 5M rows, advancing state only on a fully successful run.</sub>
+</p>
+
+---
+
+## Quickstart (60 seconds)
+
+1. **Download** the binary for your OS (see [Download / Install](#download--install) above) - or [build from source](#build-from-source).
+2. **Launch it.** First run shows the setup modal:
+   - Click **Install** on DuckDB (required, takes ~30 s).
+   - Optionally click **Install** on Duckie AI Assistant (~1.1 GB, takes 5-10 min on average broadband).
+3. **Pick a workspace folder.** Pipelines, connections, context variables, and routines live there as plain files.
+4. **Build a pipeline two ways:**
+   - **Drag + wire**: drag a **CSV source** in, point it at [`samples/orders.csv`](samples/orders.csv), hit **Autodetect schema**. Drag a **Filter**, wire it up. Drag a **Parquet sink** with an output path. Press **Run**, watch the nodes light up.
+   - **Ask Duckie**: click the **Sparkles** icon (top-right of the toolbar), type *"read orders.csv, filter where status = 'paid', write to paid.parquet"*. When Duckie streams back a pipeline, click **Insert into canvas**.
+5. **Inspect.** Click any node to see its generated SQL in the **Plan** tab and a live row sample in the **Preview** tab.
+
+That's a real, native ETL pipeline built and run in under a minute. CSV is just the easiest first node; swap in Parquet, JSON, S3, Snowflake, MongoDB, or Stripe the same way.
+
+---
+
+## Download / Install
+
+Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.6.1):
+
+| OS | Asset | How to run |
+|---|---|---|
+| **Windows** | `Duckle-windows-x64.exe` | Double-click. Unsigned binary - Windows SmartScreen will warn the first time; click "More info" -> "Run anyway". |
+| **macOS** (Apple Silicon) | `Duckle-macos-arm64` | `chmod +x Duckle-macos-arm64 && ./Duckle-macos-arm64`. Right-click -> Open the first time to bypass Gatekeeper. |
+| **Linux** (x86_64) | `Duckle-linux-x64` | `chmod +x Duckle-linux-x64 && ./Duckle-linux-x64`. Requires WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian / Ubuntu). |
+
+The single-file binary above is all you need for **Build Pipeline** too: the headless runner is embedded into the app at build time, and exporting a pipeline produces ONE self-contained executable (the engine, the DuckDB CLI, any needed extensions, and the resolved pipeline are all inside that one file). Copy that single file to your server and run or schedule it - no separate runner download required.
+
+<p align="center"><img src="docs/assets/pypi-demo-install.svg" alt="Terminal: uvx duckle quickstart scaffolds sample data and a pipeline, runs it, and prints the resulting rows" width="660"/></p>
+
+One command, nothing installed: it scaffolds sample data and a pipeline, compiles it to SQL, runs it on DuckDB, and shows you the rows.
+
+```sh
+uvx duckle quickstart
+```
+
+### Let an agent do it
+
+Paste this into Claude Code, Cursor, or Codex:
+
+> Run `uvx duckle quickstart` to build my first pipeline and run it
+
+Nothing to install first. The agent fetches Duckle and the DuckDB engine on demand, runs a real pipeline, and shows you the rows.
+
+### CLI only (CI, cron, containers)
+
+If you do not want the desktop studio, install just the headless runner. It is about 27 MB rather than 100 MB or more, has no GUI dependency, and is what a build step actually needs.
+
+```sh
+pip install duckle
+```
+
+That is the whole install. It brings the DuckDB CLI with it (via the [`duckdb-cli`](https://pypi.org/project/duckdb-cli/) package published by the DuckDB Foundation), so there is nothing else to fetch and it works offline. Wheels ship for Linux, macOS and Windows on x86-64 and arm64.
+
+<p align="center"><img src="docs/assets/pypi-demo-pip.svg" alt="Terminal: pip install duckle brings the DuckDB engine, then a job.py using the Python API reads a CSV, filters, derives a column and writes Parquet" width="660"/></p>
+
+It also gives you a Python API, where pipelines are built as code and executed by DuckDB rather than by Python:
+
+```python
+import duckle
+from duckle import col
+
+(duckle.read_csv("orders.csv")
+    .where(col.amount >= 20)
+    .derive(total="round(amount * 1.2, 2)")
+    .write_parquet("out.parquet")
+    .run())
+```
+
+Python expressions compile to vectorized SQL at plan time, so no rows pass through the interpreter. See [the PyPI page](https://pypi.org/project/duckle/) for the full API.
+
+The same package provides the `duckle` command-line runner for CI, cron, and containers - it bundles the headless runner and the MCP server per platform:
+
+```sh
+pip install duckle          # or run ad hoc, no install: uvx duckle --help
+```
+
+Pipelines execute as SQL on the DuckDB CLI, so the runner needs a `duckdb` on PATH or `DUCKLE_DUCKDB_BIN` set (`pip install duckdb-cli` is the quickest route). Validation does not:
+
+```sh
+duckle validate                 # compile-check every pipeline under ./pipelines
+duckle validate --json          # machine-readable, for a CI step
+duckle --pipeline my.json       # run one
+```
+
+`validate` opens no source and writes no sink, so it needs no engine, no credentials and no network. Exit codes are stable: `0` clean, `1` a real finding (a pipeline failed or did not compile), `2` the runner could not start (bad usage, unreadable file, missing engine).
+
+The binary is 73 to 110 MB depending on platform (it embeds the headless runner and the bundled MCP server). On first launch you'll be guided through downloading two engines into your app-data directory:
+
+| Engine | Size | Required? | What it powers |
+|---|---|---|---|
+| **DuckDB CLI** | ~30 MB + extensions | **Yes** - cannot run pipelines without it | Every source / transform / sink that runs as SQL |
+| **Duckie AI Assistant** | ~1.1 GB (llama-server + Qwen 2.5 Coder 1.5B GGUF) | Optional | The chat sidebar that generates pipelines from natural language |
+
+App-data location:
+- Windows: `%APPDATA%\io.duckle.app\engines\`
+- macOS: `~/Library/Application Support/io.duckle.app/engines/`
+- Linux: `~/.config/io.duckle.app/engines/`
+
+Delete the `engines/` folder if you ever want to force a fresh install.
+
+---
+
+## Run your first pipeline
+
+A worked example using the bundled `samples/orders.csv` data.
+
+### 1. Add a source
+
+- Open the **Components** sidebar (left). Click **Sources -> Files -> CSV**.
+- Drag it onto the canvas.
+- In the right-side Properties panel:
+  - **Path**: browse to `samples/orders.csv`
+  - Click **Autodetect schema** - the **Schema** tab fills in column types from the file, the **Preview** tab shows the first 20 rows.
+
+### 2. Add a transform
+
+- **Components -> Transforms -> Rows -> Filter**. Drag onto canvas.
+- Wire the CSV source's `main` output port to the Filter's `main` input.
+- In Properties:
+  - **Predicate**: `status = 'paid'` (you can write raw SQL or use the visual builder)
+  - Filter has two output ports: `pass` (rows matching) and `reject` (rows that don't).
+
+### 3. Add a sink
+
+- **Components -> Sinks -> Files -> Parquet**.
+- Wire Filter's `pass` port to the Parquet sink.
+- **Path**: `paid_orders.parquet`. **Write mode**: `overwrite`. **Compression**: `zstd`.
+
+### 4. Run it
+
+- Press **Run** in the toolbar. Nodes light up in execution order; row counts appear under each.
+- Open the **Output** tab (bottom panel) to see per-stage timing.
+- Click any node to inspect generated SQL in **Plan** + sampled rows in **Preview**.
+
+### 5. Iterate
+
+- Add a **Group By** before the sink to aggregate. Re-run. Sub-second on small data.
+- Cancel mid-run with the **Stop** button - the DuckDB process is killed cleanly.
+- Save your work: **Cmd/Ctrl-S** writes a JSON pipeline file to your workspace folder.
+
+---
+
+## Quick links
+
+<table>
+<tr>
+<td valign="top" width="25%">
+
+**Get started**
+
+- [Where Duckle runs](#where-duckle-runs)
+- [What is Duckle?](#what-is-duckle)
+- [What's new in v0.6.1](#whats-new-in-v061)
+- [What's new in v0.6.0](#whats-new-in-v060)
+- [Quickstart (60 s)](#quickstart-60-seconds)
+- [Download / Install](#download--install)
+- [Build from source](#build-from-source)
+- [Run your first pipeline](#run-your-first-pipeline)
+
+</td>
+<td valign="top" width="25%">
+
+**Use the product**
+
+- [Meet Duckie (AI)](#meet-duckie---the-local-ai-pipeline-assistant)
+- [How to use Duckle](#how-to-use-duckle)
+- [Recipes / examples](#recipes-and-examples)
+- [In-app Git (GitHub/GitLab)](#git-integration-github--gitlab)
+- [Workspace + Git flow](#workspace-and-git-flow)
+- [Schedules](#schedules-and-triggers)
+- [Server deployment](#server-deployment-build-pipeline)
+- [Sign-in and roles](#sign-in-and-roles)
+- [How a request is decided](#how-a-request-is-decided)
+- [API keys, for machines](#api-keys-for-machines)
+- [MCP server: connect Claude, Cursor or any agent](#mcp-server-connect-claude-or-any-llm-to-duckle)
+- [Connection management](#connection-management)
+- [Context variables](#context-variables)
+
+</td>
+<td valign="top" width="25%">
+
+**Reference**
+
+- [Capabilities matrix](#capabilities)
+- [Sources](#sources-103-available)
+- [Transforms](#transforms-130-available)
+- [Sinks](#sinks-64-available)
+- [Data quality](#data-quality-27-available)
+- [Custom code](#custom-code-6-available)
+- [Control flow](#control-flow-18-available)
+- [Advanced settings](#advanced-settings-per-node)
+- [Engines](#engines)
+- [Configuration](#configuration)
+
+</td>
+<td valign="top" width="25%">
+
+**Resources**
+
+- [Architecture](#architecture)
+- [Clean data for AI](#clean-data-before-it-reaches-your-ai)
+- [Performance tips](#performance-tips)
+- [FAQ](#faq)
+- [Troubleshooting](#troubleshooting)
+- [CI / CD](#ci--cd)
+- [Status](#status)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Sponsor Duckle](SPONSORS.md)
+- [License](#license)
+- [Releases](https://github.com/slothflowlabs/duckle/releases)
+- [Roadmap doc](docs/roadmap.md)
+- [Contributing doc](CONTRIBUTING.md)
+
+</td>
+</tr>
+</table>
+
+---
+
 ## Where Duckle runs
 
-The laptop is where you author. The work runs wherever you deploy it, on the same file.
+You build a pipeline on your laptop. The server runs that same file. Nothing is rewritten, exported or converted in between.
 
 ```mermaid
 flowchart LR
@@ -117,153 +408,6 @@ Measured, rather than asserted:
 
 The one thing Duckle does not do is split a single query across a cluster the way a distributed warehouse does. When you need that, push the work down into the system that has it and let Duckle orchestrate around it.
 
-## Quick links
-
-<table>
-<tr>
-<td valign="top" width="25%">
-
-**Get started**
-
-- [Where Duckle runs](#where-duckle-runs)
-- [What is Duckle?](#what-is-duckle)
-- [What's new in v0.6.1](#whats-new-in-v061)
-- [What's new in v0.6.0](#whats-new-in-v060)
-- [Quickstart (60 s)](#quickstart-60-seconds)
-- [Download / Install](#download--install)
-- [Build from source](#build-from-source)
-- [Run your first pipeline](#run-your-first-pipeline)
-
-</td>
-<td valign="top" width="25%">
-
-**Use the product**
-
-- [Meet Duckie (AI)](#meet-duckie---the-local-ai-pipeline-assistant)
-- [How to use Duckle](#how-to-use-duckle)
-- [Recipes / examples](#recipes-and-examples)
-- [In-app Git (GitHub/GitLab)](#git-integration-github--gitlab)
-- [Workspace + Git flow](#workspace-and-git-flow)
-- [Schedules](#schedules-and-triggers)
-- [Server deployment](#server-deployment-build-pipeline)
-- [Sign-in and roles](#sign-in-and-roles)
-- [How a request is decided](#how-a-request-is-decided)
-- [API keys, for machines](#api-keys-for-machines)
-- [MCP server: connect Claude, Cursor or any agent](#mcp-server-connect-claude-or-any-llm-to-duckle)
-- [Connection management](#connection-management)
-- [Context variables](#context-variables)
-
-</td>
-<td valign="top" width="25%">
-
-**Reference**
-
-- [Capabilities matrix](#capabilities)
-- [Sources](#sources-101-available)
-- [Transforms](#transforms-130-available)
-- [Sinks](#sinks-63-available)
-- [Data quality](#data-quality-27-available)
-- [Custom code](#custom-code-6-available)
-- [Control flow](#control-flow-18-available)
-- [Advanced settings](#advanced-settings-per-node)
-- [Engines](#engines)
-- [Configuration](#configuration)
-
-</td>
-<td valign="top" width="25%">
-
-**Resources**
-
-- [Architecture](#architecture)
-- [Clean data for AI](#clean-data-before-it-reaches-your-ai)
-- [Performance tips](#performance-tips)
-- [FAQ](#faq)
-- [Troubleshooting](#troubleshooting)
-- [CI / CD](#ci--cd)
-- [Status](#status)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [Sponsor Duckle](SPONSORS.md)
-- [License](#license)
-- [Releases](https://github.com/slothflowlabs/duckle/releases)
-- [Roadmap doc](docs/roadmap.md)
-- [Contributing doc](CONTRIBUTING.md)
-
-</td>
-</tr>
-</table>
-
----
-
-## What is Duckle?
-
-A visual data pipeline studio that runs on your laptop. Drag sources, transforms, validators, and sinks onto a canvas. Wire them together. Press **Run**. Duckle compiles the graph to SQL and executes it through a real columnar engine, with live previews, generated SQL on every node, and zero hidden state.
-
-In short: a free, open-source, single-engine alternative to hosted, per-row-priced ETL platforms like Fivetran and Airbyte - one pipeline for ingest, transform, and load that runs anywhere, and can also run dbt on DuckDB inside the same tool.
-
-Three things make Duckle different from the heavyweights and the toy ETL tools:
-
-1. **An AI assistant that ships in the box.** Describe the pipeline you want in English; Duckie writes the JSON and drops it onto the canvas. The model runs locally - no API key, no telemetry, no cloud round-trip.
-2. **366 components ready at install time.** Files, lakehouses, SQL databases, warehouses, NoSQL, vector DBs, streaming brokers, SaaS REST/GraphQL APIs, even FTP and IMAP - working today, not coming-soon.
-3. **A self-contained binary you can audit.** ~65 MB download. Engines install on first launch. Workspaces are plain files in a folder you choose. Diff them, branch them, ship them.
-
-<div align="center">
-<img src="docs/assets/flow.svg" alt="Sources flow through 50+ transforms into files, databases, object storage, vector stores, and AI" width="100%"/>
-</div>
-
----
-
-## What's new in v0.6.1
-
-Talend jobs import straight into the canvas, and credentials are masked more
-carefully in exported SQL.
-
-- **Import a Talend job from the editor.** A **Talend** button sits in the project sidebar next to New Pipeline and New Folder, and the same action is in the editor's **⋯** menu as **Import Talend job...**. Either one picks a `.item` job, translates it, and opens it as a new pipeline tab, laid out on the canvas at the coordinates the job was drawn with. Measured on a real 44-job corpus: all 44 parse and 211 of 216 nodes map, the only refusal being a site-specific custom component. Nothing is written to your workspace until you save, so a job that translates badly costs a closed tab.
-- **The import report says what still needs a person.** A node count on its own would suggest a working pipeline, so the report leads with how many components actually translated, then lists everything unresolved. Encrypted Studio passwords arrive as `${ENV:...}` placeholders instead of guesses. Connections stored outside the job file are named, so you can fill them in or point the node at a saved connection. tMap outputs computed by Java are listed column by column with the expression to rewrite as SQL. A component with no Duckle equivalent is imported as a labelled placeholder, so the shape of the job survives rather than quietly losing a step.
-- **Convert a whole repository at once, from the terminal.** Importing through a file dialog is the right shape for trying Duckle and the wrong shape for leaving another tool, because nobody has one job - they have several hundred in a checkout. `duckle-runner import <dir>` walks the tree, converts every job it finds, and mirrors the folder layout under `--out` so two jobs that share a name cannot overwrite each other. Measured on a real 125-file corpus: 42 files hold a job and 83 do not (routines, contexts and SQL templates share the extension), all 42 convert with none failing, and exactly one component across the whole corpus has no equivalent - a site-specific custom one. Everything else still to resolve is credentials that were never in the job files to begin with: 119 encrypted passwords and 75 connections defined outside the job. The closing tally lists unmapped components by how often they appear, which is both the answer to "is this migration viable" and the shortest path to finishing it. `--json` for a script, `--strict` to fail a CI job.
-- **A file that was never a job is skipped, not counted.** The extension is shared by routines, contexts and SQL pattern templates. Parsing those yields an empty pipeline, and counting an empty pipeline as a converted job inflates the only number anyone reads - on the corpus above it turned 42 real conversions into a reported 82. They are now reported separately and no empty pipeline is written. The same rule applies in the other direction: a routine is Java source whose javadoc breaks any XML reader, so it is skipped rather than reported as a failed job, while a file that declares itself a job and then will not parse is still a failure.
-- **Credentials are masked on token boundaries in exported SQL.** Redaction replaced a credential value wherever it appeared, so a password that was also a substring of an ordinary identifier corrupted the statement around it: a password of `prod` rewrote `production_report.parquet` as `${DUCKLE_PASSWORD}uction_report.parquet`. The secret itself was always protected; the damage was to everything else, and it mattered most when reading the Plan or SQL view to debug. Matching is now delimiter-aware, so `LOAD postgres` is left intact while a one-character password is still masked in `password=p'`. Deliberately no minimum length: a short password is still a password.
-
----
-
-## What's new in v0.6.0
-
-A multimodal AI data store, an importer for legacy visual ETL jobs, a chat
-model you choose, and two geometry transforms that finally have the second
-input they always needed.
-
-- **Pixeltable, read and write (#223).** `src.pixeltable` reads a table, optionally filtered by a Pixeltable expression, a column subset and a limit; `snk.pixeltable` inserts into an existing table or creates one from the incoming rows. Versioned reads work by passing `myapp.media:3`. The exchange runs over Parquet on both legs - Pixeltable exports, Duckle ingests with `read_parquet`, and on the way back Duckle writes Parquet that `Table.insert` takes directly - so no rows are serialised one at a time. Pixeltable is a Python library, so the desktop app provisions a private Python for it with uv on first use; nothing is installed into your own environment.
-- **Clip and Erase can now be wired up (#217, #218).** Both shipped in v0.5.9 as two-layer overlays, and the engine required the second layer, but the palette declared only one input - so the node could be placed and configured and never run. Both now offer a second input labelled **clip layer** / **erase layer**, like Spatial Join. Behaviour is unchanged: the second layer is still dissolved with `ST_Union_Agg` before the operation, attributes of the input layer are preserved, and features left with nothing are dropped. Thanks to @OmarMustaafa for reporting it twice with screenshots. A test now pins this contract for every component whose builder needs a second input, checked by removing a port and confirming it fails.
-- **Choose the assistant's model, from 14 (#223 adjacent).** The setup step installed one hardcoded 1.5B model, which is right on a laptop and wrong on a workstation with a GPU. The catalogue now spans 469 MB to 9.9 GB - Qwen2.5 Coder 0.5B through 14B, Qwen3, Llama 3.2, Phi-3.5 Mini, Mistral 7B, Gemma 2 9B and DeepSeek Coder V2 Lite - each with its real download size and an honest note on what it needs. Every entry was checked to resolve before being offered, so the picker cannot hand you a file that 404s halfway through a multi-gigabyte download.
-- **Import jobs from legacy visual ETL tools.** Reads the XML those jobs are stored as and produces a Duckle pipeline. Measured on a real 44-job corpus: all 44 parse and 211 of 216 nodes map, the only refusal being a site-specific custom component. Encrypted passwords become `${ENV:...}` placeholders rather than guesses, connections that live outside the job file are reported rather than silently half-imported, and anything with no equivalent is imported as a labelled placeholder so the shape of the job survives instead of quietly losing a step.
-- **CI for your pipeline repo.** `duckle-runner` is now published as a release asset, and there are ready workflows for GitHub Actions and GitLab CI under `docs/ci/`. They gate every push on `duckle-runner validate`, which compiles pipelines to SQL without opening a source, writing a sink, or needing credentials or a network. This is the check that catches a column renamed in one commit and still referenced by another - they merge cleanly, and nothing else notices.
-- **Node ids no longer collide.** Adding a folder or duplicating an item minted an id from the clock alone, so two of the same kind created in the same millisecond could share one. Both now use the same timestamp-plus-random scheme as everything else, which is what makes pipeline JSON safe to merge across branches.
-
-Full notes: see the [v0.6.0 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.6.0).
-
----
-
-## What's new in v0.5.10
-
-Power mode, context layering, and an Oracle extract that is now faster than
-python-oracledb with pyarrow on the same table.
-
-- **Power mode (Settings -> Power mode).** Two throughput settings per workspace. **Pipelines at once** caps how many run together; the placeholder shows the machine's core count. **Spill folder** points DuckDB's spill files at a bigger or faster disk. Only the lever with a measurement behind it is offered: independent pipelines scaled about 3.8x across 8 concurrent processes on a 20-core box, while splitting a single pipeline across processes measured *slower* (72ms to 123ms at 8-way), so there is deliberately no option for it. Each concurrent run gets its own memory limit and its own DuckDB process, so N at once needs roughly N times the memory, and the panel says so.
-- **Scheduled runs have a ceiling.** Every schedule that came due in the same tick fired at once, so ten due at midnight meant ten pipelines each sized for the whole machine. They are now bounded, by power mode where it is set and by a sane default otherwise. The headless `duckle serve` honours the same setting, so desktop and server agree.
-- **Contexts can be layered (#204).** A context can declare a **Layer**; higher layers override lower ones. A shared base plus a per-environment override is now expressible directly: give the base layer 0 and the environment a higher number, and the override applies quietly. Previously all contexts merged flat in repo order, so every intended override looked like a collision and had to be resolved by hand. Only two contexts on the *same* layer defining the same name are still reported, because nothing there says which should win. Workspaces that set no layers merge exactly as before.
-- **Oracle extracts beat python-oracledb (#221).** Three changes, each measured on a 1,466,723-row x 236-column table with the same query and SNAPPY on both sides:
-  - Unconstrained `NUMBER` columns are now **measured before the write instead of typed after it**. Those columns have no declared width, so they used to travel as text and be typed by a pass over the finished Parquet - which is exactly the pass a direct write skips, meaning one such column forced a whole second pass over every column. The ambiguous columns are now read on their own first (about 2s for 4 of 236), their real widths pin the schema, and the file is written once. Both reads share one snapshot via a read-only transaction, so they cannot disagree.
-  - The driver no longer rebuilds an owned row per fetch. `ResultSet<Row>` reconstructs every value in the row; on this table that was 346 million reconstructions, measured at 11.5s of a 42.7s fetch against a 31.2s floor.
-  - Scaled `NUMBER` values no longer allocate a string per cell while being rescaled - 88 million allocations per run on this shape.
-
-  Together: **100.7s to 65.0s** in the shape reported on #221, against **68.6s** for python-oracledb with pyarrow doing the same job on the same machine. With column types already pinned it is about 56.7s. Output was verified against pyarrow's: identical row counts, and equal sums, hashes, ranges and null counts across every column type. Worth noting that python-oracledb maps an unconstrained `NUMBER` to `DOUBLE`, which cannot hold the 24 significant digits one test column carries; Duckle types it exactly, so the comparison is not quite like for like and not in our favour.
-- **A direct Parquet write no longer produces string columns (#221).** With **Write directly from the source** enabled on a table containing any bare `NUMBER`, those columns were written as text while the run reported success. The source now declines the shortcut when a column cannot be typed before the write, and says so in the run log. Anyone who enabled that toggle on v0.5.9 against such a table should re-check the output.
-- **Concurrent runs no longer fight over spill files.** DuckDB's default spill location is already per-run, but setting a shared spill folder made every run share one - which reads as a flaky run rather than a bug: across three trials of four concurrent spilling queries, a shared folder lost 3 of 12 runs to a segfault or a delete failure, private folders lost 0 of 12. Each run now spills into its own subfolder.
-
-Full notes: see the [v0.5.10 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.10).
-
----
-
 ## Meet Duckie - the local AI pipeline assistant
 
 > Describe what you need. Duckie writes the pipeline.
@@ -281,22 +425,6 @@ The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Code
 | **One-click insert** | When Duckie produces a JSON pipeline, an **Insert into canvas** button appears. The graph populates with positioned nodes, wired edges, and the props the model chose. |
 | **Bring-your-own-model option** | The chat plumbing is the same OpenAI-compatible HTTP interface used by `xf.ai.llm` / `xf.ai.embed` connectors. Point `baseUrl` at Ollama, llama.cpp, Cohere, OpenAI, Voyage - anything that speaks the OpenAI shape. |
 | **Sandboxed** | The model has no fs / net / tool access. It can only emit text - your pipeline JSON. |
-
----
-
-## Why Duckle is different
-
-| | |
-|---|---|
-| **Visual, never opaque** | The canvas compiles to SQL you can read, and every node has a live preview tab. No black box. |
-| **Local-first AI** | An assistant that runs on your laptop without an API key. Your prompts, your data, your machine. |
-| **Single-file binary, no bundled DB** | ~65 MB app (it embeds the headless runner + MCP server). DuckDB downloads on first launch with a guided step. AI engine is opt-in. |
-| **Native speed** | Execution runs through DuckDB: vectorized, columnar, local. A clean-and-export job that crawls in a spreadsheet finishes in milliseconds. |
-| **Git-friendly by design** | Pipelines, connections, contexts, and routines persist as plain files in a folder you pick. Diff them, branch them, review them. |
-| **366 components ready today** | Files, databases, warehouses, lakehouses, object stores, SaaS APIs, NoSQL, streaming brokers, vector DBs, FTP, IMAP, SMTP. Each is covered by tests. |
-| **Honest about scope** | Single-machine and embedded by design. Built to make local and small-team data work fast, not to replace a distributed warehouse. |
-| **60 UI languages** | Topbar, palette, chat assistant, properties panel, and common dialogs ship localized. English, Spanish, Chinese (Simplified + Traditional), Hindi, Arabic, Portuguese (Brazil), Bengali, Russian, Japanese, Punjabi, German, Korean, French, Vietnamese, Telugu, Marathi, Turkish, Tamil, Urdu, Persian, Polish, Italian, Ukrainian, Indonesian, Thai, Dutch, Hebrew, Swedish, Greek, Czech, Hungarian, Romanian, Filipino, Malay, Norwegian, Danish, Finnish, Catalan, Bulgarian, Slovak, Croatian, Serbian, Slovenian, Lithuanian, Latvian, Estonian, Khmer, Burmese, Sinhala, Nepali, Swahili, Afrikaans, Welsh, Irish, Icelandic, Albanian, Azerbaijani, Mongolian, Kazakh. RTL (Arabic, Hebrew, Persian, Urdu) supported. Switch languages from the topbar globe. |
-| **Open source** | Dual-licensed MIT OR Apache-2.0. Yours to use, fork, and extend. |
 
 ---
 
@@ -352,40 +480,6 @@ The component palette ships **384 nodes** so the roadmap is visible in the produ
 - **366 available** runs on the DuckDB engine today
 - **3 preview** is configurable in the designer (drag, wire, set properties); execution is being wired engine-by-engine
 - **15 planned** is reserved in the palette but not yet executable - see [`docs/roadmap.md`](docs/roadmap.md)
-
----
-
-## Screenshots
-
-Real pipelines, built and run in Duckle - not mockups.
-
-<p align="center">
-  <img src="docs/assets/real-life-screenshot/mega-pipeline-join.png" alt="A 5-million-row pipeline joining a CSV, a Parquet file, a DuckDB table, and a SQLite table through the visual Map node" width="100%"/>
-  <br/>
-  <sub>A 5M-row pipeline: a CSV, a Parquet file, a DuckDB table, and a SQLite table enriched through one visual <b>Map</b> (3-way join), no SQL.</sub>
-</p>
-
-<p align="center">
-  <img src="docs/assets/real-life-screenshot/visual-mapper.png" alt="The visual Map editor showing a main input, two lookups, per-output expressions, and an inline filter" width="49%"/>
-  <img src="docs/assets/real-life-screenshot/parallelize-canvas.png" alt="A Parallelize node fanning out aggregate, window, and top-N branches across the canvas" width="49%"/>
-</p>
-<p align="center">
-  <sub>Left: the visual <b>Map</b> editor - main plus lookups, per-output expressions, an inline filter. Right: <b>Parallelize</b> fanning out aggregate, window, and top-N branches.</sub>
-</p>
-
-<p align="center">
-  <img src="docs/assets/real-life-screenshot/mega-pipeline-parallelize.png" alt="A run summary showing 16 nodes finishing in roughly three seconds across parallel branches writing to Parquet, CSV, DuckDB, and SQLite" width="100%"/>
-  <br/>
-  <sub>One run, many branches: 16 nodes finish in a few seconds. Concurrency auto-detects from CPU cores; branches write to Parquet, CSV, DuckDB, and SQLite at once.</sub>
-</p>
-
-<p align="center">
-  <img src="docs/assets/real-life-screenshot/cdc-ducklake.png" alt="A DuckLake CDC change-feed pipeline mirroring 100k changes into a DuckDB table with upsert and delete propagation" width="49%"/>
-  <img src="docs/assets/real-life-screenshot/incremental-load.png" alt="A watermark incremental load reading 5 million rows and appending only new rows" width="49%"/>
-</p>
-<p align="center">
-  <sub>Left: <b>DuckLake CDC</b> change-feed mirrored via <b>upsert + delete propagation</b> (100k rows). Right: <b>watermark incremental load</b> over 5M rows, advancing state only on a fully successful run.</sub>
-</p>
 
 ---
 
@@ -689,159 +783,16 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ---
 
-## Download / Install
-
-Pick the binary for your OS from the [latest release](https://github.com/slothflowlabs/duckle/releases/tag/v0.6.1):
-
-| OS | Asset | How to run |
-|---|---|---|
-| **Windows** | `Duckle-windows-x64.exe` | Double-click. Unsigned binary - Windows SmartScreen will warn the first time; click "More info" -> "Run anyway". |
-| **macOS** (Apple Silicon) | `Duckle-macos-arm64` | `chmod +x Duckle-macos-arm64 && ./Duckle-macos-arm64`. Right-click -> Open the first time to bypass Gatekeeper. |
-| **Linux** (x86_64) | `Duckle-linux-x64` | `chmod +x Duckle-linux-x64 && ./Duckle-linux-x64`. Requires WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian / Ubuntu). |
-
-The single-file binary above is all you need for **Build Pipeline** too: the headless runner is embedded into the app at build time, and exporting a pipeline produces ONE self-contained executable (the engine, the DuckDB CLI, any needed extensions, and the resolved pipeline are all inside that one file). Copy that single file to your server and run or schedule it - no separate runner download required.
-
-<p align="center"><img src="docs/assets/pypi-demo-install.svg" alt="Terminal: uvx duckle quickstart scaffolds sample data and a pipeline, runs it, and prints the resulting rows" width="660"/></p>
-
-One command, nothing installed: it scaffolds sample data and a pipeline, compiles it to SQL, runs it on DuckDB, and shows you the rows.
-
-```sh
-uvx duckle quickstart
-```
-
-### Let an agent do it
-
-Paste this into Claude Code, Cursor, or Codex:
-
-> Run `uvx duckle quickstart` to build my first pipeline and run it
-
-Nothing to install first. The agent fetches Duckle and the DuckDB engine on demand, runs a real pipeline, and shows you the rows.
-
-### CLI only (CI, cron, containers)
-
-If you do not want the desktop studio, install just the headless runner. It is about 20 MB rather than ~100 MB, has no GUI dependency, and is what a build step actually needs.
-
-```sh
-pip install duckle
-```
-
-That is the whole install. It brings the DuckDB CLI with it (via the [`duckdb-cli`](https://pypi.org/project/duckdb-cli/) package published by the DuckDB Foundation), so there is nothing else to fetch and it works offline. Wheels ship for Linux, macOS and Windows on x86-64 and arm64.
-
-<p align="center"><img src="docs/assets/pypi-demo-pip.svg" alt="Terminal: pip install duckle brings the DuckDB engine, then a job.py using the Python API reads a CSV, filters, derives a column and writes Parquet" width="660"/></p>
-
-It also gives you a Python API, where pipelines are built as code and executed by DuckDB rather than by Python:
-
-```python
-import duckle
-from duckle import col
-
-(duckle.read_csv("orders.csv")
-    .where(col.amount >= 20)
-    .derive(total="round(amount * 1.2, 2)")
-    .write_parquet("out.parquet")
-    .run())
-```
-
-Python expressions compile to vectorized SQL at plan time, so no rows pass through the interpreter. See [the PyPI page](https://pypi.org/project/duckle/) for the full API.
-
-The same package provides the `duckle` command-line runner for CI, cron, and containers - it bundles the headless runner and the MCP server per platform:
-
-```sh
-pip install duckle          # or run ad hoc, no install: uvx duckle --help
-```
-
-Pipelines execute as SQL on the DuckDB CLI, so the runner needs a `duckdb` on PATH or `DUCKLE_DUCKDB_BIN` set (`pip install duckdb-cli` is the quickest route). Validation does not:
-
-```sh
-duckle validate                 # compile-check every pipeline under ./pipelines
-duckle validate --json          # machine-readable, for a CI step
-duckle --pipeline my.json       # run one
-```
-
-`validate` opens no source and writes no sink, so it needs no engine, no credentials and no network. Exit codes are stable: `0` clean, `1` a real finding (a pipeline failed or did not compile), `2` the runner could not start (bad usage, unreadable file, missing engine).
-
-The binary is ~55-78 MB depending on platform (it embeds the headless runner and the bundled MCP server). On first launch you'll be guided through downloading two engines into your app-data directory:
-
-| Engine | Size | Required? | What it powers |
-|---|---|---|---|
-| **DuckDB CLI** | ~30 MB + extensions | **Yes** - cannot run pipelines without it | Every source / transform / sink that runs as SQL |
-| **Duckie AI Assistant** | ~1.1 GB (llama-server + Qwen 2.5 Coder 1.5B GGUF) | Optional | The chat sidebar that generates pipelines from natural language |
-
-App-data location:
-- Windows: `%APPDATA%\io.duckle.app\engines\`
-- macOS: `~/Library/Application Support/io.duckle.app/engines/`
-- Linux: `~/.config/io.duckle.app/engines/`
-
-Delete the `engines/` folder if you ever want to force a fresh install.
-
----
-
-## Quickstart (60 seconds)
-
-1. **Download** the binary for your OS (see [Download / Install](#download--install) above) - or [build from source](#build-from-source).
-2. **Launch it.** First run shows the setup modal:
-   - Click **Install** on DuckDB (required, takes ~30 s).
-   - Optionally click **Install** on Duckie AI Assistant (~1.1 GB, takes 5-10 min on average broadband).
-3. **Pick a workspace folder.** Pipelines, connections, context variables, and routines live there as plain files.
-4. **Build a pipeline two ways:**
-   - **Drag + wire**: drag a **CSV source** in, point it at [`samples/orders.csv`](samples/orders.csv), hit **Autodetect schema**. Drag a **Filter**, wire it up. Drag a **Parquet sink** with an output path. Press **Run**, watch the nodes light up.
-   - **Ask Duckie**: click the **Sparkles** icon (top-right of the toolbar), type *"read orders.csv, filter where status = 'paid', write to paid.parquet"*. When Duckie streams back a pipeline, click **Insert into canvas**.
-5. **Inspect.** Click any node to see its generated SQL in the **Plan** tab and a live row sample in the **Preview** tab.
-
-That's a real, native ETL pipeline built and run in under a minute. CSV is just the easiest first node; swap in Parquet, JSON, S3, Snowflake, MongoDB, or Stripe the same way.
-
----
-
-## Run your first pipeline
-
-A worked example using the bundled `samples/orders.csv` data.
-
-### 1. Add a source
-
-- Open the **Components** sidebar (left). Click **Sources -> Files -> CSV**.
-- Drag it onto the canvas.
-- In the right-side Properties panel:
-  - **Path**: browse to `samples/orders.csv`
-  - Click **Autodetect schema** - the **Schema** tab fills in column types from the file, the **Preview** tab shows the first 20 rows.
-
-### 2. Add a transform
-
-- **Components -> Transforms -> Rows -> Filter**. Drag onto canvas.
-- Wire the CSV source's `main` output port to the Filter's `main` input.
-- In Properties:
-  - **Predicate**: `status = 'paid'` (you can write raw SQL or use the visual builder)
-  - Filter has two output ports: `pass` (rows matching) and `reject` (rows that don't).
-
-### 3. Add a sink
-
-- **Components -> Sinks -> Files -> Parquet**.
-- Wire Filter's `pass` port to the Parquet sink.
-- **Path**: `paid_orders.parquet`. **Write mode**: `overwrite`. **Compression**: `zstd`.
-
-### 4. Run it
-
-- Press **Run** in the toolbar. Nodes light up in execution order; row counts appear under each.
-- Open the **Output** tab (bottom panel) to see per-stage timing.
-- Click any node to inspect generated SQL in **Plan** + sampled rows in **Preview**.
-
-### 5. Iterate
-
-- Add a **Group By** before the sink to aggregate. Re-run. Sub-second on small data.
-- Cancel mid-run with the **Stop** button - the DuckDB process is killed cleanly.
-- Save your work: **Cmd/Ctrl-S** writes a JSON pipeline file to your workspace folder.
-
----
-
 ## How to use Duckle
 
 A wider tour of the workflow.
 
 | Step | What you do | Where to look |
 |---|---|---|
-| **1. Sources** | Drag a source, point it at a file / DB / cloud URL / SaaS endpoint. Click **Autodetect schema** to read columns + a sample. | [Sources reference](#sources-101-available) |
+| **1. Sources** | Drag a source, point it at a file / DB / cloud URL / SaaS endpoint. Click **Autodetect schema** to read columns + a sample. | [Sources reference](#sources-103-available) |
 | **2. Transforms** | Wire transforms to source output ports. Configure in the Properties panel. **Preview** tab shows live rows; **Plan** tab shows generated SQL. | [Transforms reference](#transforms-130-available) |
 | **3. Data quality** | Drop in a validator (Not-Null, Range, Regex, Uniqueness). Passing rows continue on the main port; failures route to the **reject** port. | [Data quality reference](#data-quality-27-available) |
-| **4. Sinks** | Finish with a sink (file, DB, cloud, vector DB, message bus, email). Set write mode (overwrite, append, truncate, upsert). | [Sinks reference](#sinks-63-available) |
+| **4. Sinks** | Finish with a sink (file, DB, cloud, vector DB, message bus, email). Set write mode (overwrite, append, truncate, upsert). | [Sinks reference](#sinks-64-available) |
 | **5. Run** | Press **Run** to execute on DuckDB. Nodes light up stage by stage; **Output** + **Console** show row counts, timing, errors. Stop button kills mid-run. | [Run feedback](#orchestration-and-workspace) |
 | **6. Ask Duckie** | For anything you can describe in English, the AI assistant can sketch a pipeline. Iterate by editing the graph or asking follow-ups. | [Meet Duckie](#meet-duckie---the-local-ai-pipeline-assistant) |
 | **7. Reuse** | Save Connections, Context variables, and SQL Routines in the workspace; reference `${context.var}` in any field. Everything persists as plain files. | [Workspace and Git flow](#workspace-and-git-flow) |
@@ -1592,7 +1543,7 @@ No - Duckle downloads it for you on first launch. The download is ~30 MB and inc
 <details>
 <summary><b>How big is the binary, exactly?</b></summary>
 
-About 55-78 MB depending on platform (macOS ~54-67, Windows ~59-68, Linux ~66-78); it embeds the headless runner and the MCP server. The engines aren't statically linked - DuckDB (~50 MB with extensions) and the Duckie LLM (~1.1 GB for the Qwen GGUF) both download on first launch with a guided installer into your app-data folder, so they update independently of the app.
+73 to 110 MB, depending on platform. As of v0.6.1: macOS 73 (x64) to 88 (arm64), Linux 74 (arm64) to 100 (x64), Windows 98 (arm64) to 110 (x64). It embeds the headless runner and the MCP server, and the headless runner on its own is 27 MB. The engines aren't statically linked - DuckDB (~50 MB with extensions) and the Duckie LLM (~1.1 GB for the Qwen GGUF) both download on first launch with a guided installer into your app-data folder, so they update independently of the app.
 
 </details>
 
@@ -1721,6 +1672,57 @@ git push origin main vX.Y.Z
 # GitHub gets the binaries uploaded; un-draft + mark Latest with:
 gh release edit vX.Y.Z --draft=false --latest
 ```
+
+---
+
+## What's new in v0.6.1
+
+Talend jobs import straight into the canvas, and credentials are masked more
+carefully in exported SQL.
+
+- **Import a Talend job from the editor.** A **Talend** button sits in the project sidebar next to New Pipeline and New Folder, and the same action is in the editor's **⋯** menu as **Import Talend job...**. Either one picks a `.item` job, translates it, and opens it as a new pipeline tab, laid out on the canvas at the coordinates the job was drawn with. Measured on a real 44-job corpus: all 44 parse and 211 of 216 nodes map, the only refusal being a site-specific custom component. Nothing is written to your workspace until you save, so a job that translates badly costs a closed tab.
+- **The import report says what still needs a person.** A node count on its own would suggest a working pipeline, so the report leads with how many components actually translated, then lists everything unresolved. Encrypted Studio passwords arrive as `${ENV:...}` placeholders instead of guesses. Connections stored outside the job file are named, so you can fill them in or point the node at a saved connection. tMap outputs computed by Java are listed column by column with the expression to rewrite as SQL. A component with no Duckle equivalent is imported as a labelled placeholder, so the shape of the job survives rather than quietly losing a step.
+- **Convert a whole repository at once, from the terminal.** Importing through a file dialog is the right shape for trying Duckle and the wrong shape for leaving another tool, because nobody has one job - they have several hundred in a checkout. `duckle-runner import <dir>` walks the tree, converts every job it finds, and mirrors the folder layout under `--out` so two jobs that share a name cannot overwrite each other. Measured on a real 125-file corpus: 42 files hold a job and 83 do not (routines, contexts and SQL templates share the extension), all 42 convert with none failing, and exactly one component across the whole corpus has no equivalent - a site-specific custom one. Everything else still to resolve is credentials that were never in the job files to begin with: 119 encrypted passwords and 75 connections defined outside the job. The closing tally lists unmapped components by how often they appear, which is both the answer to "is this migration viable" and the shortest path to finishing it. `--json` for a script, `--strict` to fail a CI job.
+- **A file that was never a job is skipped, not counted.** The extension is shared by routines, contexts and SQL pattern templates. Parsing those yields an empty pipeline, and counting an empty pipeline as a converted job inflates the only number anyone reads - on the corpus above it turned 42 real conversions into a reported 82. They are now reported separately and no empty pipeline is written. The same rule applies in the other direction: a routine is Java source whose javadoc breaks any XML reader, so it is skipped rather than reported as a failed job, while a file that declares itself a job and then will not parse is still a failure.
+- **Credentials are masked on token boundaries in exported SQL.** Redaction replaced a credential value wherever it appeared, so a password that was also a substring of an ordinary identifier corrupted the statement around it: a password of `prod` rewrote `production_report.parquet` as `${DUCKLE_PASSWORD}uction_report.parquet`. The secret itself was always protected; the damage was to everything else, and it mattered most when reading the Plan or SQL view to debug. Matching is now delimiter-aware, so `LOAD postgres` is left intact while a one-character password is still masked in `password=p'`. Deliberately no minimum length: a short password is still a password.
+
+---
+
+## What's new in v0.6.0
+
+A multimodal AI data store, an importer for legacy visual ETL jobs, a chat
+model you choose, and two geometry transforms that finally have the second
+input they always needed.
+
+- **Pixeltable, read and write (#223).** `src.pixeltable` reads a table, optionally filtered by a Pixeltable expression, a column subset and a limit; `snk.pixeltable` inserts into an existing table or creates one from the incoming rows. Versioned reads work by passing `myapp.media:3`. The exchange runs over Parquet on both legs - Pixeltable exports, Duckle ingests with `read_parquet`, and on the way back Duckle writes Parquet that `Table.insert` takes directly - so no rows are serialised one at a time. Pixeltable is a Python library, so the desktop app provisions a private Python for it with uv on first use; nothing is installed into your own environment.
+- **Clip and Erase can now be wired up (#217, #218).** Both shipped in v0.5.9 as two-layer overlays, and the engine required the second layer, but the palette declared only one input - so the node could be placed and configured and never run. Both now offer a second input labelled **clip layer** / **erase layer**, like Spatial Join. Behaviour is unchanged: the second layer is still dissolved with `ST_Union_Agg` before the operation, attributes of the input layer are preserved, and features left with nothing are dropped. Thanks to @OmarMustaafa for reporting it twice with screenshots. A test now pins this contract for every component whose builder needs a second input, checked by removing a port and confirming it fails.
+- **Choose the assistant's model, from 14 (#223 adjacent).** The setup step installed one hardcoded 1.5B model, which is right on a laptop and wrong on a workstation with a GPU. The catalogue now spans 469 MB to 9.9 GB - Qwen2.5 Coder 0.5B through 14B, Qwen3, Llama 3.2, Phi-3.5 Mini, Mistral 7B, Gemma 2 9B and DeepSeek Coder V2 Lite - each with its real download size and an honest note on what it needs. Every entry was checked to resolve before being offered, so the picker cannot hand you a file that 404s halfway through a multi-gigabyte download.
+- **Import jobs from legacy visual ETL tools.** Reads the XML those jobs are stored as and produces a Duckle pipeline. Measured on a real 44-job corpus: all 44 parse and 211 of 216 nodes map, the only refusal being a site-specific custom component. Encrypted passwords become `${ENV:...}` placeholders rather than guesses, connections that live outside the job file are reported rather than silently half-imported, and anything with no equivalent is imported as a labelled placeholder so the shape of the job survives instead of quietly losing a step.
+- **CI for your pipeline repo.** `duckle-runner` is now published as a release asset, and there are ready workflows for GitHub Actions and GitLab CI under `docs/ci/`. They gate every push on `duckle-runner validate`, which compiles pipelines to SQL without opening a source, writing a sink, or needing credentials or a network. This is the check that catches a column renamed in one commit and still referenced by another - they merge cleanly, and nothing else notices.
+- **Node ids no longer collide.** Adding a folder or duplicating an item minted an id from the clock alone, so two of the same kind created in the same millisecond could share one. Both now use the same timestamp-plus-random scheme as everything else, which is what makes pipeline JSON safe to merge across branches.
+
+Full notes: see the [v0.6.0 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.6.0).
+
+---
+
+## What's new in v0.5.10
+
+Power mode, context layering, and an Oracle extract that is now faster than
+python-oracledb with pyarrow on the same table.
+
+- **Power mode (Settings -> Power mode).** Two throughput settings per workspace. **Pipelines at once** caps how many run together; the placeholder shows the machine's core count. **Spill folder** points DuckDB's spill files at a bigger or faster disk. Only the lever with a measurement behind it is offered: independent pipelines scaled about 3.8x across 8 concurrent processes on a 20-core box, while splitting a single pipeline across processes measured *slower* (72ms to 123ms at 8-way), so there is deliberately no option for it. Each concurrent run gets its own memory limit and its own DuckDB process, so N at once needs roughly N times the memory, and the panel says so.
+- **Scheduled runs have a ceiling.** Every schedule that came due in the same tick fired at once, so ten due at midnight meant ten pipelines each sized for the whole machine. They are now bounded, by power mode where it is set and by a sane default otherwise. The headless `duckle serve` honours the same setting, so desktop and server agree.
+- **Contexts can be layered (#204).** A context can declare a **Layer**; higher layers override lower ones. A shared base plus a per-environment override is now expressible directly: give the base layer 0 and the environment a higher number, and the override applies quietly. Previously all contexts merged flat in repo order, so every intended override looked like a collision and had to be resolved by hand. Only two contexts on the *same* layer defining the same name are still reported, because nothing there says which should win. Workspaces that set no layers merge exactly as before.
+- **Oracle extracts beat python-oracledb (#221).** Three changes, each measured on a 1,466,723-row x 236-column table with the same query and SNAPPY on both sides:
+  - Unconstrained `NUMBER` columns are now **measured before the write instead of typed after it**. Those columns have no declared width, so they used to travel as text and be typed by a pass over the finished Parquet - which is exactly the pass a direct write skips, meaning one such column forced a whole second pass over every column. The ambiguous columns are now read on their own first (about 2s for 4 of 236), their real widths pin the schema, and the file is written once. Both reads share one snapshot via a read-only transaction, so they cannot disagree.
+  - The driver no longer rebuilds an owned row per fetch. `ResultSet<Row>` reconstructs every value in the row; on this table that was 346 million reconstructions, measured at 11.5s of a 42.7s fetch against a 31.2s floor.
+  - Scaled `NUMBER` values no longer allocate a string per cell while being rescaled - 88 million allocations per run on this shape.
+
+  Together: **100.7s to 65.0s** in the shape reported on #221, against **68.6s** for python-oracledb with pyarrow doing the same job on the same machine. With column types already pinned it is about 56.7s. Output was verified against pyarrow's: identical row counts, and equal sums, hashes, ranges and null counts across every column type. Worth noting that python-oracledb maps an unconstrained `NUMBER` to `DOUBLE`, which cannot hold the 24 significant digits one test column carries; Duckle types it exactly, so the comparison is not quite like for like and not in our favour.
+- **A direct Parquet write no longer produces string columns (#221).** With **Write directly from the source** enabled on a table containing any bare `NUMBER`, those columns were written as text while the run reported success. The source now declines the shortcut when a column cannot be typed before the write, and says so in the run log. Anyone who enabled that toggle on v0.5.9 against such a table should re-check the output.
+- **Concurrent runs no longer fight over spill files.** DuckDB's default spill location is already per-run, but setting a shared spill folder made every run share one - which reads as a flaky run rather than a bug: across three trials of four concurrent spilling queries, a shared folder lost 3 of 12 runs to a segfault or a delete failure, private folders lost 0 of 12. Each run now spills into its own subfolder.
+
+Full notes: see the [v0.5.10 release](https://github.com/slothflowlabs/duckle/releases/tag/v0.5.10).
 
 ---
 

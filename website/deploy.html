@@ -244,8 +244,8 @@
         <p>On <code>127.0.0.1</code> the console is open, because reaching it means already being on the machine. Bind to any other address and it <b>will not start</b> until you pass <code>--token</code>, set <code>DUCKLE_CONSOLE_TOKEN</code>, or create accounts. That is deliberate: a bind that cannot be authenticated should fail rather than serve and warn.</p>
       </div>
       <div class="dep-card">
-        <h4>2. There is no TLS</h4>
-        <p>Duckle speaks plain HTTP on port 8080. Terminate TLS in front of it: an ALB, Application Gateway, a Google load balancer, or an ingress controller. Never expose 8080 to the internet directly.</p>
+        <h4>2. Your proxy terminates TLS</h4>
+        <p>Duckle serves plain HTTP on 8080 and expects something in front of it to hold the certificate, which is how most self-hosted services work: an ALB, Application Gateway, a Google load balancer, or an ingress controller. There is nothing to configure in Duckle for this, and nothing that renews. Keep 8080 off the public internet.</p>
       </div>
       <div class="dep-card">
         <h4>3. The workspace must be persistent</h4>
@@ -266,7 +266,7 @@
 
     <h3 class="dep-h3">Image and ports</h3>
     <pre><code>ghcr.io/slothflowlabs/duckle-web:latest    # runner + DuckDB CLI + editor bundle
-port 8080                                 # plain HTTP, no TLS
+port 8080                                 # plain HTTP, TLS lives in your proxy
 volume /workspace                         # pipelines, state, logs, keys</code></pre>
 
     <h3 class="dep-h3">Environment</h3>

@@ -64,16 +64,16 @@ const PROVIDERS: Record<
     custom: {
         name: 'Custom',
         blurb: 'A machine you run yourself, including this one',
-        runsOn: 'Anywhere you can run one file',
+        runsOn: 'One file, no installer',
         steps: [
-            'Put the runner somewhere you can reach it (button below).',
-            'Start it, pointing at a folder for the workspace.',
-            'Wait for the line that says NOT SET UP.',
+            'Save the runner (below). It comes out of this app, so there is nothing to download.',
+            'Paste the command it gives you into a terminal.',
+            'Wait for the line that says NOT SET UP, then come back here.',
         ],
-        // 0.0.0.0 rather than 127.0.0.1 is the whole trick: a server bound to loopback with
-        // no accounts counts as already yours, answers 410, and can never be claimed.
-        command:
-            'duckle-runner serve --workspace ./duckle-workspace --host 0.0.0.0 --port 8090',
+        // Filled in once the runner is saved, because only then is there a real path to
+        // put in it. Naming `duckle-runner` while the file sits somewhere else is not an
+        // instruction, it is a riddle.
+        command: '',
     },
     aws: {
         name: 'AWS',
@@ -139,19 +139,32 @@ export default function SetupWizard({ workspacePath, onDone }: Props) {
         window.setTimeout(() => setCopied(false), 1600);
     };
 
+    // What to show in the command block. The cloud providers carry a fixed recipe; Custom
+    // has none until the runner is saved, because the command has to name the file that was
+    // actually written and the workspace it should serve.
+    const command = provider === 'custom' ? (runner?.command ?? '') : PROVIDERS[provider].command;
+
     // The runner is not fetched, it is unpacked: both binaries are inside this app, so the
     // one handed over always matches this build and setup works with no network.
     const getRunner = useCallback(async () => {
         setBusy(true);
         setError(null);
         try {
-            setRunner(await runnerStage(provider === 'custom' ? 'native' : 'linux'));
+            // The open workspace is what this server should serve, so the command it hands
+            // back already points at it. A relative ./duckle-workspace would have been a
+            // folder that does not exist, relative to a directory nobody named.
+            setRunner(
+                await runnerStage(
+                    provider === 'custom' ? 'native' : 'linux',
+                    workspacePath || undefined,
+                ),
+            );
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
         } finally {
             setBusy(false);
         }
-    }, [provider]);
+    }, [provider, workspacePath]);
 
     const fail = (e: unknown) => {
         setError(e instanceof Error ? e.message : String(e));
@@ -262,7 +275,11 @@ export default function SetupWizard({ workspacePath, onDone }: Props) {
 
                 {step === 'standup' && (
                     <>
-                        <h2 className="setup-title">Start Duckle on {PROVIDERS[provider].name}</h2>
+                        <h2 className="setup-title">
+                            {provider === 'custom'
+                                ? 'Start a Duckle server'
+                                : `Start Duckle on ${PROVIDERS[provider].name}`}
+                        </h2>
                         <p className="setup-sub">{PROVIDERS[provider].runsOn}. Three steps.</p>
 
                         <ol className="setup-steps">
@@ -280,30 +297,30 @@ export default function SetupWizard({ workspacePath, onDone }: Props) {
                                     type="button"
                                 >
                                     {busy ? <Loader2 size={15} className="spin" /> : null}
-                                    {runner ? 'Put it there again' : 'Put the runner on this machine'}
+                                    {runner ? 'Save it again' : 'Save the runner'}
                                 </button>
                                 {runner ? (
                                     <p className="setup-note">
                                         <Check size={14} />
                                         <span>
-                                            {runner.platform} runner ready at{' '}
-                                            <code>{runner.path}</code>
+                                            {runner.platform} runner saved in{' '}
+                                            <code>{runner.folder}</code>
                                         </span>
                                     </p>
                                 ) : null}
                             </>
                         ) : null}
 
-                        <div className="setup-command">
-                            <pre>{PROVIDERS[provider].command}</pre>
-                            <button
-                                className="setup-alt"
-                                type="button"
-                                onClick={() => copy(PROVIDERS[provider].command)}
-                            >
-                                <Copy size={13} /> {copied ? 'Copied' : 'Copy'}
-                            </button>
-                        </div>
+                        {/* The command only exists for Custom once the runner has been saved,
+                            because until then there is no real path to put in it. */}
+                        {command ? (
+                            <div className="setup-command">
+                                <pre>{command}</pre>
+                                <button className="setup-alt" type="button" onClick={() => copy(command)}>
+                                    <Copy size={13} /> {copied ? 'Copied' : 'Copy'}
+                                </button>
+                            </div>
+                        ) : null}
 
                         {/* One element after the icon, not loose text: .setup-note is a flex
                             row, so every inline <code> would otherwise become its own flex
@@ -311,9 +328,9 @@ export default function SetupWizard({ workspacePath, onDone }: Props) {
                         <p className="setup-note">
                             <ShieldCheck size={14} />
                             <span>
-                                Bind it to <code>0.0.0.0</code>, not <code>127.0.0.1</code>. A
-                                server that only answers on loopback counts as already yours and
-                                cannot be claimed from here.
+                                It binds to <code>0.0.0.0</code> rather than <code>127.0.0.1</code>{' '}
+                                on purpose. A server that only answers on loopback counts as
+                                already yours and cannot be claimed from here.
                             </span>
                         </p>
 

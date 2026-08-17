@@ -897,6 +897,8 @@ export type StagedRunner = {
     path: string;
     platform: string;
     folder: string;
+    /** A ready-to-paste command that starts this exact file. Empty for the Linux runner. */
+    command: string;
 };
 
 /**
@@ -908,9 +910,12 @@ export type StagedRunner = {
  * 'native' is a server on this machine; 'linux' is a cloud VM, which is where every AWS,
  * Azure and Google recipe ends up.
  */
-export async function runnerStage(target: 'native' | 'linux'): Promise<StagedRunner | null> {
+export async function runnerStage(
+    target: 'native' | 'linux',
+    workspacePath?: string,
+): Promise<StagedRunner | null> {
     if (!isTauri()) return null;
-    return await invoke<StagedRunner>('runner_stage', { target });
+    return await invoke<StagedRunner>('runner_stage', { target, workspacePath });
 }
 
 // ---- Plans -------------------------------------------------------------

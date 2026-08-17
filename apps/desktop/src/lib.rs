@@ -716,7 +716,7 @@ async fn schedule_run_now(id: String) -> Result<RunResult, String> {
 
 // ---- Server setup: putting the runner where somebody can start it --------
 
-/// Where the runner was put, and what to do with it.
+/// Where the runner was put, and the command that starts it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StagedRunner {
@@ -726,6 +726,9 @@ struct StagedRunner {
     platform: String,
     /// The folder holding it, for "show me where that is".
     folder: String,
+    /// A command that starts this exact file, ready to paste. Empty for a Linux runner,
+    /// which is going to be uploaded and run somewhere else.
+    command: String,
 }
 
 /// Put a copy of the headless runner somewhere the person setting up a server can reach it.
@@ -735,30 +738,82 @@ struct StagedRunner {
 /// setup hands over a binary that is guaranteed to match this exact build, works with no
 /// network, and cannot be a different thing than what was tested.
 ///
+/// It goes to `<app_data>/server`, NOT a temp file. The first version of this used the
+/// same temp stub the engine uses internally, which meant telling somebody to run their
+/// server from `%TEMP%\duckle-stub-runner-14012375.exe` - a path that is cleaned up behind
+/// them and whose name does not look like a thing you would trust.
+///
 /// `target` is "native" for a server on this machine, or "linux" for a cloud VM, which is
 /// what every AWS, Azure and Google recipe lands on.
 #[tauri::command]
-fn runner_stage(target: String) -> Result<StagedRunner, String> {
-    let (path, platform) = match target.as_str() {
-        "linux" => (staged_linux_stub()?, "Linux x64"),
+fn runner_stage(
+    app: tauri::AppHandle,
+    target: String,
+    workspace_path: Option<String>,
+) -> Result<StagedRunner, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("server");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {}", dir.display(), e))?;
+
+    let (path, platform, runnable) = match target.as_str() {
+        "linux" => {
+            if EMBEDDED_RUNNER_LINUX.is_empty() {
+                return Err(
+                    "This build does not bundle a Linux runner. Use the container image instead."
+                        .into(),
+                );
+            }
+            let p = dir.join("duckle-runner-linux-x64");
+            write_embedded_if_changed(&p, EMBEDDED_RUNNER_LINUX)?;
+            (p, "Linux x64", false)
+        }
         "native" => {
             if EMBEDDED_RUNNER.is_empty() {
                 return Err("This build does not bundle the headless runner".into());
             }
             let suffix = if cfg!(windows) { ".exe" } else { "" };
-            let p = stage_stub_bytes(EMBEDDED_RUNNER, suffix, "runner-")?;
-            (p, if cfg!(windows) { "Windows" } else { "this machine" })
+            let p = dir.join(format!("duckle-runner{suffix}"));
+            write_embedded_if_changed(&p, EMBEDDED_RUNNER)?;
+            (p, if cfg!(windows) { "Windows" } else { "this machine" }, true)
         }
         other => return Err(format!("unknown runner target '{other}'")),
     };
-    let folder = path
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
+
+    // The whole command, with real paths, because the point is that it can be pasted. An
+    // instruction naming `duckle-runner` when the file is somewhere else entirely is not an
+    // instruction, it is a riddle.
+    //
+    // Two lines - change directory, then run `.\name` - rather than one quoted absolute
+    // path, because a quoted path at the start of a line means different things in the two
+    // shells a Windows user might have open. PowerShell, which is what Windows 11 opens by
+    // default, answers `Unexpected token 'serve'`. This form works in PowerShell, in
+    // cmd.exe, and in a POSIX shell unchanged.
+    let command = if runnable {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "duckle-runner".into());
+        let here = if cfg!(windows) { ".\\" } else { "./" };
+        let ws = workspace_path
+            .filter(|w| !w.trim().is_empty())
+            .map(|w| format!(" --workspace {}", shell_quote(&w)))
+            .unwrap_or_default();
+        format!(
+            "cd {}\n{here}{name} serve{ws} --host 0.0.0.0 --port 8090",
+            shell_quote(&dir.to_string_lossy()),
+        )
+    } else {
+        String::new()
+    };
+
     Ok(StagedRunner {
         path: path.to_string_lossy().into_owned(),
         platform: platform.to_string(),
-        folder,
+        folder: dir.to_string_lossy().into_owned(),
+        command,
     })
 }
 

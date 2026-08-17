@@ -820,13 +820,22 @@ async function redriveBatch(id, btn){
 let PLAN_DRAFT = null;
 let PIPELINE_CHOICES = [];
 
+// A plan's schedule is keyed under this rather than the plan id, because the schedule store
+// is keyed by pipeline and a plan named `orders` would otherwise take over the schedule of
+// a pipeline named `orders`.
+function planScheduleKey(id){ return 'plan:'+id; }
+
+let PLAN_SCHEDULES = {};
+
 async function loadPlans(){
   try{
-    const [p, pl] = await Promise.all([
+    const [p, pl, sc] = await Promise.all([
       fetch('/api/plans').then(r=>r.json()),
-      fetch('/api/pipelines').then(r=>r.json()).catch(()=>({pipelines:[]}))
+      fetch('/api/pipelines').then(r=>r.json()).catch(()=>({pipelines:[]})),
+      fetch('/api/schedules').then(r=>r.json()).catch(()=>({}))
     ]);
     PIPELINE_CHOICES = (pl.pipelines||[]).map(x=> x.file || x.id || x).filter(Boolean);
+    PLAN_SCHEDULES = sc && !sc.error ? sc : {};
     const box=$('plans-list'); box.innerHTML='';
     const plans = p.plans||[];
     if(!plans.length){
@@ -884,10 +893,64 @@ function planCard(plan){
     chain.append(b);
   });
   card.append(chain);
+  card.append(planSchedule(plan));
   const out=document.createElement('div'); out.className='muted'; out.style.marginTop='10px';
   out.id='plan-out-'+plan.id;
   card.append(out);
   return card;
+}
+
+// When the plan runs on its own, on the card that shows what it runs.
+//
+// Not in the Schedules tab: that is a row per pipeline, and a plan is not one. Putting the
+// clock next to the chain also answers the question people actually have when they look at
+// a plan, which is whether anything is going to run it.
+function planSchedule(plan){
+  const sc = PLAN_SCHEDULES[planScheduleKey(plan.id)] || {};
+  const every = splitEvery(sc.intervalSeconds||0);
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px;'
+    +'padding-top:12px;border-top:1px solid var(--line,#262f42)';
+
+  const on=document.createElement('label'); on.className='muted';
+  on.style.cssText='display:inline-flex;gap:6px;align-items:center';
+  const chk=document.createElement('input'); chk.type='checkbox'; chk.checked=!!sc.enabled;
+  chk.id='plan-en-'+plan.id;
+  on.append(chk, document.createTextNode('run this plan every'));
+
+  const num=document.createElement('input'); num.type='number'; num.min='0';
+  num.id='plan-iv-'+plan.id; num.value=every.value; num.style.width='72px';
+  const unit=document.createElement('select'); unit.id='plan-iu-'+plan.id;
+  for(const u of ['seconds','minutes','hours','days']){
+    const o=document.createElement('option'); o.value=u; o.textContent=u;
+    if(every.unit===u) o.selected=true;
+    unit.append(o);
+  }
+  const orCron=document.createElement('span'); orCron.className='muted'; orCron.textContent='or cron';
+  const cron=document.createElement('input'); cron.type='text'; cron.id='plan-cr-'+plan.id;
+  cron.value=sc.cron||''; cron.placeholder='0 2 * * *'; cron.style.width='104px';
+  cron.title='5-field cron in local time (min hour day-of-month month day-of-week); overrides the interval when set';
+
+  const save=document.createElement('button'); save.className='btn'; save.textContent='Save schedule';
+  save.onclick=()=>savePlanSchedule(plan.id, save);
+
+  row.append(on,num,unit,orCron,cron,save);
+  return row;
+}
+
+async function savePlanSchedule(id, btn){
+  const cron=($('plan-cr-'+id).value||'').trim();
+  const enabled=$('plan-en-'+id).checked;
+  const intervalSeconds=joinEvery(parseInt($('plan-iv-'+id).value||'0',10), $('plan-iu-'+id).value);
+  if(btn){ btn.disabled=true; }
+  try{
+    const r=await api('/api/schedules',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:planScheduleKey(id), planId:id, enabled, intervalSeconds, cron})});
+    if(r&&r.error){ toast(r.error,'err'); return; }
+    toast(enabled?('Plan '+id+' is scheduled'):('Schedule saved, switched off'),'ok');
+    loadPlans();
+  }catch(e){ toast('Could not save the schedule: '+e.message,'err'); }
+  finally{ if(btn) btn.disabled=false; }
 }
 
 function newPlan(){

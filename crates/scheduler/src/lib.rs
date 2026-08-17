@@ -9,7 +9,7 @@
 use chrono::{DateTime, Local, Utc};
 use cron::Schedule as CronSchedule;
 use duckle_duckdb_engine::{
-    append_run_record, runlock, schedules, DuckdbEngine, RunRecord, RunResult,
+    append_run_record, plans, runlock, schedules, DuckdbEngine, RunRecord, RunResult,
 };
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
@@ -67,7 +67,7 @@ struct SchedulerInner {
     fire_rx: Option<UnboundedReceiver<String>>,
 }
 
-/// What a schedule locks when it fires.
+/// What a schedule locks when it fires, if any one thing.
 ///
 /// The pipeline, not the schedule record. The pipeline owns the sink and the
 /// `xf.incremental` watermark, so it is the thing that must not run twice: two
@@ -76,8 +76,42 @@ struct SchedulerInner {
 /// lock to work across products, because the web console identifies a schedule
 /// by its pipeline while this crate mints a uuid, so a record-keyed lock would
 /// have the two naming different files and guarding nothing.
-fn lock_key(s: &Schedule) -> &str {
-    &s.pipeline_id
+///
+/// A schedule that fires a plan locks nothing here, and each pipeline in the plan takes its
+/// own lock as it comes up instead. Locking `pipeline_id` for a plan would be worse than
+/// useless: that field is a label on a plan schedule, so the lock would guard a file the
+/// plan never opens and leave every file it does open unguarded.
+fn lock_key(s: &Schedule) -> Option<&str> {
+    match s.plan_id {
+        Some(_) => None,
+        None => Some(&s.pipeline_id),
+    }
+}
+
+/// What a schedule actually runs, as a plan.
+///
+/// A schedule naming one pipeline is a plan of one step with one pipeline in it. Saying so
+/// here rather than branching at the fire site means there is one execution path instead of
+/// two, and the two cannot drift the way the console's and this one's already did.
+fn work_of(workspace: &Path, s: &Schedule) -> Result<plans::Plan, String> {
+    let Some(plan_id) = s.plan_id.as_deref() else {
+        return Ok(plans::Plan {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            stop_on_failure: true,
+            steps: vec![plans::Step {
+                name: s.name.clone(),
+                pipelines: vec![s.pipeline_id.clone()],
+            }],
+        });
+    };
+    plans::load(workspace)?
+        .into_iter()
+        .find(|p| p.id == plan_id)
+        // Named, not silent. A schedule pointing at a plan somebody deleted is the same
+        // failure as one pointing at a deleted pipeline, and gets the same treatment: it
+        // reports a failed run rather than doing nothing every night.
+        .ok_or_else(|| format!("This schedule runs the plan '{plan_id}', which no longer exists"))
 }
 
 /// The answer to "may this process run that schedule right now?".
@@ -119,6 +153,42 @@ fn claim_run(workspace: Option<&Path>, pipeline_id: &str) -> Claim {
             runlock::AcquireOutcome::HeldByOther => Claim::Taken,
             runlock::AcquireOutcome::Unusable(e) => Claim::Unusable(e.to_string()),
         },
+    }
+}
+
+/// Resolve and run one pipeline the way a schedule does, and block until it is done.
+///
+/// The same preparation `run_now` does for a single pipeline: workspace context, the
+/// date/time builtins, saved connection refs, then the environment. A plan runs its
+/// pipelines through this so a pipeline behaves identically whether a plan ran it or a
+/// schedule of its own did.
+fn run_one_blocking(
+    engine: &DuckdbEngine,
+    workspace: &Path,
+    pipeline_id: &str,
+) -> Result<RunResult, String> {
+    let mut pipeline =
+        duckle_duckdb_engine::context::resolve_workspace(workspace, pipeline_id, None)?.doc;
+    duckle_duckdb_engine::context::apply_time_builtins(&mut pipeline);
+    duckle_secrets::resolve_connection_refs(workspace, &mut pipeline.nodes)?;
+    duckle_duckdb_engine::context::apply_env(&mut pipeline);
+    // A fresh cancel scope per pipeline, so one step of a plan cannot cancel the next.
+    Ok(engine.for_new_run().execute_pipeline_named(&pipeline, pipeline_id))
+}
+
+/// A run that never started, as a result.
+///
+/// A pipeline whose file has been renamed fails before the engine sees it, and that is
+/// still a failed run: it took time and it did not work. Shaping it like one keeps it out
+/// of the gap where a broken schedule reads as a schedule that never fired.
+fn failed_run(started: DateTime<Utc>, error: &str) -> RunResult {
+    RunResult {
+        status: "error".into(),
+        duration_ms: Utc::now().signed_duration_since(started).num_milliseconds().max(0) as u64,
+        nodes: Default::default(),
+        preview: Vec::new(),
+        category: Some(duckle_duckdb_engine::error_category::categorize_error(error).to_string()),
+        error: Some(error.to_string()),
     }
 }
 
@@ -282,6 +352,12 @@ impl Scheduler {
                     next.last_run_status = prev.last_run_status.clone();
                     next.last_run_duration_ms = prev.last_run_duration_ms;
                     next.last_run_error = prev.last_run_error.clone();
+                    // The plan a schedule runs is kept for the same reason, and it matters
+                    // more: an editor with no plan field sends "no plan" for a schedule that
+                    // has one, and believing it would leave the schedule pointed at the
+                    // label in its pipeline_id, which is not a file. Clearing a plan is done
+                    // by naming a pipeline instead, not by saying nothing.
+                    next.plan_id = next.plan_id.or_else(|| prev.plan_id.clone());
                     list[idx] = next;
                 }
                 None => list.push(saved),
@@ -337,20 +413,29 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Execute a schedule's pipeline right now, regardless of its
-    /// timing. Updates last-run bookkeeping on completion.
+    /// Execute what a schedule runs right now, regardless of its timing.
+    /// Updates last-run bookkeeping on completion.
+    ///
+    /// That is one pipeline for most schedules and a whole plan for one that names one.
     pub async fn run_now(&self, id: &str) -> Result<RunResult, String> {
-        let (workspace, pipeline_id) = {
+        let (workspace, sched) = {
             let g = self.inner.lock().expect("scheduler poisoned");
             let s = g
                 .schedules
                 .iter()
                 .find(|s| s.id == id)
                 .ok_or_else(|| "Schedule not found".to_string())?;
-            (g.workspace_path.clone(), s.pipeline_id.clone())
+            (g.workspace_path.clone(), s.clone())
         };
         let workspace =
             workspace.ok_or_else(|| "No workspace set for the scheduler".to_string())?;
+        if sched.plan_id.is_some() {
+            let started = Utc::now();
+            let result = self.run_plan(&workspace, &sched).await?;
+            self.record_run(id, started, &result);
+            return Ok(result);
+        }
+        let pipeline_id = sched.pipeline_id.clone();
         // Resolve workspace context exactly like the canvas and the runner do:
         // substitute ${var} / ${context.var} (e.g. a context-based DB password),
         // inline SQL routines, and rewrite child-pipeline refs. Without this a
@@ -388,6 +473,84 @@ impl Scheduler {
         Ok(result)
     }
 
+    /// Run the plan a schedule names, one pipeline at a time.
+    ///
+    /// Each pipeline goes through the ordinary single-pipeline path, so run history names
+    /// the pipeline that failed rather than the plan around it: at three in the morning the
+    /// question is which step broke, and a plan-shaped record cannot answer it.
+    ///
+    /// Locking is per pipeline and taken here, as each one comes up, because that is the
+    /// thing another process might also be running. A plan holding every one of its
+    /// pipelines for its whole duration would block a colleague's unrelated run for as long
+    /// as the slowest step.
+    async fn run_plan(&self, workspace: &Path, sched: &Schedule) -> Result<RunResult, String> {
+        let plan = work_of(workspace, sched)?;
+        let started = Utc::now();
+        let mut outcomes: Vec<(String, RunResult)> = Vec::new();
+
+        let run = plans::execute(&plan, |pipeline| {
+            // A lock this process cannot take means somebody else is running that pipeline
+            // now. Treated as a failure of the step rather than a skip, because carrying on
+            // to the next step would run it against data this one did not produce.
+            let _claim = match claim_run(Some(workspace), pipeline) {
+                Claim::Ours(lock) => lock,
+                Claim::Taken => {
+                    return Err(format!("{pipeline} is already running in another process"))
+                }
+                Claim::Unusable(why) => {
+                    return Err(format!("Cannot take a run lock for {pipeline}: {why}"))
+                }
+            };
+            let result = run_one_blocking(&self.engine, workspace, pipeline);
+            let answer = match &result {
+                Ok(r) if r.status == "error" => {
+                    Err(r.error.clone().unwrap_or_else(|| "the run failed".into()))
+                }
+                Ok(_) => Ok(()),
+                Err(e) => Err(e.clone()),
+            };
+            // Every pipeline gets its own history entry and its own alert, exactly as it
+            // would under a schedule of its own. Whoever watches a pipeline does not have
+            // to know it was a plan that ran it.
+            let record = match result {
+                Ok(r) => r,
+                Err(e) => failed_run(started, &e),
+            };
+            duckle_duckdb_engine::alerts::notify(workspace, pipeline, &record);
+            let _ = append_run_record(
+                workspace,
+                pipeline,
+                RunRecord::from_result_in(workspace, pipeline, &record, "scheduled"),
+            );
+            outcomes.push((pipeline.to_string(), record));
+            answer
+        });
+
+        // One aggregate result for the schedule itself, so the Schedules view shows a plan
+        // going green or red like anything else. The detail is in the per-pipeline history
+        // written above; what belongs here is which pipelines did not work.
+        let broken: Vec<String> = run
+            .steps
+            .iter()
+            .flat_map(|s| s.pipelines.iter())
+            .filter(|p| p.status != "ok")
+            .map(|p| match &p.error {
+                Some(e) => format!("{}: {e}", p.pipeline),
+                None => format!("{} was skipped after an earlier failure", p.pipeline),
+            })
+            .collect();
+        let elapsed = Utc::now().signed_duration_since(started).num_milliseconds().max(0) as u64;
+        Ok(RunResult {
+            status: if run.failed() { "error".into() } else { "success".into() },
+            duration_ms: elapsed,
+            nodes: Default::default(),
+            preview: Vec::new(),
+            category: outcomes.iter().find_map(|(_, r)| r.category.clone()),
+            error: (!broken.is_empty())
+                .then(|| format!("Plan '{}' - {}", plan.id, broken.join("; "))),
+        })
+    }
+
     /// Fire a schedule and make sure the outcome is recorded whichever way it
     /// goes.
     ///
@@ -422,7 +585,15 @@ impl Scheduler {
 
     fn record_run(&self, id: &str, started: DateTime<Utc>, result: &RunResult) {
         let mut g = self.inner.lock().expect("scheduler poisoned");
-        let pipeline_id = g.schedules.iter().find(|s| s.id == id).map(|s| s.pipeline_id.clone());
+        // A plan schedule has no run history of its own: `run_plan` already wrote one entry
+        // per pipeline it actually ran, and adding another under the schedule's label would
+        // put a run in the history of a pipeline that never executed.
+        let pipeline_id = g
+            .schedules
+            .iter()
+            .find(|s| s.id == id)
+            .filter(|s| s.plan_id.is_none())
+            .map(|s| s.pipeline_id.clone());
         let (sid, status, duration, error) =
             (id.to_string(), result.status.clone(), result.duration_ms, result.error.clone());
         let saved = self.commit(&mut g, move |list| {
@@ -493,31 +664,35 @@ impl Scheduler {
                                 .schedules
                                 .iter()
                                 .find(|s| s.id == id)
-                                .map(|s| lock_key(s).to_string());
+                                .and_then(|s| lock_key(s).map(str::to_string));
                             (g.workspace_path.clone(), pipeline_id)
                         };
-                        // A schedule that vanished between the file event and
-                        // here has nothing to lock; run_now reports it missing.
-                        let key = pipeline_id.unwrap_or_else(|| id.clone());
-                        let _claim = match claim_run(workspace.as_deref(), &key) {
-                            Claim::Ours(lock) => lock,
-                            Claim::Taken => {
-                                warn!(
-                                    "Pipeline {} is already running in another process; \
-                                     skipping the file-watch fire of {}",
-                                    key, id
-                                );
-                                return;
-                            }
-                            Claim::Unusable(why) => {
-                                warn!(
-                                    "Cannot take a run lock for {} in this workspace, so the \
-                                     file-watch fire of {} was skipped: {}. This will not clear \
-                                     on its own.",
-                                    key, id, why
-                                );
-                                return;
-                            }
+                        // Nothing to lock in two cases, and neither wants one. A plan locks
+                        // each of its pipelines as it reaches them; a schedule that vanished
+                        // between the file event and here has no pipeline at all, and
+                        // run_now reports it missing.
+                        let _claim = match &pipeline_id {
+                            None => None,
+                            Some(key) => match claim_run(workspace.as_deref(), key) {
+                                Claim::Ours(lock) => lock,
+                                Claim::Taken => {
+                                    warn!(
+                                        "Pipeline {} is already running in another process; \
+                                         skipping the file-watch fire of {}",
+                                        key, id
+                                    );
+                                    return;
+                                }
+                                Claim::Unusable(why) => {
+                                    warn!(
+                                        "Cannot take a run lock for {} in this workspace, so the \
+                                         file-watch fire of {} was skipped: {}. This will not \
+                                         clear on its own.",
+                                        key, id, why
+                                    );
+                                    return;
+                                }
+                            },
                         };
                         me2.fire_and_record(&id, "File-watch").await;
                     });
@@ -534,13 +709,13 @@ impl Scheduler {
     ///
     /// Returns each due schedule's id alongside its pipeline id, because the
     /// schedule is what came due but the pipeline is what gets locked.
-    fn claim_due(&self, now: DateTime<Utc>) -> Vec<(String, String)> {
+    fn claim_due(&self, now: DateTime<Utc>) -> Vec<(String, Option<String>)> {
         let mut g = self.inner.lock().expect("scheduler poisoned");
-        let due: Vec<(String, String)> = g
+        let due: Vec<(String, Option<String>)> = g
             .schedules
             .iter()
             .filter(|s| s.enabled && matches!(s.next_run_at, Some(t) if t <= now))
-            .map(|s| (s.id.clone(), lock_key(s).to_string()))
+            .map(|s| (s.id.clone(), lock_key(s).map(str::to_string)))
             .collect();
             // Claim the occurrence immediately, under the lock, by advancing
             // next_run_at to the next FUTURE time. The tick wakes every 15s and
@@ -603,24 +778,30 @@ impl Scheduler {
                 // clash rather than queueing is deliberate: the next tick comes
                 // round anyway, and a backlog of identical overdue runs helps
                 // nobody.
-                let _claim = match claim_run(workspace.as_deref(), &pipeline_id) {
-                    Claim::Ours(lock) => lock,
-                    Claim::Taken => {
-                        warn!(
-                            "Pipeline {} is already running in another process; \
-                             skipping schedule {} this tick",
-                            pipeline_id, id
-                        );
-                        return;
-                    }
-                    Claim::Unusable(why) => {
-                        warn!(
-                            "Cannot take a run lock for {} in this workspace, so schedule {} was \
-                             skipped: {}. Every tick will skip it until this is fixed.",
-                            pipeline_id, id, why
-                        );
-                        return;
-                    }
+                //
+                // No key means a plan, which locks each of its pipelines itself as it
+                // reaches them. See `lock_key`.
+                let _claim = match &pipeline_id {
+                    None => None,
+                    Some(pipeline_id) => match claim_run(workspace.as_deref(), pipeline_id) {
+                        Claim::Ours(lock) => lock,
+                        Claim::Taken => {
+                            warn!(
+                                "Pipeline {} is already running in another process; \
+                                 skipping schedule {} this tick",
+                                pipeline_id, id
+                            );
+                            return;
+                        }
+                        Claim::Unusable(why) => {
+                            warn!(
+                                "Cannot take a run lock for {} in this workspace, so schedule {} \
+                                 was skipped: {}. Every tick will skip it until this is fixed.",
+                                pipeline_id, id, why
+                            );
+                            return;
+                        }
+                    },
                 };
                 me.fire_and_record(&id, "Scheduled").await;
             });
@@ -722,6 +903,7 @@ mod tests {
         let mut s = Schedule {
             id: "t".into(),
             pipeline_id: "p1".into(),
+            plan_id: None,
             name: "every minute".into(),
             enabled: true,
             kind: ScheduleKind::Cron {
@@ -747,6 +929,7 @@ mod tests {
         let mut s = Schedule {
             id: "t".into(),
             pipeline_id: "p1".into(),
+            plan_id: None,
             name: "daily 3am".into(),
             enabled: true,
             kind: ScheduleKind::Cron {
@@ -773,6 +956,7 @@ mod tests {
         let mut s = Schedule {
             id: "t".into(),
             pipeline_id: "p1".into(),
+            plan_id: None,
             name: "daily 3am".into(),
             enabled: true,
             kind: ScheduleKind::Cron {
@@ -797,6 +981,7 @@ mod tests {
         let mut s = Schedule {
             id: "t".into(),
             pipeline_id: "p1".into(),
+            plan_id: None,
             name: "daily 3am, 5-field".into(),
             enabled: true,
             kind: ScheduleKind::Cron {
@@ -828,6 +1013,7 @@ mod tests {
         let mut s = Schedule {
             id: "t".into(),
             pipeline_id: "p1".into(),
+            plan_id: None,
             name: "every 5".into(),
             enabled: true,
             kind: ScheduleKind::Interval { seconds: 300 },
@@ -849,6 +1035,7 @@ mod tests {
         let mut s = Schedule {
             id: "t".into(),
             pipeline_id: "p1".into(),
+            plan_id: None,
             name: "off".into(),
             enabled: false,
             kind: ScheduleKind::Interval { seconds: 60 },
@@ -882,6 +1069,7 @@ mod tests {
             .upsert(Schedule {
                 id: String::new(),
                 pipeline_id: "nightly-load".into(),
+                plan_id: None,
                 name: "every second".into(),
                 enabled: true,
                 // Six fields, so the leading one is seconds: due almost at once.
@@ -922,7 +1110,15 @@ mod tests {
         // Keys come from lock_key, the same function both fire paths use, so a
         // change of mind about what gets locked fails here rather than shipping.
         let key = |s: &Scheduler, id: &str| -> String {
-            lock_key(s.list().expect("schedules unreadable").iter().find(|x| x.id == id).expect("schedule vanished")).to_string()
+            lock_key(
+                s.list()
+                    .expect("schedules unreadable")
+                    .iter()
+                    .find(|x| x.id == id)
+                    .expect("schedule vanished"),
+            )
+            .expect("a single-pipeline schedule locks that pipeline")
+            .to_string()
         };
         let held = key(&desktop, &a[0]);
         let first = match claim_run(Some(&ws), &held) {
@@ -967,6 +1163,7 @@ mod tests {
             .upsert(Schedule {
                 id: String::new(),
                 pipeline_id: "nightly-load".into(),
+                plan_id: None,
                 name: "nightly".into(),
                 enabled: true,
                 kind: ScheduleKind::Interval { seconds: 3600 },
@@ -1006,6 +1203,7 @@ mod tests {
             .upsert(Schedule {
                 id: String::new(),
                 pipeline_id: "nightly-load".into(),
+                plan_id: None,
                 name: "nightly".into(),
                 enabled: true,
                 kind: ScheduleKind::Interval { seconds: 3600 },
@@ -1062,6 +1260,7 @@ mod tests {
         let mut due_now = Schedule {
             id: String::new(),
             pipeline_id: "nightly-load".into(),
+            plan_id: None,
             name: "nightly".into(),
             enabled: true,
             kind: ScheduleKind::Interval { seconds: 3600 },
@@ -1127,6 +1326,7 @@ mod tests {
                 // No such file in the workspace: this is the pipeline someone
                 // renamed without touching the schedule that points at it.
                 pipeline_id: "nightly-load".into(),
+                plan_id: None,
                 name: "nightly".into(),
                 enabled: true,
                 kind: ScheduleKind::Interval { seconds: 3600 },
@@ -1168,5 +1368,129 @@ mod tests {
             last["error"].as_str().unwrap_or("").contains("nightly-load"),
             "the record does not say which pipeline could not be loaded: {last}"
         );
+    }
+
+    fn plan_schedule(plan: &str) -> Schedule {
+        Schedule {
+            id: "s".into(),
+            // Deliberately a real-looking pipeline id. A schedule that fires a plan still
+            // carries one, and the bug this guards against is firing it.
+            pipeline_id: "not-the-plan".into(),
+            plan_id: Some(plan.into()),
+            name: "nightly".into(),
+            enabled: true,
+            kind: ScheduleKind::Interval { seconds: 3600 },
+            last_run_at: None,
+            last_run_status: None,
+            last_run_duration_ms: None,
+            last_run_error: None,
+            next_run_at: None,
+        }
+    }
+
+    fn write_plan(ws: &Path) {
+        let plan = plans::Plan {
+            id: "nightly".into(),
+            name: "Nightly load".into(),
+            stop_on_failure: true,
+            steps: vec![
+                plans::Step {
+                    name: "Extract".into(),
+                    pipelines: vec!["orders.json".into(), "customers.json".into()],
+                },
+                plans::Step { name: "Publish".into(), pipelines: vec!["export.json".into()] },
+            ],
+        };
+        plans::update(ws, |list| list.push(plan)).unwrap();
+    }
+
+    /// The whole point of a plan schedule, and the thing the desktop scheduler did not do.
+    ///
+    /// The console learned to fire a plan; this crate is the scheduler the desktop app runs,
+    /// against the same `schedules.json`. Until it agreed, one workspace opened in both
+    /// products meant the same record fired a plan in one and a single pipeline in the
+    /// other, which is the shape of the timezone disagreement in issue #194 all over again.
+    #[test]
+    fn a_schedule_that_names_a_plan_runs_the_plan_and_not_its_pipeline_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_plan(ws);
+
+        let work = work_of(ws, &plan_schedule("nightly")).expect("the plan should be found");
+        let order: Vec<&str> =
+            work.steps.iter().flat_map(|s| s.pipelines.iter()).map(String::as_str).collect();
+
+        assert_eq!(order, ["orders.json", "customers.json", "export.json"]);
+        assert!(
+            !order.contains(&"not-the-plan"),
+            "the schedule's own pipeline_id must not run: it is a label, not the work"
+        );
+        assert_eq!(work.steps.len(), 2, "the steps are what makes a plan a plan, not a list");
+    }
+
+    /// Every schedule written before plans existed still means one pipeline.
+    #[test]
+    fn a_schedule_without_a_plan_is_that_one_pipeline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let mut s = plan_schedule("nightly");
+        s.plan_id = None;
+
+        let work = work_of(ws, &s).expect("a plain schedule needs no store");
+        assert_eq!(work.steps.len(), 1);
+        assert_eq!(work.steps[0].pipelines, ["not-the-plan"]);
+    }
+
+    /// A schedule pointing at a plan somebody deleted has to say so, the same way one
+    /// pointing at a deleted pipeline does. Doing nothing quietly is how a nightly load
+    /// stops running for a week before anyone notices.
+    #[test]
+    fn a_schedule_naming_a_plan_that_is_gone_fails_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write_plan(ws);
+
+        let e = work_of(ws, &plan_schedule("weekly")).expect_err("a missing plan is not a no-op");
+        assert!(e.contains("weekly"), "the error does not name the plan: {e}");
+    }
+
+    /// The desktop schedule editor has no plan field, so everything it saves says "no plan".
+    /// Taking that at face value turns a plan schedule into a schedule for the label in its
+    /// `pipeline_id`, which is not a pipeline: changing the interval of a nightly plan from
+    /// the desktop app would quietly stop the plan from ever running again.
+    #[test]
+    fn editing_a_plan_schedule_from_an_editor_that_has_no_plan_field_keeps_the_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        let sched = Scheduler::new(DuckdbEngine::new(PathBuf::from("duckdb")));
+        sched.set_workspace(Some(ws.clone()));
+
+        let mut saved = sched.upsert(plan_schedule("nightly")).expect("schedule rejected");
+        assert_eq!(saved.plan_id.as_deref(), Some("nightly"));
+
+        // What the desktop editor sends back after somebody changes the interval.
+        saved.plan_id = None;
+        saved.kind = ScheduleKind::Interval { seconds: 900 };
+        sched.upsert(saved.clone()).expect("the edit was refused");
+
+        let after = schedules::load(&ws).unwrap();
+        let stored = after.iter().find(|s| s.id == saved.id).expect("schedule vanished");
+        assert_eq!(
+            stored.plan_id.as_deref(),
+            Some("nightly"),
+            "the edit dropped the plan this schedule runs"
+        );
+        assert!(matches!(stored.kind, ScheduleKind::Interval { seconds: 900 }));
+    }
+
+    /// A plan schedule locks nothing up front, because it is not one pipeline. Each pipeline
+    /// takes its own lock as it comes up. Locking `pipeline_id` here would guard a file the
+    /// plan never touches while leaving the ones it does touch open to a second process.
+    #[test]
+    fn a_plan_schedule_does_not_lock_a_pipeline_it_will_not_run() {
+        assert_eq!(lock_key(&plan_schedule("nightly")), None);
+        let mut plain = plan_schedule("nightly");
+        plain.plan_id = None;
+        assert_eq!(lock_key(&plain), Some("not-the-plan"));
     }
 }

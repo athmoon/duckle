@@ -60,6 +60,7 @@ async fn run_now_executes_pipeline_from_disk_and_records_history() {
         .upsert(Schedule {
             id: String::new(),
             pipeline_id: "pipe1".into(),
+            plan_id: None,
             name: "nightly".into(),
             enabled: true,
             kind: ScheduleKind::Interval { seconds: 3600 },

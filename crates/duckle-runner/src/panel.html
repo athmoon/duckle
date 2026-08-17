@@ -149,6 +149,7 @@
     <button data-tab="overview" class="active"><span class="ico">▦</span> Overview</button>
     <button data-tab="runs"><span class="ico">≡</span> Runs</button>
     <button data-tab="schedules"><span class="ico">◷</span> Schedules</button>
+    <button data-tab="plans"><span class="ico">⛓</span> Plans</button>
     <button data-tab="catalog"><span class="ico">◈</span> Catalog</button>
     <button data-tab="batches"><span class="ico">▤</span> Batches</button>
     <button data-tab="people" id="nav-people" class="hidden"><span class="ico">◍</span> People</button>
@@ -269,6 +270,37 @@
       </div>
       <div id="batch-empty" class="empty hidden"><div class="big">▤</div>No batches queued.</div>
       <div id="batch-detail" style="margin-top:16px"></div>
+    </section>
+
+    <section id="tab-plans" class="hidden">
+      <div class="sub" style="margin-bottom:14px">
+        A schedule runs one pipeline. A plan runs several, in steps: everything in a step
+        goes at once, and the next step waits for it. A step that fails stops the ones
+        after it, so nothing runs against data that was never produced.
+      </div>
+      <div class="toolbar">
+        <button class="btn" onclick="newPlan()">New plan</button>
+        <button class="btn" onclick="loadPlans()">Refresh</button>
+      </div>
+      <div id="plans-list"></div>
+
+      <div id="plan-editor" class="card hidden" style="margin-top:16px">
+        <h3 style="margin:0 0 12px" id="plan-editor-title">New plan</h3>
+        <div class="toolbar">
+          <input type="text" id="plan-id" placeholder="id, e.g. nightly" style="width:170px">
+          <input type="text" id="plan-name" placeholder="What it is for" style="width:230px">
+          <label class="muted" style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="plan-stop" checked> stop if a step fails
+          </label>
+        </div>
+        <div id="plan-steps"></div>
+        <div class="toolbar" style="margin-top:12px">
+          <button class="btn" onclick="addStep()">Add step</button>
+          <span class="spacer"></span>
+          <button class="btn" onclick="cancelPlan()">Cancel</button>
+          <button class="btn" onclick="savePlan()">Save plan</button>
+        </div>
+      </div>
     </section>
 
     <section id="tab-people" class="hidden">
@@ -433,16 +465,18 @@ const TITLES={overview:['Overview','Pipelines grouped by job, with their latest 
   schedules:['Schedules','Run a pipeline on an interval. The console runs schedules itself while it is open.'],
   catalog:['Catalog','What this workspace reads and writes, and who owns it.'],
   batches:['Batches','Queued work, and how far the workers have got.'],
+  plans:['Plans','Several pipelines, in an order you chose.'],
   people:['People','Who may use this console, and which machines may.'],
   audit:['Audit','Who did what through this console, and who was turned away.']};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
   const tab=b.dataset.tab;
-  for(const t of ['overview','runs','schedules','catalog','batches','people','audit']) $('tab-'+t).classList.toggle('hidden', t!==tab);
+  for(const t of ['overview','runs','schedules','plans','catalog','batches','people','audit']) $('tab-'+t).classList.toggle('hidden', t!==tab);
   $('page-title').textContent=TITLES[tab][0]; $('page-sub').textContent=TITLES[tab][1];
   if(tab==='runs') renderRuns(); if(tab==='schedules') renderSchedules();
   if(tab==='catalog') loadCatalog();
   if(tab==='batches') loadBatches();
+  if(tab==='plans') loadPlans();
   if(tab==='people') loadPeople();
   if(tab==='audit') loadAudit();
 });
@@ -779,6 +813,193 @@ async function redriveBatch(id, btn){
 // ── Audit ──
 // Loaded on demand and never on the poll: this is a file that only grows, and
 // a 5s refresh of it would be the most expensive thing the console does.
+// ── Plans ──
+// A plan is steps, and a step is pipelines. The editor is that, and nothing more: the
+// model is already a list, so drawing a graph editor for it would add pictures without
+// adding meaning.
+let PLAN_DRAFT = null;
+let PIPELINE_CHOICES = [];
+
+async function loadPlans(){
+  try{
+    const [p, pl] = await Promise.all([
+      fetch('/api/plans').then(r=>r.json()),
+      fetch('/api/pipelines').then(r=>r.json()).catch(()=>({pipelines:[]}))
+    ]);
+    PIPELINE_CHOICES = (pl.pipelines||[]).map(x=> x.file || x.id || x).filter(Boolean);
+    const box=$('plans-list'); box.innerHTML='';
+    const plans = p.plans||[];
+    if(!plans.length){
+      const empty=document.createElement('div'); empty.className='empty';
+      empty.textContent='No plans yet. A plan is worth writing down when two pipelines have to run in a particular order.';
+      box.append(empty); return;
+    }
+    for(const plan of plans) box.append(planCard(plan));
+  }catch(e){ toast('Could not load plans: '+e.message,'err'); }
+}
+
+function planCard(plan){
+  const card=document.createElement('div'); card.className='card'; card.style.marginBottom='12px';
+  // Not .job-head: that is the seven-column grid the overview table uses, and putting a
+  // two-part header in it squashes the title into one narrow column.
+  const head=document.createElement('div');
+  head.style.cssText='display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap';
+  const title=document.createElement('div'); title.style.minWidth='0';
+  const h=document.createElement('div'); h.className='job-name'; h.textContent=plan.name||plan.id;
+  const sub=document.createElement('div'); sub.className='muted';
+  sub.textContent=plan.id+' - '+plan.steps.length+' step'+(plan.steps.length===1?'':'s')
+    +(plan.stopOnFailure?', stops on failure':', carries on past failure');
+  title.append(h,sub);
+  const acts=document.createElement('div'); acts.className='toolbar';
+  const run=document.createElement('button'); run.className='btn'; run.textContent='Run now';
+  run.onclick=()=>runPlan(plan.id, run);
+  const edit=document.createElement('button'); edit.className='btn'; edit.textContent='Edit';
+  edit.onclick=()=>editPlan(plan);
+  const del=document.createElement('button'); del.className='btn'; del.textContent='Delete';
+  del.onclick=()=>deletePlan(plan.id);
+  acts.append(run,edit,del);
+  head.append(title,acts); card.append(head);
+
+  // The steps, drawn as the chain they are: what runs together, and what waits.
+  const chain=document.createElement('div');
+  chain.style.cssText='display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin-top:12px';
+  plan.steps.forEach((step,i)=>{
+    if(i){
+      const arrow=document.createElement('div');
+      arrow.className='muted';
+      arrow.style.cssText='display:flex;align-items:center;padding:0 2px';
+      arrow.textContent='→';
+      chain.append(arrow);
+    }
+    const b=document.createElement('div');
+    b.style.cssText='border:1px solid var(--line,#262f42);border-radius:8px;padding:8px 12px;min-width:130px';
+    const n=document.createElement('div'); n.className='muted';
+    n.style.cssText='font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px';
+    n.textContent=step.name||('Step '+(i+1));
+    b.append(n);
+    for(const pipe of step.pipelines){
+      const row=document.createElement('div'); row.style.fontSize='12.5px'; row.textContent=pipe;
+      b.append(row);
+    }
+    chain.append(b);
+  });
+  card.append(chain);
+  const out=document.createElement('div'); out.className='muted'; out.style.marginTop='10px';
+  out.id='plan-out-'+plan.id;
+  card.append(out);
+  return card;
+}
+
+function newPlan(){
+  PLAN_DRAFT={ id:'', name:'', stopOnFailure:true, steps:[{name:'Step 1', pipelines:[]}] };
+  $('plan-editor-title').textContent='New plan';
+  $('plan-id').value=''; $('plan-id').disabled=false;
+  $('plan-name').value=''; $('plan-stop').checked=true;
+  $('plan-editor').classList.remove('hidden');
+  renderSteps();
+}
+
+function editPlan(plan){
+  PLAN_DRAFT=JSON.parse(JSON.stringify(plan));
+  $('plan-editor-title').textContent='Edit '+plan.id;
+  $('plan-id').value=plan.id; $('plan-id').disabled=true;
+  $('plan-name').value=plan.name||''; $('plan-stop').checked=!!plan.stopOnFailure;
+  $('plan-editor').classList.remove('hidden');
+  renderSteps();
+}
+
+function cancelPlan(){ PLAN_DRAFT=null; $('plan-editor').classList.add('hidden'); }
+function addStep(){
+  if(!PLAN_DRAFT) return;
+  PLAN_DRAFT.steps.push({name:'Step '+(PLAN_DRAFT.steps.length+1), pipelines:[]});
+  renderSteps();
+}
+
+function renderSteps(){
+  const box=$('plan-steps'); box.innerHTML='';
+  if(!PLAN_DRAFT) return;
+  PLAN_DRAFT.steps.forEach((step,i)=>{
+    const wrap=document.createElement('div');
+    wrap.style.cssText='border:1px solid var(--line,#262f42);border-radius:8px;padding:12px;margin-top:10px';
+    const top=document.createElement('div'); top.className='toolbar';
+    const nm=document.createElement('input'); nm.type='text'; nm.value=step.name||''; nm.placeholder='What this step is for';
+    nm.style.width='230px'; nm.oninput=()=>{ step.name=nm.value; };
+    const note=document.createElement('span'); note.className='muted';
+    note.textContent=i===0?'runs first':'waits for step '+i;
+    const rm=document.createElement('button'); rm.className='btn'; rm.textContent='Remove step';
+    rm.onclick=()=>{ PLAN_DRAFT.steps.splice(i,1); renderSteps(); };
+    const sp=document.createElement('span'); sp.className='spacer';
+    top.append(nm,note,sp,rm); wrap.append(top);
+
+    for(const pipe of step.pipelines){
+      const row=document.createElement('div'); row.className='toolbar';
+      const label=document.createElement('span'); label.textContent=pipe;
+      const x=document.createElement('button'); x.className='btn'; x.textContent='Remove';
+      x.onclick=()=>{ step.pipelines=step.pipelines.filter(p=>p!==pipe); renderSteps(); };
+      row.append(label,x); wrap.append(row);
+    }
+
+    const add=document.createElement('div'); add.className='toolbar';
+    const sel=document.createElement('select');
+    const blank=document.createElement('option'); blank.value=''; blank.textContent='Add a pipeline...';
+    sel.append(blank);
+    for(const choice of PIPELINE_CHOICES){
+      if(step.pipelines.includes(choice)) continue;
+      const o=document.createElement('option'); o.value=choice; o.textContent=choice; sel.append(o);
+    }
+    // A workspace the console cannot list still needs a way in, so the name can be typed.
+    const free=document.createElement('input'); free.type='text'; free.placeholder='or type a file'; free.style.width='190px';
+    const go=document.createElement('button'); go.className='btn'; go.textContent='Add';
+    go.onclick=()=>{
+      const v=(sel.value||free.value).trim();
+      if(!v) return;
+      if(step.pipelines.includes(v)){ toast('That is already in this step','err'); return; }
+      step.pipelines.push(v); renderSteps();
+    };
+    add.append(sel,free,go); wrap.append(add);
+    box.append(wrap);
+  });
+}
+
+async function savePlan(){
+  if(!PLAN_DRAFT) return;
+  PLAN_DRAFT.id=$('plan-id').value.trim();
+  PLAN_DRAFT.name=$('plan-name').value.trim();
+  PLAN_DRAFT.stopOnFailure=$('plan-stop').checked;
+  try{
+    await post('/api/plans', PLAN_DRAFT);
+    toast('Saved '+PLAN_DRAFT.id,'ok');
+    cancelPlan(); loadPlans();
+  }catch(e){ toast(e.message,'err'); }
+}
+
+async function deletePlan(id){
+  try{ await post('/api/plans',{id},'DELETE'); toast('Deleted '+id,'ok'); loadPlans(); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+async function runPlan(id, btn){
+  const out=$('plan-out-'+id);
+  if(btn){ btn.disabled=true; btn.textContent='Running...'; }
+  if(out) out.textContent='Running...';
+  try{
+    const d=await post('/api/plans/run',{id});
+    // Say what happened per pipeline. "The plan failed" is not an answer anybody can act
+    // on; which pipeline, and what never ran because of it, is.
+    const parts=[];
+    for(const s of d.steps||[]){
+      for(const p of s.pipelines||[]) parts.push(`${s.name||'step'}/${p.pipeline}: ${p.status}`);
+    }
+    if(out) out.textContent=`${d.status} - ${parts.join(', ')}`;
+    toast('Plan '+d.status,d.status==='ok'?'ok':'err');
+  }catch(e){
+    if(out) out.textContent=e.message;
+    toast(e.message,'err');
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='Run now'; }
+  }
+}
+
 // ── People ──
 // A token is returned exactly once and stored only as a hash, so the one job this screen
 // cannot get wrong is showing it clearly enough that nobody closes the tab first.

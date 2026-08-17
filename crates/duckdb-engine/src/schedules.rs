@@ -148,6 +148,7 @@ mod tests {
         Schedule {
             id: format!("id-{pipeline}"),
             pipeline_id: pipeline.into(),
+            plan_id: None,
             name: pipeline.into(),
             enabled: true,
             kind: ScheduleKind::Interval { seconds },

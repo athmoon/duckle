@@ -83,7 +83,7 @@ import {
     WorkspaceLoadError,
 } from './workspace';
 import { openExternal } from './tauri-io';
-import { GuidedTour } from './GuidedTour';
+import { GuidedTour, TOUR_FINISHED_EVENT, tourAlreadySeen } from './GuidedTour';
 import { isWebBackend } from './web-fs';
 import LeftSidebar from './workflow-ui/LeftSidebar';
 import PropertiesPanel from './workflow-ui/PropertiesPanel';
@@ -492,9 +492,25 @@ export default function App() {
         if (homeShownRef.current) return;
         if (showEngineSetup || showProfileSetup || showWorkspacePicker) return;
         if (isInTauri() && !workspacePathState) return;
+        // On a first run the tour goes first and Home waits its turn. Two screens both
+        // introducing the product at the same moment is worse than either alone, and Home
+        // is one of the things the tour explains: arriving before it is explained is what
+        // made the first minute confusing. TOUR_FINISHED_EVENT below opens it afterwards.
+        if (!tourAlreadySeen()) return;
         homeShownRef.current = true;
         if (showHomeOnStartup) setShowHome(true);
     }, [showEngineSetup, showProfileSetup, showWorkspacePicker, workspacePathState, showHomeOnStartup]);
+
+    // The tour has finished (or been skipped): now Home may open, once.
+    useEffect(() => {
+        const afterTour = () => {
+            if (homeShownRef.current) return;
+            homeShownRef.current = true;
+            if (showHomeOnStartup) setShowHome(true);
+        };
+        window.addEventListener(TOUR_FINISHED_EVENT, afterTour);
+        return () => window.removeEventListener(TOUR_FINISHED_EVENT, afterTour);
+    }, [showHomeOnStartup]);
 
     const handleToggleShowHomeOnStartup = useCallback((next: boolean) => {
         setShowHomeOnStartup(next);

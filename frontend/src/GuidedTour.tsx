@@ -17,6 +17,26 @@ import { isWebBackend } from './web-fs';
 // run. Anyone who finished v4 sees the fuller one once.
 const SEEN_KEY = 'duckle.tour.v5.done';
 
+/** Fired when the tour finishes or is skipped, so Home can take the screen after it. */
+export const TOUR_FINISHED_EVENT = 'duckle:tour-finished';
+
+/**
+ * Whether this machine has already been walked through the tour.
+ *
+ * Exported because Home has to know: on a first run the tour goes first and Home waits for
+ * it. Two "here is Duckle" screens competing for the same moment is worse than either of
+ * them alone, and the tour is the one that explains what Home is for.
+ */
+export function tourAlreadySeen(): boolean {
+    try {
+        return !!localStorage.getItem(SEEN_KEY);
+    } catch {
+        // Storage off: treat it as seen, so a browser that cannot remember never traps
+        // somebody in a tour on every single launch.
+        return true;
+    }
+}
+
 type Placement = 'top' | 'bottom' | 'left' | 'right' | 'center';
 // 'both' shows everywhere; 'desktop' only in the Tauri app; 'web' only in the
 // self-hosted web editor. Undefined is treated as 'both'.
@@ -348,6 +368,9 @@ export function GuidedTour() {
     const close = () => {
         localStorage.setItem(SEEN_KEY, '1');
         setActive(false);
+        // Home held back for this. Telling it we are done is what lets a first run be
+        // tour-then-Home rather than the two of them arriving together.
+        window.dispatchEvent(new Event(TOUR_FINISHED_EVENT));
     };
     const next = () => (last ? close() : setI((n) => n + 1));
     const back = () => setI((n) => Math.max(0, n - 1));

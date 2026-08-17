@@ -151,6 +151,7 @@
     <button data-tab="schedules"><span class="ico">◷</span> Schedules</button>
     <button data-tab="catalog"><span class="ico">◈</span> Catalog</button>
     <button data-tab="batches"><span class="ico">▤</span> Batches</button>
+    <button data-tab="people" id="nav-people" class="hidden"><span class="ico">◍</span> People</button>
     <button data-tab="audit" id="nav-audit" class="hidden"><span class="ico">⛉</span> Audit</button>
   </nav>
   <div class="side-foot">
@@ -270,6 +271,55 @@
       <div id="batch-detail" style="margin-top:16px"></div>
     </section>
 
+    <section id="tab-people" class="hidden">
+      <div class="sub" style="margin-bottom:14px">
+        People sign in and get a session. Machines have no browser and nobody to rotate a
+        password, so they get a key of their own instead.
+      </div>
+
+      <div id="people-secret" class="hidden" style="margin-bottom:16px"></div>
+
+      <div class="card" style="margin-bottom:18px">
+        <h3 style="margin:0 0 4px">People</h3>
+        <div class="muted" style="margin-bottom:12px">Each person gets their own, so the audit log can name them.</div>
+        <div class="toolbar">
+          <input type="text" id="new-user" placeholder="Name, e.g. alice" style="width:190px">
+          <select id="new-user-role">
+            <option value="viewer">viewer, reads only</option>
+            <option value="operator">operator, runs and schedules</option>
+            <option value="admin">admin, everything</option>
+          </select>
+          <button class="btn" onclick="addUser()">Add</button>
+        </div>
+        <table>
+          <thead><tr><th>Name</th><th>Role</th><th></th></tr></thead>
+          <tbody id="users-body"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3 style="margin:0 0 4px">Machine keys</h3>
+        <div class="muted" style="margin-bottom:12px">
+          For CI, a scraper, or a laptop that deploys. Revoking one takes effect on the next
+          request, not the next restart.
+        </div>
+        <div class="toolbar">
+          <input type="text" id="new-key" placeholder="Name, e.g. ci-deployer" style="width:190px">
+          <select id="new-key-role">
+            <option value="viewer">viewer</option>
+            <option value="operator">operator</option>
+            <option value="admin">admin</option>
+          </select>
+          <input type="number" id="new-key-days" placeholder="Expires in days" min="1" style="width:150px">
+          <button class="btn" onclick="addKey()">Create key</button>
+        </div>
+        <table>
+          <thead><tr><th>Name</th><th>Role</th><th>State</th><th>Last used</th><th></th></tr></thead>
+          <tbody id="keys-body"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="tab-audit" class="hidden">
       <div class="sub" style="margin-bottom:14px">
         Every sign-in, every change, and every refusal. Reads are left out so the
@@ -336,6 +386,7 @@ async function loadMe(){
   // The server refuses anyone else regardless; hiding the tab is so nobody is
   // offered a door that will not open.
   $('nav-audit').classList.toggle('hidden', ME.role !== 'admin');
+  $('nav-people').classList.toggle('hidden', ME.role !== 'admin');
 }
 async function signOut(){
   await fetch('/api/session', { method: 'DELETE' });
@@ -382,15 +433,17 @@ const TITLES={overview:['Overview','Pipelines grouped by job, with their latest 
   schedules:['Schedules','Run a pipeline on an interval. The console runs schedules itself while it is open.'],
   catalog:['Catalog','What this workspace reads and writes, and who owns it.'],
   batches:['Batches','Queued work, and how far the workers have got.'],
+  people:['People','Who may use this console, and which machines may.'],
   audit:['Audit','Who did what through this console, and who was turned away.']};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
   const tab=b.dataset.tab;
-  for(const t of ['overview','runs','schedules','catalog','batches','audit']) $('tab-'+t).classList.toggle('hidden', t!==tab);
+  for(const t of ['overview','runs','schedules','catalog','batches','people','audit']) $('tab-'+t).classList.toggle('hidden', t!==tab);
   $('page-title').textContent=TITLES[tab][0]; $('page-sub').textContent=TITLES[tab][1];
   if(tab==='runs') renderRuns(); if(tab==='schedules') renderSchedules();
   if(tab==='catalog') loadCatalog();
   if(tab==='batches') loadBatches();
+  if(tab==='people') loadPeople();
   if(tab==='audit') loadAudit();
 });
 
@@ -726,6 +779,118 @@ async function redriveBatch(id, btn){
 // ── Audit ──
 // Loaded on demand and never on the poll: this is a file that only grows, and
 // a 5s refresh of it would be the most expensive thing the console does.
+// ── People ──
+// A token is returned exactly once and stored only as a hash, so the one job this screen
+// cannot get wrong is showing it clearly enough that nobody closes the tab first.
+function showSecret(kind, label, secret){
+  const box=$('people-secret');
+  box.className='card';
+  box.style.borderColor='var(--accent)';
+  box.innerHTML='';
+  const h=document.createElement('h3'); h.style.margin='0 0 4px';
+  h.textContent=kind+' for '+label;
+  const p=document.createElement('div'); p.className='muted'; p.style.marginBottom='10px';
+  p.textContent='Shown once. It is kept only as a hash, so if it is lost you make a new one rather than recover this.';
+  const code=document.createElement('div');
+  code.style.cssText='font-family:var(--mono,monospace);word-break:break-all;background:var(--bg,#0b0e16);border:1px solid var(--line,#262f42);border-radius:8px;padding:12px;margin-bottom:10px';
+  code.textContent=secret;
+  const copy=document.createElement('button'); copy.className='btn'; copy.textContent='Copy';
+  copy.onclick=async()=>{ try{ await navigator.clipboard.writeText(secret); toast('Copied','ok'); }catch(e){ toast('Copy failed, select it by hand','err'); } };
+  const done=document.createElement('button'); done.className='btn'; done.style.marginLeft='8px';
+  done.textContent='I have saved it'; done.onclick=()=>{ box.className='hidden'; box.innerHTML=''; };
+  box.append(h,p,code,copy,done);
+}
+
+function ago(ts){
+  if(!ts) return 'never';
+  const d=Math.floor(Date.now()/1000)-ts;
+  if(d<60) return 'just now';
+  if(d<3600) return Math.floor(d/60)+'m ago';
+  if(d<86400) return Math.floor(d/3600)+'h ago';
+  return Math.floor(d/86400)+'d ago';
+}
+
+async function loadPeople(){
+  try{
+    const [u,k]=await Promise.all([
+      fetch('/api/admin/users').then(r=>r.json()),
+      fetch('/api/admin/keys').then(r=>r.json())
+    ]);
+    const ub=$('users-body'); ub.innerHTML='';
+    for(const user of (u.users||[])){
+      const tr=document.createElement('tr');
+      const name=document.createElement('td'); name.textContent=user.label;
+      const role=document.createElement('td'); role.textContent=user.role;
+      const act=document.createElement('td');
+      const rm=document.createElement('button'); rm.className='btn'; rm.textContent='Remove';
+      rm.onclick=()=>removeUser(user.label);
+      act.append(rm);
+      tr.append(name,role,act); ub.append(tr);
+    }
+    if(!(u.users||[]).length){
+      ub.innerHTML='<tr><td colspan="3" class="muted">Nobody yet. Whoever set this up is using a startup token.</td></tr>';
+    }
+
+    const kb=$('keys-body'); kb.innerHTML='';
+    for(const key of (k.keys||[])){
+      const tr=document.createElement('tr');
+      const cells=[key.label,key.role,key.state,ago(key.lastUsedAt)].map(v=>{
+        const td=document.createElement('td'); td.textContent=v; return td;
+      });
+      const act=document.createElement('td');
+      if(key.state==='live'){
+        const rv=document.createElement('button'); rv.className='btn'; rv.textContent='Revoke';
+        rv.onclick=()=>revokeKey(key.label);
+        act.append(rv);
+      }
+      tr.append(...cells,act); kb.append(tr);
+    }
+    if(!(k.keys||[]).length){
+      kb.innerHTML='<tr><td colspan="5" class="muted">No machine keys yet.</td></tr>';
+    }
+  }catch(e){ toast('Could not load people: '+e.message,'err'); }
+}
+
+async function post(url, body, method){
+  const r=await fetch(url,{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.error||('failed with '+r.status));
+  return d;
+}
+
+async function addUser(){
+  const label=$('new-user').value.trim();
+  if(!label){ $('new-user').focus(); return; }
+  try{
+    const d=await post('/api/admin/users',{label,role:$('new-user-role').value});
+    $('new-user').value='';
+    showSecret('Sign-in token',d.label,d.token);
+    loadPeople();
+  }catch(e){ toast(e.message,'err'); }
+}
+
+async function removeUser(label){
+  try{ await post('/api/admin/users',{label},'DELETE'); toast('Removed '+label,'ok'); loadPeople(); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+async function addKey(){
+  const label=$('new-key').value.trim();
+  if(!label){ $('new-key').focus(); return; }
+  const days=parseInt($('new-key-days').value,10);
+  try{
+    const d=await post('/api/admin/keys',{label,role:$('new-key-role').value,expiresDays:isNaN(days)?null:days});
+    $('new-key').value=''; $('new-key-days').value='';
+    showSecret('API key',d.label,d.key);
+    loadPeople();
+  }catch(e){ toast(e.message,'err'); }
+}
+
+async function revokeKey(label){
+  try{ await post('/api/admin/keys/revoke',{label}); toast('Revoked '+label,'ok'); loadPeople(); }
+  catch(e){ toast(e.message,'err'); }
+}
+
 async function loadAudit(){
   const q = new URLSearchParams();
   const actor = ($('aud-actor').value || '').trim();

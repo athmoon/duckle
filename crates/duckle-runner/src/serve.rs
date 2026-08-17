@@ -1482,14 +1482,23 @@ fn dispatch_console(req: &Request, state: &State, who: console_auth::Identity) -
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("");
             // Removing the last administrator would leave a console nobody can administer,
-            // and no amount of GUI polish recovers from that.
-            let admins_left = state
-                .console
-                .list_accounts()
-                .map(|l| l.iter().filter(|(n, r)| *r == console_auth::Role::Admin && n != label).count())
-                .unwrap_or(0);
-            if admins_left == 0 {
-                return respond_err("409 Conflict", "that is the last administrator; make someone else an admin first");
+            // and no amount of interface recovers from that. It only applies to removing an
+            // administrator: an earlier version counted the survivors without checking what
+            // was being removed, so deleting an operator was refused for leaving too few
+            // admins, which it had nothing to do with.
+            let accounts = state.console.list_accounts().unwrap_or_default();
+            let removing_an_admin = accounts
+                .iter()
+                .any(|(n, r)| n == label && *r == console_auth::Role::Admin);
+            let admins_left = accounts
+                .iter()
+                .filter(|(n, r)| *r == console_auth::Role::Admin && n != label)
+                .count();
+            if removing_an_admin && admins_left == 0 {
+                return respond_err(
+                    "409 Conflict",
+                    "that is the last administrator; make someone else an admin first",
+                );
             }
             match state.console.remove_account(label) {
                 Ok(true) => respond_json(&json!({ "removed": label })),
@@ -2796,6 +2805,32 @@ mod tests {
         .expect_err("must refuse");
         assert!(err.contains("not a pipeline"), "unhelpful refusal: {err}");
         assert!(!ws.join("console-users.json").exists(), "it was written anyway");
+    }
+
+    /// Removing the last administrator leaves a console nobody can administer. Removing
+    /// anyone else has nothing to do with that, and an earlier version counted the
+    /// surviving admins without checking who was being removed, so deleting an operator
+    /// was refused for leaving too few of them.
+    #[test]
+    fn only_the_last_administrator_is_protected_from_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let state = guarded_state(&ws);
+        state.console.create_account("alice", console_auth::Role::Operator).unwrap();
+        state.console.create_account("boss", console_auth::Role::Admin).unwrap();
+
+        let remove = |label: &str| {
+            let mut req = request("DELETE", "/api/admin/users", Some("Bearer s3cret"));
+            req.body = serde_json::to_vec(&serde_json::json!({ "label": label })).unwrap();
+            req.origin = None;
+            route_console(&req, &state).code()
+        };
+
+        assert_eq!(remove("alice"), 200, "an operator is not an administrator");
+        assert_eq!(remove("boss"), 409, "the last administrator must be protected");
+
+        state.console.create_account("boss2", console_auth::Role::Admin).unwrap();
+        assert_eq!(remove("boss"), 200, "with a second admin, removing one is fine");
     }
 
     /// Behind a proxy that terminates TLS the browser is on https, and a session cookie

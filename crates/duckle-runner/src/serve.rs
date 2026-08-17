@@ -30,6 +30,11 @@ use std::time::{Duration, Instant};
 
 const PANEL_HTML: &str = include_str!("panel.html");
 const SIGNIN_HTML: &str = include_str!("signin.html");
+const SETUP_HTML: &str = include_str!("setup.html");
+
+/// The page that claims an unclaimed console, and the request behind it.
+const SETUP_PATH: &str = "/setup";
+const SETUP_CLAIM_PATH: &str = "/api/setup/claim";
 
 use crate::audit;
 use crate::console_auth;
@@ -1056,7 +1061,13 @@ pub const HEALTH_PATH: &str = "/healthz";
 /// is marked unhealthy forever. `/healthz` answers `ok` and nothing else, so it can say the
 /// process is up without telling an anonymous caller anything about what is in it.
 pub fn is_public_route(method: &str, path: &str) -> bool {
-    matches!((method, path), ("POST", "/api/session") | ("GET", HEALTH_PATH))
+    matches!(
+        (method, path),
+        ("POST", "/api/session")
+            | ("GET", HEALTH_PATH)
+            | ("GET", SETUP_PATH)
+            | ("POST", SETUP_CLAIM_PATH)
+    )
 }
 
 fn is_loopback_host(h: &str) -> bool {
@@ -1241,6 +1252,26 @@ pub enum Access {
 }
 
 fn authorize(req: &Request, state: &State) -> Access {
+    // Nobody administers this console yet, so there is no identity to establish and
+    // nothing to authorise against. Exactly two things answer, and everything else says
+    // what is actually wrong: 401 would claim the caller needs to sign in, when what they
+    // need is for somebody to finish setting the server up.
+    if state.console.mode() == console_auth::Mode::Unclaimed {
+        // Liveness answers throughout. A probe that fails during setup gets the pod
+        // killed, which restarts it, which re-opens the window and loses whatever was
+        // typed: setup would be impossible on anything that health-checks.
+        let setting_up = (req.method == "GET" && req.path == SETUP_PATH)
+            || (req.method == "POST" && req.path == SETUP_CLAIM_PATH)
+            || (req.method == "GET" && req.path == HEALTH_PATH);
+        if !setting_up {
+            return Access::Refused(respond_err(
+                "503 Service Unavailable",
+                "this server has not been set up yet. Open /setup to claim it",
+            ));
+        }
+        return Access::Public;
+    }
+
     // A loopback console with no token treats every caller as a local admin, on the
     // reasoning that reaching the socket means already being on the machine. A browser
     // breaks that reasoning: any page the operator visits can POST to 127.0.0.1 from their
@@ -1289,16 +1320,43 @@ fn authorize(req: &Request, state: &State) -> Access {
     Access::Caller(who)
 }
 
+/// The handful of things reachable without a credential.
+///
+/// Kept in one function so the socket path and the framework path answer identically, and
+/// so the list of what needs no credential is somewhere a person can read in one go.
+fn public_route(req: &Request, state: &State) -> Reply {
+    if req.path == HEALTH_PATH {
+        return respond("200 OK", "text/plain; charset=utf-8", b"ok");
+    }
+    if req.method == "GET" && req.path == SETUP_PATH {
+        // A console that is already set up has no setup page, and saying so is friendlier
+        // than serving a form that will refuse whatever is typed into it.
+        if state.console.mode() != console_auth::Mode::Unclaimed {
+            return respond_err("410 Gone", "this server has already been set up");
+        }
+        return respond("200 OK", "text/html; charset=utf-8", SETUP_HTML.as_bytes());
+    }
+    if req.method == "POST" && req.path == SETUP_CLAIM_PATH {
+        let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+        let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("");
+        return match state.console.claim(label) {
+            Ok(token) => {
+                // Worth an audit line of its own: this is the moment the server acquired
+                // an owner, and it is the one event with nobody to attribute it to yet.
+                audit::record(&state.workspace, None, "console.claimed", label, audit::Outcome::Allowed);
+                eprintln!("duckle-runner: claimed by '{label}'; setup is closed");
+                respond_json(&json!({ "token": token, "label": label, "role": "admin" }))
+            }
+            Err(e) => respond_err("409 Conflict", &e),
+        };
+    }
+    sign_in(state, req)
+}
+
 fn route_console(req: &Request, state: &State) -> Reply {
     match authorize(req, state) {
         Access::Refused(reply) => reply,
-        Access::Public => {
-            if req.path == HEALTH_PATH {
-                respond("200 OK", "text/plain; charset=utf-8", b"ok")
-            } else {
-                sign_in(state, req)
-            }
-        }
+        Access::Public => public_route(req, state),
         Access::Caller(who) => dispatch_console(req, state, who),
     }
 }
@@ -2527,17 +2585,12 @@ async fn console_public(
     let req = request_from_parts(&parts, bytes.to_vec());
     match authorize(&req, &state) {
         Access::Refused(reply) => reply.into_response(),
-        _ => {
-            if req.path == HEALTH_PATH {
-                respond("200 OK", "text/plain; charset=utf-8", b"ok").into_response()
-            } else {
-                match tokio::task::spawn_blocking(move || sign_in(&state, &req)).await {
-                    Ok(reply) => reply.into_response(),
-                    Err(_) => respond_err("500 Internal Server Error", "sign-in failed")
-                        .into_response(),
-                }
+        _ => match tokio::task::spawn_blocking(move || public_route(&req, &state)).await {
+            Ok(reply) => reply.into_response(),
+            Err(_) => {
+                respond_err("500 Internal Server Error", "request failed").into_response()
             }
-        }
+        },
     }
 }
 
@@ -2545,6 +2598,10 @@ fn console_router(state: Arc<State>) -> axum::Router {
     axum::Router::new()
         .route(HEALTH_PATH, axum::routing::get(console_public))
         .route("/api/session", axum::routing::post(console_public))
+        // Setup is reachable without a credential because there is not yet a credential to
+        // have. `claim` refuses once the console has an owner, so this cannot be replayed.
+        .route(SETUP_PATH, axum::routing::get(console_public))
+        .route(SETUP_CLAIM_PATH, axum::routing::post(console_public))
         // Everything else goes through the extractor, so a route added later is
         // authorised by existing, rather than by someone remembering to ask.
         .fallback(console_authed)

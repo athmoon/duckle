@@ -1,0 +1,109 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Set up this Duckle server</title>
+<style>
+  :root {
+    --bg: #07090f; --panel: #121724; --line: #262f42;
+    --ink: #eef2f8; --ink-2: #aeb7c7; --ink-3: #7a8294;
+    --accent: #ff7a45; --maya: #2eafff; --warn: #e5a13a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: var(--bg); color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6; padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 460px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 30px 32px;
+  }
+  .eyebrow {
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 700; margin-bottom: 10px;
+  }
+  h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: -.01em; }
+  p { margin: 0 0 18px; color: var(--ink-2); font-size: 14px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  input {
+    width: 100%; padding: 11px 13px; border-radius: 8px;
+    border: 1px solid var(--line); background: #0b0e16; color: var(--ink);
+    font-size: 15px; font-family: inherit;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    width: 100%; margin-top: 18px; padding: 12px; border: 0; border-radius: 8px;
+    background: var(--accent); color: #14100c; font-size: 15px; font-weight: 700;
+    font-family: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: default; }
+  .note {
+    margin-top: 18px; padding: 12px 14px; border-radius: 8px;
+    border: 1px solid var(--line); border-left: 3px solid var(--warn);
+    font-size: 13px; color: var(--ink-2);
+  }
+  .key {
+    margin-top: 14px; padding: 14px; border-radius: 8px; background: #0b0e16;
+    border: 1px solid var(--line); word-break: break-all;
+    font-family: ui-monospace, "Cascadia Mono", Menlo, monospace; font-size: 13px;
+    color: var(--maya);
+  }
+  .err { color: #ff9e8a; font-size: 13px; margin-top: 12px; }
+  .hide { display: none; }
+</style>
+
+<div class="card">
+  <div id="step-claim">
+    <div class="eyebrow">One time setup</div>
+    <h1>Take ownership of this server</h1>
+    <p>Nobody administers it yet. Put your name in and it becomes yours, and you decide who else gets in.</p>
+
+    <label for="label">Your name</label>
+    <input id="label" autocomplete="username" placeholder="e.g. sourav" autofocus />
+    <button id="go">Claim this server</button>
+    <div class="err hide" id="err"></div>
+
+    <div class="note">
+      Until someone claims it, anyone who can reach this address can. If that is not what you
+      expected, stop the server now and start it again with <code>DUCKLE_CONSOLE_TOKEN</code> set.
+    </div>
+  </div>
+
+  <div id="step-done" class="hide">
+    <div class="eyebrow">Done</div>
+    <h1>You are the administrator</h1>
+    <p>This is your key. It is shown once and stored only as a hash, so copy it somewhere safe now. If you lose it, an administrator makes you a new one.</p>
+    <div class="key" id="key"></div>
+    <button id="continue">Continue to the console</button>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const claim = async () => {
+    const label = $("label").value.trim();
+    if (!label) { $("label").focus(); return; }
+    $("go").disabled = true;
+    $("err").classList.add("hide");
+    try {
+      const res = await fetch("/api/setup/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "setup failed");
+      $("key").textContent = data.token;
+      $("step-claim").classList.add("hide");
+      $("step-done").classList.remove("hide");
+    } catch (e) {
+      $("err").textContent = e.message;
+      $("err").classList.remove("hide");
+      $("go").disabled = false;
+    }
+  };
+  $("go").addEventListener("click", claim);
+  $("label").addEventListener("keydown", (e) => { if (e.key === "Enter") claim(); });
+  $("continue").addEventListener("click", () => { location.href = "/"; });
+</script>

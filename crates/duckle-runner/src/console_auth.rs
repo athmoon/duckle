@@ -64,6 +64,28 @@ impl Role {
     }
 }
 
+
+/// What a console is, which decides what it will answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Loopback with nothing configured. Everything is allowed, because reaching the
+    /// socket means already being on the machine. This is the ordinary local case and it
+    /// has never required setting anything up.
+    Local,
+    /// Reachable off this machine with no credentials yet. Only the setup route answers,
+    /// and only until the window closes. Whoever claims it becomes the first admin.
+    Unclaimed,
+    /// Has credentials. Ordinary authorisation.
+    Claimed,
+}
+
+/// How long an unclaimed console stays claimable.
+///
+/// Short on purpose. During this window anyone who can reach the port can take it, which
+/// is the price of setup being a wizard rather than a command. A restart re-opens it, and
+/// starting with a token or existing accounts never opens it at all.
+pub const CLAIM_WINDOW_SECS: i64 = 15 * 60;
+
 /// The caller behind one request, as far as the console can tell.
 #[derive(Debug, Clone)]
 pub struct Identity {
@@ -85,11 +107,20 @@ struct Account {
 
 /// The console's authentication policy for one running server.
 pub struct Console {
-    accounts: Vec<Account>,
+    /// Reloaded when the console is claimed, because that creates an account in a process
+    /// that is already serving: a snapshot taken at startup would not contain the
+    /// administrator who was just made, and they would be unable to sign in until a
+    /// restart.
+    accounts: Mutex<Vec<Account>>,
     /// True when nothing is configured and the bind is loopback, which is the
     /// unchanged local case: the caller is trusted because they are already on
     /// the machine.
     open: bool,
+    /// Which of the three states this console is in. Behind a lock for the same reason as
+    /// the accounts: claiming moves it, and the running process has to notice.
+    mode: Mutex<Mode>,
+    /// When an unclaimed console started, so the window can close.
+    opened_at: i64,
     /// Where the credential database lives.
     workspace: PathBuf,
     /// Accounts, sessions and API keys. Behind a mutex because a SQLite connection is Send
@@ -107,7 +138,7 @@ pub struct Console {
 impl std::fmt::Debug for Console {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Console")
-            .field("accounts", &self.accounts.len())
+            .field("accounts", &self.accounts.lock().map(|a| a.len()).unwrap_or(0))
             .field("open", &self.open)
             .finish()
     }
@@ -189,26 +220,89 @@ impl Console {
         }
         let loopback = is_loopback(host);
         let unconfigured = accounts.is_empty() && !has_machine_credential;
-        if unconfigured && !loopback {
-            // Names no subcommand: both `serve` and `web` end up here, and a
-            // message telling you to run the other one is worse than none.
-            return Err(format!(
-                "--host {host} would expose this beyond the local machine, and it can run any \
-                 pipeline in the workspace. Set a token first:\n    \
-                 DUCKLE_CONSOLE_TOKEN=<secret>\n\
-                 or create accounts with roles:\n    \
-                 duckle-runner console add-user <label> --role viewer|operator|admin\n\
-                 Accounts are read from {}",
-                accounts_path(workspace).display()
-            ));
+        let mode = match (unconfigured, loopback) {
+            (false, _) => Mode::Claimed,
+            (true, true) => Mode::Local,
+            // Reachable off the machine with nothing configured. It used to refuse here,
+            // which is the correct answer when setup means a terminal and the wrong one
+            // when setup means opening a page: there would be nothing to open.
+            (true, false) => Mode::Unclaimed,
+        };
+        if mode == Mode::Unclaimed {
+            eprintln!(
+                "duckle-runner: NOT SET UP. This console is reachable on {host} and has no \
+                 accounts, so for the next {} minutes anyone who can reach it can claim it \
+                 and become its administrator. Open it now and finish setup, or stop it and \
+                 start again with DUCKLE_CONSOLE_TOKEN set.",
+                CLAIM_WINDOW_SECS / 60
+            );
         }
         Ok(Console {
+            mode: Mutex::new(mode),
+            opened_at: now_secs(),
             open: unconfigured && loopback,
-            accounts,
+            accounts: Mutex::new(accounts),
             store: Mutex::new(store),
             workspace: workspace.to_path_buf(),
             verified: Mutex::new(HashMap::new()),
         })
+    }
+
+
+    /// Which state this console is in.
+    pub fn mode(&self) -> Mode {
+        self.mode.lock().map(|m| *m).unwrap_or(Mode::Claimed)
+    }
+
+    /// Whether an unclaimed console can still be claimed.
+    ///
+    /// False once the window has passed, and the console then answers nothing until it is
+    /// restarted. Leaving it claimable forever would mean a box that was never finished
+    /// stays open to whoever finds it.
+    pub fn claimable(&self) -> bool {
+        self.mode() == Mode::Unclaimed && now_secs() - self.opened_at < CLAIM_WINDOW_SECS
+    }
+
+    /// Take an unclaimed console: create its first administrator and close the window.
+    ///
+    /// Returns the new token once. Refuses if the console was already claimed, which is
+    /// what makes this safe to expose without a credential: it works exactly once.
+    pub fn claim(&self, label: &str) -> Result<String, String> {
+        if self.mode() != Mode::Unclaimed {
+            return Err("this console has already been set up".into());
+        }
+        if !self.claimable() {
+            return Err(
+                "the setup window has closed. Restart the server to open it again, or set \
+                 DUCKLE_CONSOLE_TOKEN and set up from there"
+                    .into(),
+            );
+        }
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("an administrator needs a name".into());
+        }
+        let store = AuthStore::open(&self.workspace)?;
+        if !store.accounts()?.is_empty() {
+            // Another request claimed it between the check above and here.
+            return Err("this console has already been set up".into());
+        }
+        let token = add_account(&self.workspace, label, Role::Admin)?;
+        // The process is already serving. Pick up the account that was just created and
+        // leave the unclaimed state, or the person who set it up cannot use what they set
+        // up until somebody restarts it.
+        if let Ok(fresh) = store.accounts() {
+            if let Ok(mut held) = self.accounts.lock() {
+                *held = fresh
+                    .into_iter()
+                    .map(|(label, role, token_hash)| Account { label, role, token_hash })
+                    .collect();
+            }
+        }
+        if let Ok(mut m) = self.mode.lock() {
+            *m = Mode::Claimed;
+        }
+        Ok(token)
     }
 
     /// Whether this console admits anyone, which is only ever true on loopback
@@ -286,7 +380,8 @@ impl Console {
         // Every account is checked even after a match, so the time taken does
         // not reveal which account a token belongs to or how many exist.
         let mut found: Option<Identity> = None;
-        for account in &self.accounts {
+        let accounts = self.accounts.lock().ok()?.clone();
+        for account in &accounts {
             let Ok(parsed) = PasswordHash::new(&account.token_hash) else {
                 continue;
             };
@@ -520,22 +615,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn binding_off_this_machine_without_a_credential_is_refused() {
+    fn binding_off_this_machine_without_a_credential_is_unclaimed_never_open() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path();
 
-        // The case that mattered: exposed to the network with no way to tell
-        // callers apart. This used to start and print a warning.
-        let err = Console::configure(ws, "0.0.0.0", None).expect_err("must refuse to start");
-        assert!(err.contains("Set a token first"), "unhelpful refusal: {err}");
+        // The case that matters: exposed to the network with no way to tell callers
+        // apart. It once served everyone and printed a warning, then it refused to start,
+        // and it now starts claimable so setup can happen in a browser. What must never
+        // come back is the first of those.
+        let console = Console::configure(ws, "0.0.0.0", None).expect("starts, to be claimed");
+        assert_eq!(console.mode(), Mode::Unclaimed);
+        assert!(!console.is_open(), "an unclaimed console must not admit anyone");
+        assert!(console.identify(None, None).is_none(), "no credential was admitted");
+        assert!(console.claimable(), "it should be claimable right after starting");
 
-        // With a token it starts, and is not open.
+        // With a token it is configured, so there is no window at all.
         let console = Console::configure(ws, "0.0.0.0", Some("s3cret-token")).expect("starts");
+        assert_eq!(console.mode(), Mode::Claimed);
         assert!(!console.is_open());
+        assert!(!console.claimable(), "a configured console is not claimable");
 
-        // Loopback with nothing configured is unchanged: no token needed.
+        // Loopback with nothing configured is unchanged: no token, no setup, no window.
         let local = Console::configure(ws, "127.0.0.1", None).expect("loopback starts");
+        assert_eq!(local.mode(), Mode::Local);
         assert!(local.is_open(), "requiring a token on localhost breaks the local workflow");
+        assert!(!local.claimable(), "there is nothing to claim on a machine you are sitting at");
+    }
+
+    /// Setting up in a browser means the first person to finish becomes the administrator.
+    #[test]
+    fn claiming_creates_the_first_administrator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let console = Console::configure(ws, "0.0.0.0", None).expect("starts");
+
+        let token = console.claim("sourav").expect("claim succeeds");
+        let claimed = Console::configure(ws, "0.0.0.0", None).expect("starts");
+        assert_eq!(claimed.mode(), Mode::Claimed, "claiming must configure it");
+
+        let who = claimed
+            .identify(Some(&format!("Bearer {token}")), None)
+            .expect("the new administrator can sign in");
+        assert_eq!(who.label, "sourav");
+        assert_eq!(who.role, Role::Admin);
+    }
+
+    /// The reason claiming is safe to expose without a credential: it works exactly once.
+    #[test]
+    fn a_console_cannot_be_claimed_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let console = Console::configure(ws, "0.0.0.0", None).expect("starts");
+        console.claim("first").expect("first claim succeeds");
+
+        let err = console.claim("second").expect_err("a second claim must be refused");
+        assert!(err.contains("already been set up"), "unhelpful refusal: {err}");
+
+        // And a fresh process sees a configured console, not a claimable one.
+        let after = Console::configure(ws, "0.0.0.0", None).expect("starts");
+        assert!(!after.claimable());
+        assert!(after.claim("third").is_err(), "a claimed console stayed claimable");
+    }
+
+    /// A box someone started and walked away from must not stay open to whoever finds it.
+    #[test]
+    fn the_claim_window_closes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let mut console = Console::configure(ws, "0.0.0.0", None).expect("starts");
+        assert!(console.claimable());
+
+        // Age it past the window, which is the only thing keeping it claimable.
+        console.opened_at = now_secs() - CLAIM_WINDOW_SECS - 1;
+        assert!(!console.claimable(), "the window should have closed");
+
+        let err = console.claim("late").expect_err("claiming after the window must fail");
+        assert!(err.contains("Restart"), "the refusal should say how to recover: {err}");
     }
 
     /// Sessions used to live only in the process, so every restart signed everyone out.

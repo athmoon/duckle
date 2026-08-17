@@ -1085,13 +1085,17 @@ Runs execute in-process through the same engine, are written to the same run his
 
 #### Sign-in and roles
 
-The console can run any pipeline in the workspace, and a pipeline can run shell and SQL, so reaching it is equivalent to running code on the host. On `127.0.0.1` (the default) it is open, because anyone who can reach it is already on the machine. **Any other `--host` refuses to start without a credential:**
+Start from where you actually are.
+
+**Running it on your own machine?** Nothing to do. On `127.0.0.1` with no accounts the console is open, because anyone who can reach it is already sitting at the machine, and asking them for a password would protect against an attacker who has already won.
+
+**Put it on a server and it refused to start?** That is the feature. The console can run any pipeline in the workspace, and a pipeline can run shell and SQL, so reaching it is the same as running code on that host. A bind it cannot authenticate fails rather than serving anyone and printing a warning nobody reads. The shortest way past it:
 
 ```bash
 DUCKLE_CONSOLE_TOKEN=<secret> duckle-runner serve --host 0.0.0.0 --port 8080
 ```
 
-For more than one person, give each their own token and role. The token is printed once and stored only as an Argon2id hash in `<workspace>/.duckle/console-users.json`:
+**More than one person?** Give each of them their own, so the audit log can name them. The token is printed once and kept only as an Argon2id hash:
 
 ```bash
 duckle-runner console add-user reporting --role viewer
@@ -1099,13 +1103,41 @@ duckle-runner console add-user ops       --role operator
 duckle-runner console list
 ```
 
+**A machine needs in?** CI, a scraper, or your own laptop deploying: those have no browser and nobody to rotate a password, so they get a key instead of an account. See [API keys](#api-keys-for-machines).
+
 | Role | Can |
 |---|---|
 | `viewer` | Read the dashboard, run history, logs, schedules and catalog. |
 | `operator` | Everything a viewer can, plus run pipelines and change schedules. |
-| `admin` | Everything an operator can, plus connections, credentials, the audit log and the workspace itself. |
+| `admin` | Everything an operator can, plus deploy pipelines, connections, credentials, the audit log and the workspace itself. |
 
-A browser exchanges the token for a session cookie, so the browser never stores the credential; an API client sends `Authorization: Bearer <token>`. Every state-changing request, and every refusal, is appended to `<workspace>/logs/audit.ndjson` with who, what, when and the outcome. The same accounts and roles cover `duckle-runner web`.
+The split follows what an action can destroy, not which screen it lives on. It is why **deploying a pipeline needs `admin` while turning its schedule on needs `operator`**: shipping code to a host and deciding when trusted code runs are different sizes of decision.
+
+#### How a request is decided
+
+Three ways to prove who you are, one identity, one check, and every outcome recorded:
+
+```mermaid
+flowchart LR
+    R([Request]) --> C{"Session cookie?"}
+    C -->|"yes, within 12h"| ID["Identity<br/>name + role"]
+    C -->|no| B{"Authorization: Bearer"}
+    B -->|"API key"| ID
+    B -->|"account token"| ID
+    B -->|"nothing"| U["401<br/>sign in"]
+    ID --> P{"Role enough<br/>for this route?"}
+    P -->|yes| OK["It happens"]
+    P -->|no| F["403<br/>refused"]
+    OK --> A[("audit log<br/>who, what, when")]
+    F --> A
+    U --> A
+```
+
+Two things follow from that shape. **A refusal is recorded as carefully as a success**, so `audit --outcome denied` answers "who is reaching for what they do not have". And **a route with no entry in the permission table needs `admin`**, so a route added later is locked down rather than accidentally left open.
+
+A browser trades its credential for a session cookie, so it never stores the credential itself: the cookie carries a random session id, is `HttpOnly` and `SameSite=Strict`, is marked `Secure` when a proxy tells Duckle the browser is on https, and lasts 12 hours. Sessions survive a restart, so a rolling deploy does not sign your team out.
+
+Accounts, sessions and keys live in `<workspace>/.duckle/console.db`. Nothing in it can be replayed: an account token is an Argon2id hash, and a session id and an API key are both generated with 256 bits of entropy and stored as SHA-256, so a copy of the file or a backup of the workspace admits nobody. An older `console-users.json` is carried in on first start and renamed `.migrated`, so upgrading neither locks anyone out nor destroys the only copy of a credential store. The same accounts, roles and keys cover `duckle-runner web`.
 
 Read it back from the **Audit** view, or from a terminal with no server running:
 

@@ -50,6 +50,30 @@
   .cloud-head h2 { margin:0; }
   .cloud-head span { color:var(--ink-2); font-size:.92rem; }
   h3.dep-h3 { margin:34px 0 6px; font-size:1.15rem; }
+  /* The brand maya and gold sit at about 1.9:1 on the light panel, so the diagram picks
+     darker equivalents there and uses the brand values on the dark ground, where they
+     have plenty of contrast. Same meaning, readable in both. */
+  .authfig { --dg-ok:#0b6ba8; --dg-no:#b45309;
+             background:var(--bg-2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:22px 16px; overflow-x:auto; margin:18px 0 8px; }
+  :root[data-theme="dark"] .authfig { --dg-ok:var(--maya); --dg-no:var(--gold); }
+  .authfig svg { display:block; max-width:100%; height:auto; margin:0 auto; }
+  .authfig + p { color:var(--ink-2); font-size:.9rem; }
+  .a-box { fill:var(--bg-3); stroke:var(--border); }
+  .a-t  { fill:var(--ink); font-size:13px; font-weight:600; }
+  .a-s  { fill:var(--ink-2); font-size:11px; }
+  .a-line { fill:none; stroke:var(--ink-2); stroke-width:1.5; opacity:.8; }
+  .a-ok   { fill:none; stroke:var(--dg-ok); stroke-width:2; }
+  .a-no   { fill:none; stroke:var(--dg-no); stroke-width:2; }
+  .a-lb-ok { fill:var(--dg-ok); font-size:11px; font-weight:700; }
+  .a-lb-no { fill:var(--dg-no); font-size:11px; font-weight:700; }
+  .ladder { display:grid; gap:0; margin:18px 0 8px; }
+  .rung { display:grid; grid-template-columns:110px 1fr; gap:18px; align-items:start; padding:14px 16px; border:1px solid var(--border); }
+  .rung:first-child { border-radius:var(--radius-sm) var(--radius-sm) 0 0; }
+  .rung:last-child { border-radius:0 0 var(--radius-sm) var(--radius-sm); }
+  .rung + .rung { border-top:0; }
+  .rung b { font-family:var(--mono); font-size:.9rem; }
+  .rung span { color:var(--ink-2); font-size:.92rem; line-height:1.6; }
+  .rung em { color:var(--ink); font-style:normal; font-weight:600; }
 </style>
 </head>
 <body>
@@ -87,6 +111,7 @@
       <a href="#modes">Two server modes</a>
       <a href="#stoppers">Three stoppers</a>
       <a href="#reference">Reference</a>
+      <a href="#auth">Who can do what</a>
       <a href="#aws">AWS</a>
       <a href="#azure">Azure</a>
       <a href="#gcp">Google Cloud</a>
@@ -173,12 +198,137 @@ volume /workspace                         # pipelines, state, logs, keys</code><
       <tr><td><code>DUCKLE_DUCKDB_BIN</code></td><td>DuckDB CLI path. Already set inside the image.</td></tr>
     </table>
 
-    <h3 class="dep-h3">Accounts and roles</h3>
-    <p class="muted">A shared token is fine to get running. For more than one person, give them their own, and the audit log will name them.</p>
-    <pre><code>duckle-runner console add-user alice --role admin    --workspace /workspace
+    <h3 class="dep-h3">Credentials</h3>
+    <p class="muted">A shared token gets you running. Accounts and API keys are covered in <a href="#auth">Who can do what</a>.</p>
+  </div>
+</section>
+
+<section class="section" id="auth">
+  <div class="wrap">
+    <h2>Who can do what</h2>
+    <p class="muted">Start from where you actually are.</p>
+
+    <div class="dep-grid">
+      <div class="dep-card">
+        <h4>Running it on your own machine</h4>
+        <p>Nothing to do. On <code>127.0.0.1</code> with no accounts the console is open, because anyone who can reach it is already sitting at the machine. Asking them for a password would guard against an attacker who has already won.</p>
+      </div>
+      <div class="dep-card">
+        <h4>You put it on a server and it refused to start</h4>
+        <p>That is the feature, not a fault. The console can run any pipeline in the workspace, and a pipeline runs shell and SQL, so reaching it equals running code on that host. A bind it cannot authenticate fails instead of serving anyone. Give it <code>DUCKLE_CONSOLE_TOKEN</code> and it starts.</p>
+      </div>
+      <div class="dep-card">
+        <h4>A machine needs in</h4>
+        <p>CI, a metrics scraper, or your own laptop deploying. None of them has a browser or anyone to rotate a password, so they get an API key rather than borrowing somebody's account.</p>
+      </div>
+    </div>
+
+    <h3 class="dep-h3">How a request is decided</h3>
+
+    <div class="authfig">
+      <svg viewBox="0 0 880 340" role="img"
+           aria-label="Three credentials, a session cookie, an API key and an account token, each resolve to one identity carrying a name and a role. That identity is checked against the role the route requires, producing either the action or a refusal. A request with no credential is turned away before the check. All three outcomes are written to the audit log.">
+        <defs>
+          <marker id="a-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--ink-2)" opacity=".8"/>
+          </marker>
+          <marker id="a-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--dg-ok)"/>
+          </marker>
+          <marker id="a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--dg-no)"/>
+          </marker>
+        </defs>
+
+        <rect class="a-box" x="16" y="28" width="176" height="46" rx="7"/>
+        <text class="a-t" x="32" y="50">Session cookie</text>
+        <text class="a-s" x="32" y="66">a browser, 12 hours</text>
+
+        <rect class="a-box" x="16" y="88" width="176" height="46" rx="7"/>
+        <text class="a-t" x="32" y="110">API key</text>
+        <text class="a-s" x="32" y="126">a machine</text>
+
+        <rect class="a-box" x="16" y="148" width="176" height="46" rx="7"/>
+        <text class="a-t" x="32" y="170">Account token</text>
+        <text class="a-s" x="32" y="186">a person</text>
+
+        <rect class="a-box" x="16" y="214" width="176" height="46" rx="7"/>
+        <text class="a-t" x="32" y="236">Nothing</text>
+        <text class="a-s" x="32" y="252">no credential presented</text>
+
+        <line class="a-line" x1="192" y1="51" x2="280" y2="100" marker-end="url(#a-p)"/>
+        <line class="a-line" x1="192" y1="111" x2="280" y2="111" marker-end="url(#a-p)"/>
+        <line class="a-line" x1="192" y1="171" x2="280" y2="122" marker-end="url(#a-p)"/>
+        <line class="a-no" x1="192" y1="237" x2="280" y2="237" marker-end="url(#a-g)"/>
+
+        <rect class="a-box" x="286" y="88" width="150" height="46" rx="7"/>
+        <text class="a-t" x="302" y="110">Identity</text>
+        <text class="a-s" x="302" y="126">a name and a role</text>
+
+        <rect class="a-box" x="286" y="214" width="150" height="46" rx="7"/>
+        <text class="a-t" x="302" y="236">401</text>
+        <text class="a-s" x="302" y="252">sign in first</text>
+
+        <line class="a-line" x1="436" y1="111" x2="484" y2="111" marker-end="url(#a-p)"/>
+
+        <rect class="a-box" x="490" y="88" width="180" height="46" rx="7"/>
+        <text class="a-t" x="506" y="110">Enough for this route?</text>
+        <text class="a-s" x="506" y="126">viewer, operator or admin</text>
+
+        <line class="a-ok" x1="670" y1="102" x2="710" y2="72" marker-end="url(#a-m)"/>
+        <text class="a-lb-ok" x="674" y="82">yes</text>
+        <line class="a-no" x1="670" y1="122" x2="710" y2="150" marker-end="url(#a-g)"/>
+        <text class="a-lb-no" x="676" y="152">no</text>
+
+        <rect class="a-box" x="716" y="42" width="148" height="44" rx="7"/>
+        <text class="a-t" x="732" y="70">It happens</text>
+
+        <rect class="a-box" x="716" y="136" width="148" height="44" rx="7"/>
+        <text class="a-t" x="732" y="164">403 refused</text>
+
+        <polyline class="a-ok" points="742,86 742,110 692,110 692,284" marker-end="url(#a-m)"/>
+        <line class="a-no" x1="790" y1="180" x2="790" y2="284" marker-end="url(#a-g)"/>
+        <line class="a-no" x1="361" y1="260" x2="361" y2="284" marker-end="url(#a-g)"/>
+
+        <rect class="a-box" x="286" y="288" width="578" height="44" rx="7"/>
+        <text class="a-t" x="306" y="310">Audit log</text>
+        <text class="a-s" x="386" y="310">who, what, when, and whether it was allowed</text>
+      </svg>
+    </div>
+    <p>A refusal is recorded as carefully as a success, which is what makes <code>duckle-runner audit --outcome denied</code> worth running: it answers who is reaching for what they do not have. And a route with no entry in the permission table requires <b>admin</b>, so one added later is locked down rather than accidentally left open.</p>
+
+    <h3 class="dep-h3">The three roles</h3>
+    <p class="muted">The split follows what an action can destroy, not which screen it lives on. Each role includes the ones above it.</p>
+
+    <div class="ladder">
+      <div class="rung">
+        <b>viewer</b>
+        <span>Read the dashboard, run history, logs, schedules and the catalog. Changes nothing. The right role for a dashboard on a wall, or for a metrics scraper.</span>
+      </div>
+      <div class="rung">
+        <b>operator</b>
+        <span>Everything a viewer can, plus <em>run a pipeline and change when it runs</em>. This is the role that turns a deployed schedule on, which is why enabling one is a smaller decision than deploying it.</span>
+      </div>
+      <div class="rung">
+        <b>admin</b>
+        <span>Everything an operator can, plus <em>deploy a pipeline</em>, manage connections and credentials, and read the audit log. Deploying lands code that runs shell and SQL on that host, so it belongs here rather than with operating what is already trusted.</span>
+      </div>
+    </div>
+
+    <h3 class="dep-h3">Giving people and machines access</h3>
+    <pre><code># people, each with their own so the audit log can name them
+duckle-runner console add-user alice --role admin    --workspace /workspace
 duckle-runner console add-user bob   --role operator --workspace /workspace
-duckle-runner console add-user carol --role viewer   --workspace /workspace</code></pre>
-    <p class="muted"><b>viewer</b> reads. <b>operator</b> runs pipelines and changes when they run. <b>admin</b> touches credentials and the workspace itself. Tokens are printed once and stored only as an Argon2 hash.</p>
+
+# machines: a key of their own, with its own role and an optional expiry
+duckle-runner console key-add ci-deployer --role admin --expires-days 90
+duckle-runner console key-list      # role, state, and when each was last used
+duckle-runner console key-revoke ci-deployer</code></pre>
+    <p class="muted">A token or key is printed once and kept only as a hash, so a lost one is replaced rather than recovered. <b>Revoking a key takes effect on a console that is already running</b>, not at the next restart, and revoked keys are marked rather than deleted so one that turns up in an old log can still be named. Before revoking anything, <code>key-list</code> answers the question that actually matters: whether it is still in use.</p>
+
+    <h3 class="dep-h3">Where credentials live</h3>
+    <p class="muted">All of it in <code>&lt;workspace&gt;/.duckle/console.db</code>, and none of it replayable. An account token is an Argon2id hash, because a person may have chosen it. A session id and an API key are both generated with 256 bits of entropy and stored as SHA-256, which is why an integration polling every few seconds does not pay for a password hash on every call. A copy of that file, or a backup of the workspace, admits nobody.</p>
+    <p class="muted">The browser holds a random session id rather than the credential itself. The cookie is <code>HttpOnly</code> so page scripts cannot read it, <code>SameSite=Strict</code> so another site cannot ride it, and <code>Secure</code> whenever your proxy reports the browser is on https. Sessions last 12 hours and survive a restart, so a rolling deploy does not sign your team out. An older <code>console-users.json</code> is carried in on first start and renamed <code>.migrated</code>, so upgrading neither locks anyone out nor destroys the only copy of a credential store.</p>
   </div>
 </section>
 
@@ -498,7 +648,7 @@ spec:
   <div class="wrap">
     <div class="legal">
       <span>&copy; 2026 Duckle by SlothFlowLabs. MIT OR Apache-2.0.</span>
-      <span><a href="index.html">Home</a> &middot; <a href="https://github.com/slothflowlabs/duckle" target="_blank" rel="noopener">GitHub</a> &middot; Built on DuckDB &middot; Not affiliated with DuckDB Labs
+      <span><a href="index.html">Home</a> &middot; <a href="https://github.com/slothflowlabs/duckle" target="_blank" rel="noopener">GitHub</a> &middot; Built on DuckDB &middot; Not affiliated with DuckDB Labs</span>
     </div>
   </div>
 </footer>

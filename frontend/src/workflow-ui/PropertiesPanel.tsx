@@ -226,7 +226,7 @@ export default function PropertiesPanel({
 
     if (collapsed) {
         return (
-            <aside className="properties properties-collapsed">
+            <aside className="properties properties-collapsed" data-tour="properties">
                 <button
                     type="button"
                     className="properties-collapse-toggle"
@@ -320,7 +320,7 @@ export default function PropertiesPanel({
     };
 
     return (
-        <aside className="properties" style={{ width: panelWidth }}>
+        <aside className="properties" data-tour="properties" style={{ width: panelWidth }}>
             <div className="properties-resize-handle" onMouseDown={startResize} aria-hidden="true" />
             <button
                 type="button"

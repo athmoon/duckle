@@ -88,7 +88,7 @@ export default function EditorTabs({
 
     return (
         <div className="editor">
-            <div className="tabbar" role="tablist" aria-label={t('editorTabs.ariaLabel')}>
+            <div className="tabbar" data-tour="tabs" role="tablist" aria-label={t('editorTabs.ariaLabel')}>
                 {TAB_IDS.map(id => (
                     <button
                         key={id}

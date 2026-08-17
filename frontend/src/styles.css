@@ -8307,6 +8307,10 @@ html[dir='rtl'] .topbar-lang {
 }
 @keyframes tour-pop { from { opacity: 0; transform: translateY(6px) scale(.98); } }
 .tour-progress { font-size: 0.8462rem; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim, #9aa4bd); font-weight: 600; }
+/* Which part of the product a step belongs to. Carries the accent so the reader can
+   see the tour move from Build to Operate to Govern rather than counting steps. */
+.tour-chapter { color: var(--lemon, #ffd84d); }
+.tour-chapter::after { content: ' \00B7 '; color: var(--text-dim, #9aa4bd); }
 .tour-title { margin: 6px 0 8px; font-size: 1.2308rem; font-weight: 700; }
 .tour-body { margin: 0 0 14px; font-size: 1rem; line-height: 1.6; color: var(--text-dim, #c2cae0); }
 .tour-dots { display: flex; gap: 5px; margin-bottom: 14px; }
@@ -8316,6 +8320,9 @@ html[dir='rtl'] .topbar-lang {
 .tour-nav { display: flex; gap: 8px; }
 .tour-skip { background: none; border: none; color: var(--text-dim, #9aa4bd); cursor: pointer; font-size: 1rem; padding: 6px 4px; }
 .tour-skip:hover { color: var(--text, #eef1f8); text-decoration: underline; }
+/* How much of a mandatory tour is left. Sits where Skip sits, so the row keeps its
+   shape, but is plain text: it is not a control and must not invite a click. */
+.tour-remaining { color: var(--text-dim, #9aa4bd); font-size: 1rem; padding: 6px 4px; }
 .tour-btn {
     background: var(--surface-2, #1d2335); color: var(--text, #eef1f8);
     border: 1px solid var(--border, #2c3349); border-radius: 9px; padding: 7px 16px; font-size: 1rem; cursor: pointer;

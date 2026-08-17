@@ -148,6 +148,7 @@ export default function EditorHeader({
                 <button
                     type="button"
                     className="toolbar-icon-button"
+                    data-tour="home"
                     onClick={onGoHome}
                     title={t('launcher.goHome', 'Home')}
                     aria-label={t('launcher.goHome', 'Home')}

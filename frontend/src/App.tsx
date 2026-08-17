@@ -460,6 +460,23 @@ export default function App() {
         !!workspacePathState &&
         !setupChoice;
 
+    // Settings can ask the question again. The stored answer is cleared here rather than in
+    // the modal, because the modal only writes localStorage and this component's state is
+    // what actually decides whether the wizard is on screen; clearing one without the other
+    // means nothing happens until the next restart.
+    useEffect(() => {
+        const reset = () => {
+            try {
+                localStorage.removeItem('duckle.setupChoice');
+            } catch {
+                /* storage turned off: the state change below still re-opens it this session */
+            }
+            setSetupChoice(null);
+        };
+        window.addEventListener('duckle:reset-setup', reset);
+        return () => window.removeEventListener('duckle:reset-setup', reset);
+    }, []);
+
     // Home launcher. It overlays the workspace rather than replacing it: the
     // first-run tour waits for [data-tour="canvas"] to appear and gives up for
     // good after 24s, and unmounting would also reset the editor tab and the
@@ -2394,6 +2411,7 @@ export default function App() {
                 {contexts.length > 0 ? (
                     <div
                         className="topbar-context"
+                        data-tour="context"
                         title={t('topbar.activeContextHint')}
                     >
                         <Braces size={12} aria-hidden="true" />
@@ -2478,6 +2496,7 @@ export default function App() {
                 <button
                     type="button"
                     className="topbar-theme-toggle"
+                    data-tour="settings"
                     onClick={() => setShowSettings(true)}
                     title="Settings (proxy)"
                     aria-label="Open settings"
@@ -2487,6 +2506,7 @@ export default function App() {
                 <button
                     type="button"
                     className="topbar-theme-toggle"
+                    data-tour="git"
                     onClick={() => setShowGitPanel(s => !s)}
                     title={t('topbar.git')}
                     aria-label={t('topbar.gitAriaToggle')}
@@ -2498,6 +2518,7 @@ export default function App() {
                 <button
                     type="button"
                     className="topbar-theme-toggle"
+                    data-tour="duckie"
                     onClick={() => setShowChatPanel(s => !s)}
                     title={t('topbar.duckieAssistant')}
                     aria-label={t('topbar.duckieAssistantAriaToggle')}

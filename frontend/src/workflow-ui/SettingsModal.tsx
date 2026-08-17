@@ -457,20 +457,41 @@ export function SettingsModal({
                         </label>
                     </Section>
 
-                    <Section id="tour" title="Guided tour">
+                    <Section id="tour" title="First run">
                         <p style={help}>
-                            Replay the first-run walkthrough of the palette, canvas, properties, Run and the
-                            web dashboard.
+                            Everything you were shown the first time you opened Duckle, available
+                            again whenever you want it.
+                        </p>
+                        <button
+                            type="button"
+                            style={btn}
+                            onClick={() => {
+                                // Closed first, then dispatched: the tour spotlights elements on
+                                // the workspace behind this modal, and starting it while the modal
+                                // is still up would dim and cover the very thing it points at.
+                                onClose();
+                                setTimeout(() => window.dispatchEvent(new Event('duckle:start-tour')), 250);
+                            }}
+                        >
+                            Replay guided tour
+                        </button>
+                        <p style={{ ...help, marginTop: 14 }}>
+                            The setup question asks whether you are working on your own machine or
+                            with a team on a server. Resetting it asks again; it changes nothing on
+                            its own, and any server you already connected to stays connected.
                         </p>
                         <button
                             type="button"
                             style={btn}
                             onClick={() => {
                                 onClose();
-                                setTimeout(() => window.dispatchEvent(new Event('duckle:start-tour')), 250);
+                                setTimeout(
+                                    () => window.dispatchEvent(new Event('duckle:reset-setup')),
+                                    250,
+                                );
                             }}
                         >
-                            Replay guided tour
+                            Run setup again
                         </button>
                     </Section>
                 </div>

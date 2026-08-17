@@ -111,6 +111,7 @@ export default function BottomPanel({
     return (
         <div
             className={'bottom-panel' + (collapsed ? ' is-collapsed' : '')}
+            data-tour="bottom"
             style={collapsed ? undefined : { height }}
         >
             <div className="bottom-panel-resize" onMouseDown={onResizeStart} aria-hidden="true" />

@@ -124,6 +124,61 @@ fn target_credential(workspace: &Path, name: &str) -> Result<(String, String), S
     Ok((target.url, key))
 }
 
+/// What a server at this URL currently is, before anything is saved.
+///
+/// The desktop is the setup client for a server nobody has claimed yet, so the first
+/// question is which of those it is looking at. `/setup` answers this without a
+/// credential, because a server that has not been set up has no credential to ask for.
+pub fn probe(url: &str) -> Result<String, String> {
+    let url = clean_url(url)?;
+    let resp = http_client()?
+        .get(format!("{url}/setup"))
+        .send()
+        .map_err(|e| format!("could not reach {url}: {e}"))?;
+    match resp.status().as_u16() {
+        // Nobody administers it yet: whoever finishes setup becomes its administrator.
+        200 => Ok("unclaimed".into()),
+        // Already set up, so it wants a key rather than a name.
+        410 => Ok("claimed".into()),
+        s => Err(format!("{url} answered {s}; is that a Duckle server?")),
+    }
+}
+
+/// Claim an unclaimed server and keep the key it returns.
+///
+/// This is the whole point of the desktop being the setup client: a server can be brought
+/// up in a cloud with no shell session, and finished from here.
+pub fn claim(workspace: &Path, name: &str, url: &str, admin_label: &str) -> Result<(), String> {
+    let url = clean_url(url)?;
+    let label = admin_label.trim();
+    if label.is_empty() {
+        return Err("an administrator needs a name".into());
+    }
+    let payload = serde_json::to_string(&json!({ "label": label })).map_err(|e| e.to_string())?;
+    let resp = http_client()?
+        .post(format!("{url}/api/setup/claim"))
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .map_err(|e| format!("could not reach {url}: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        let msg = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| format!("{url} answered {status}"));
+        return Err(msg);
+    }
+    let token = serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))
+        .ok_or("the server did not return a key")?;
+    // Saved straight away. The key is shown once by the server, so a claim that is not
+    // stored here is a server nobody can get back into.
+    save_target(workspace, name, &url, &token)
+}
+
 /// Ask a target who we are, which is the only way to find out before deploying whether the
 /// URL is right, the server is up, and the key still works.
 pub fn check_target(workspace: &Path, name: &str) -> Result<Value, String> {

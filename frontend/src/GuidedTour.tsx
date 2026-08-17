@@ -30,7 +30,7 @@ const ALL_STEPS: Step[] = [
     {
         sel: null,
         title: 'Welcome to Duckle',
-        body: 'Your local-first DuckDB studio for building data pipelines - no servers, no JVM, your data never leaves the machine. This 60-second tour points out the essentials. You can skip it now and replay it later from Settings.',
+        body: 'A studio for building data pipelines on DuckDB. Draw one here and run it on this machine, or deploy the same file to a server you own. No JVM, and nothing is sent anywhere you did not choose. This 60-second tour points out the essentials, and you can replay it later from Settings.',
         placement: 'center',
     },
     {
@@ -137,6 +137,11 @@ export function GuidedTour() {
         if (localStorage.getItem(SEEN_KEY)) return;
         let tries = 0;
         const iv = setInterval(() => {
+            // A blocking modal owns the screen: the first-run setup question mounts over a
+            // canvas that already exists, so waiting for the canvas alone put the tour on
+            // top of it. Not counting this as a try matters as much as skipping it, or the
+            // tour gives up while somebody is still typing into the thing covering it.
+            if (document.querySelector('.modal-backdrop')) return;
             tries += 1;
             if (document.querySelector('[data-tour="canvas"]')) {
                 clearInterval(iv);

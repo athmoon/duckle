@@ -616,6 +616,57 @@ export async function workspaceGitPush(workspacePath: string): Promise<string> {
     return await invoke<string>('workspace_git_push', { workspacePath });
 }
 
+/** Where this workspace can be deployed. Names and URLs only: the key never comes back. */
+export type DeployTarget = { name: string; url: string };
+
+export async function deployTargets(workspacePath: string): Promise<DeployTarget[]> {
+    return await invoke<DeployTarget[]>('deploy_targets', { workspacePath });
+}
+
+/** What a server at this address is, before anything is saved. */
+export async function deployTargetProbe(url: string): Promise<'unclaimed' | 'claimed'> {
+    return await invoke<'unclaimed' | 'claimed'>('deploy_target_probe', { url });
+}
+
+/** Finish setting up a server that nobody has claimed, and keep the key it returns. */
+export async function deployTargetClaim(
+    workspacePath: string,
+    name: string,
+    url: string,
+    adminLabel: string,
+): Promise<void> {
+    await invoke('deploy_target_claim', { workspacePath, name, url, adminLabel });
+}
+
+/** Save a server that is already set up, with a key an administrator gave you. */
+export async function deployTargetSave(
+    workspacePath: string,
+    name: string,
+    url: string,
+    apiKey: string,
+): Promise<void> {
+    await invoke('deploy_target_save', { workspacePath, name, url, apiKey });
+}
+
+export async function deployTargetRemove(workspacePath: string, name: string): Promise<boolean> {
+    return await invoke<boolean>('deploy_target_remove', { workspacePath, name });
+}
+
+/** Ask a target who we are, to check the address and the key before trusting both. */
+export async function deployTargetCheck(workspacePath: string, name: string): Promise<unknown> {
+    return await invoke('deploy_target_check', { workspacePath, name });
+}
+
+export async function deployPipeline(
+    workspacePath: string,
+    target: string,
+    name: string,
+    pipeline: unknown,
+    schedule?: unknown,
+): Promise<unknown> {
+    return await invoke('deploy_pipeline', { workspacePath, target, name, pipeline, schedule });
+}
+
 export async function workspaceGitPull(workspacePath: string): Promise<string> {
     return await invoke<string>('workspace_git_pull', { workspacePath });
 }

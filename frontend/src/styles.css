@@ -9051,3 +9051,61 @@ html[dir='rtl'] .topbar-lang {
     color: var(--text-1);
     margin-right: 6px;
 }
+
+/* ── First-run setup wizard ───────────────────────────────────────────────────
+   One question, and the work that follows if the answer is "a server". Sized so
+   the two choices sit side by side without either looking like the default. */
+.setup-card { width: 100%; max-width: 560px; padding: 30px 32px; }
+.setup-title { margin: 0 0 6px; font-size: 20px; font-weight: 650; color: var(--text-1); }
+.setup-sub { margin: 0 0 20px; font-size: 13.5px; color: var(--text-3); line-height: 1.6; }
+.setup-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 620px) { .setup-choices { grid-template-columns: 1fr; } }
+.setup-choice {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+    padding: 18px 18px 20px; text-align: left; cursor: pointer;
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text-1); font: inherit; transition: border-color 120ms, background 120ms;
+}
+.setup-choice:hover { border-color: var(--accent); background: var(--bg-3); }
+.setup-choice:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.setup-choice svg { color: var(--accent); }
+.setup-choice-title { font-size: 14.5px; font-weight: 620; }
+.setup-choice-sub { font-size: 12.5px; color: var(--text-3); line-height: 1.55; }
+.setup-label {
+    display: block; font-size: 12px; font-weight: 600; color: var(--text-2);
+    margin: 14px 0 6px;
+}
+.setup-input {
+    width: 100%; padding: 10px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--bg-0); color: var(--text-1);
+    font: inherit; font-size: 14px;
+}
+.setup-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+.setup-note {
+    display: flex; align-items: flex-start; gap: 8px; margin: 16px 0 0;
+    font-size: 12.5px; color: var(--text-3); line-height: 1.55;
+}
+.setup-note svg { flex: none; margin-top: 2px; color: var(--success); }
+.setup-error {
+    margin-top: 14px; padding: 10px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); border-left: 3px solid var(--accent-warn);
+    background: var(--bg-2); color: var(--text-2); font-size: 12.5px; line-height: 1.55;
+}
+.setup-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.setup-back, .setup-next {
+    display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px;
+    border-radius: var(--radius-sm); font: inherit; font-size: 13.5px; font-weight: 600;
+    cursor: pointer; border: 1px solid var(--border);
+}
+.setup-back { background: transparent; color: var(--text-3); }
+.setup-back:hover { color: var(--text-1); border-color: var(--border-strong); }
+.setup-next { background: var(--btn-primary-bg); color: var(--btn-primary-fg); border-color: transparent; }
+.setup-next:hover:not(:disabled) { background: var(--btn-primary-bg-strong); }
+.setup-next:disabled { opacity: .5; cursor: default; }
+.setup-done-mark {
+    width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--bg-2); border: 1px solid var(--success); color: var(--success);
+    margin-bottom: 16px;
+}
+.spin { animation: setup-spin 900ms linear infinite; }
+@keyframes setup-spin { to { transform: rotate(360deg); } }

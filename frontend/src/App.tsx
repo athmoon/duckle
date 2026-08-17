@@ -44,6 +44,7 @@ import { Settings as SettingsIcon } from 'lucide-react';
 import { ClaudeIcon } from './workflow-ui/ClaudeIcon';
 import { DuckleLogo } from './workflow-ui/DuckleLogo';
 import EngineSetupModal from './workflow-ui/EngineSetupModal';
+import SetupWizard from './workflow-ui/SetupWizard';
 import ChatPanel from './workflow-ui/ChatPanel';
 import GitPanel from './workflow-ui/GitPanel';
 import WindowControls from './workflow-ui/WindowControls';
@@ -441,6 +442,22 @@ export default function App() {
     const showProfileSetup = isInTauri() && engineGate === 'ready' && accounts.length === 0;
     const showWorkspacePicker =
         isInTauri() && engineGate === 'ready' && accounts.length > 0 && !workspacePathState;
+    // The one question of the first run, asked after there is a workspace to answer it
+    // about and never again once answered. Someone trying Duckle out should meet a canvas,
+    // so "local" is a click that changes nothing.
+    const [setupChoice, setSetupChoice] = useState<string | null>(() => {
+        try {
+            return localStorage.getItem('duckle.setupChoice');
+        } catch {
+            return 'local';
+        }
+    });
+    const showSetupWizard =
+        isInTauri() &&
+        engineGate === 'ready' &&
+        accounts.length > 0 &&
+        !!workspacePathState &&
+        !setupChoice;
 
     // Home launcher. It overlays the workspace rather than replacing it: the
     // first-run tour waits for [data-tour="canvas"] to appear and gives up for
@@ -2752,6 +2769,20 @@ export default function App() {
 
             {showWorkspacePicker ? (
                 <WorkspacePickerModal onPicked={handlePickedWorkspace} />
+            ) : null}
+
+            {showSetupWizard ? (
+                <SetupWizard
+                    workspacePath={workspacePathState ?? ''}
+                    onDone={choice => {
+                        try {
+                            localStorage.setItem('duckle.setupChoice', choice);
+                        } catch {
+                            /* a browser with storage turned off still gets past the wizard */
+                        }
+                        setSetupChoice(choice);
+                    }}
+                />
             ) : null}
 
             {editingEdge ? (

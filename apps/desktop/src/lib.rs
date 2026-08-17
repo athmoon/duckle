@@ -215,6 +215,8 @@ pub fn run() {
             workspace_git_branches,
             deploy_targets,
             deploy_target_save,
+            deploy_target_probe,
+            deploy_target_claim,
             deploy_target_remove,
             deploy_target_check,
             deploy_pipeline,
@@ -1087,6 +1089,24 @@ fn deploy_target_save(
     api_key: String,
 ) -> Result<(), String> {
     deploy::save_target(&ws_path(&workspace_path), &name, &url, &api_key)
+}
+
+/// What a server at this address is, before anything is saved: waiting to be set up, or
+/// already set up and wanting a key.
+#[tauri::command]
+fn deploy_target_probe(url: String) -> Result<String, String> {
+    deploy::probe(&url)
+}
+
+/// Finish setting up a server from here, and keep the key it hands back.
+#[tauri::command]
+fn deploy_target_claim(
+    workspace_path: String,
+    name: String,
+    url: String,
+    admin_label: String,
+) -> Result<(), String> {
+    deploy::claim(&ws_path(&workspace_path), &name, &url, &admin_label)
 }
 
 #[tauri::command]

@@ -65,6 +65,7 @@
 - [In-app Git (GitHub/GitLab)](#git-integration-github--gitlab)
 - [Workspace + Git flow](#workspace-and-git-flow)
 - [Schedules](#schedules-and-triggers)
+- [Plans](#plans-several-pipelines-in-an-order-you-chose)
 - [Server deployment](#server-deployment-build-pipeline)
 - [Sign-in and roles](#sign-in-and-roles)
 - [How a request is decided](#how-a-request-is-decided)
@@ -460,16 +461,39 @@ To run and monitor pipelines on a server with a browser instead of the desktop a
 duckle-runner serve --port 8080 --workspace /path/to/workspace
 ```
 
-Open `http://localhost:8080`. The panel has six views:
+Open `http://localhost:8080`. The panel has eight views:
 
 - **Overview** - every pipeline with its last status, duration and next scheduled run, and a Run button.
 - **Runs** - run history across every pipeline (status, duration, rows, errors) with expandable per-pipeline run logs and optional auto-refresh.
 - **Schedules** - an editable cron or interval schedule per pipeline, showing what is running now and what is due next.
+- **Plans** - several pipelines in the order you chose. See [Plans](#plans-several-pipelines-in-an-order-you-chose).
 - **Catalog** - everything the workspace reads and writes, who owns it, and what is written but never read. See [Workspace catalog](#workspace-catalog-what-reads-and-writes-what).
 - **Batches** - work queued for workers: progress, what is running now, what failed, and a retry for the failures.
+- **People** - the accounts that may sign in and the keys machines use, with the role each one has. Admin only.
 - **Audit** - who signed in, what they changed and who was turned away. Admin only, and shown only to admins.
 
 Runs execute in-process through the same engine, are written to the same run history (`<workspace>/runs/`) and logs (`<workspace>/logs/`), and a built-in scheduler triggers any pipeline whose schedule has elapsed - so the server itself runs your schedules, no OS cron needed.
+
+#### Plans: several pipelines, in an order you chose
+
+A schedule runs one pipeline. A **plan** runs several, in steps: everything inside a step goes at once, and the next step waits for it. A step that fails stops the ones after it, so nothing runs against data that was never produced.
+
+That is the shape most nightly loads already have. Without it they get written as three schedules set a few minutes apart and hoped over, which works until the extract takes four minutes instead of two.
+
+Build one in the **Plans** tab: add a step, put pipelines in it, and the card draws the chain it will run.
+
+```
+EXTRACT                    PUBLISH
+orders.json      -->       export.json
+customers.json
+```
+
+Two things worth knowing:
+
+- **Every pipeline keeps its own run history.** A plan does not collapse into one opaque run, because at three in the morning the question is which step broke, not that the nightly load did.
+- **A plan can be scheduled like anything else**, from its own card. The same plan runs whether the schedule is fired by `serve` on your server or by the desktop app on a shared workspace - both read `plans.json` and `schedules.json`, and both decide it the same way.
+
+Plans live in `<workspace>/plans.json`, so they are a file in git alongside the pipelines they order.
 
 #### Sign-in and roles
 

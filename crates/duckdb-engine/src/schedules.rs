@@ -54,6 +54,12 @@ pub struct Schedule {
     pub name: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// The plan this fires, when it fires a plan rather than a single pipeline.
+    ///
+    /// Absent means the pipeline named by `pipeline_id`, which is what every schedule
+    /// written before plans existed means, so an existing store keeps working untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
     pub kind: ScheduleKind,
     #[serde(default)]
     pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,

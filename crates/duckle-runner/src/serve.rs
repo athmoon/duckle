@@ -2079,6 +2079,11 @@ fn load_schedules(state: &State) -> Result<Value, String> {
                 "intervalSeconds": seconds,
                 "intervalMinutes": seconds / 60,
                 "cron": cron,
+                // The scheduler reads this projection rather than the store, so anything
+                // it needs has to appear here. Leaving this out meant a schedule that
+                // named a plan fired the pipeline it was keyed by instead, and failed
+                // looking for a file nobody had written.
+                "planId": s.plan_id,
             }),
         );
     }
@@ -2122,6 +2127,7 @@ fn migrate_legacy_schedules(workspace: &Path) {
                 id: format!("panel-{pipeline_id}"),
                 pipeline_id: pipeline_id.clone(),
                 name: pipeline_id.clone(),
+                plan_id: None,
                 enabled: cfg.get("enabled").and_then(Value::as_bool).unwrap_or(false),
                 kind,
                 last_run_at: None,
@@ -2196,6 +2202,14 @@ fn save_schedule_at(workspace: &Path, body: &Value) -> Result<Value, String> {
     let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     let interval = body.get("intervalMinutes").and_then(|v| v.as_u64()).unwrap_or(0);
     let cron = body.get("cron").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    // A schedule fires a plan when it names one, and a single pipeline otherwise, which is
+    // what every schedule saved before plans existed means.
+    let plan_id = body
+        .get("planId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     // Validate a supplied cron expression up front so a bad one is rejected with
     // a clear message instead of silently never firing (#132).
     if !cron.is_empty()
@@ -2239,6 +2253,7 @@ fn save_schedule_at(workspace: &Path, body: &Value) -> Result<Value, String> {
             Some(s) => {
                 s.enabled = enabled;
                 s.kind = kind;
+                s.plan_id = plan_id.clone();
                 // A changed trigger invalidates the time this process armed.
                 s.next_run_at = None;
             }
@@ -2247,6 +2262,7 @@ fn save_schedule_at(workspace: &Path, body: &Value) -> Result<Value, String> {
                 pipeline_id: pipeline_id.clone(),
                 name: pipeline_id.clone(),
                 enabled,
+                plan_id: plan_id.clone(),
                 kind,
                 last_run_at: None,
                 last_run_status: None,
@@ -2506,6 +2522,68 @@ fn cron_decision(
     }
 }
 
+/// Fire one schedule that has come due.
+///
+/// Both triggers, cron and interval, arrive here, and both used to carry their own copy of
+/// the lookup. One copy means a schedule that names a plan is handled once rather than in
+/// two places that can drift.
+fn fire_schedule(state: &State, id: &str, cfg: &Value, pipes: &HashMap<String, PathBuf>) {
+    let plan_id = cfg
+        .get("planId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(plan_id) = plan_id {
+        fire_plan(state, plan_id);
+        return;
+    }
+    match pipes.get(id) {
+        Some(path) => {
+            let file = rel(&state.workspace, path);
+            run_scheduled(state, id, &file);
+        }
+        None => report_missing_pipeline(state, id),
+    }
+}
+
+/// Run a whole plan because its schedule came due.
+///
+/// Each pipeline still goes through the ordinary run path, so run history shows them
+/// individually and a failure at three in the morning names the pipeline rather than the
+/// plan. What is logged here is the shape of the attempt, which run history cannot show.
+fn fire_plan(state: &State, plan_id: &str) {
+    let plan = match duckle_duckdb_engine::plans::load(&state.workspace) {
+        Ok(list) => list.into_iter().find(|p| p.id == plan_id),
+        Err(e) => {
+            eprintln!("duckle-runner: scheduled plan '{plan_id}': {e}");
+            return;
+        }
+    };
+    let Some(plan) = plan else {
+        // The same shape of problem as a schedule pointing at a deleted pipeline: said
+        // once, on the tick, rather than silently doing nothing forever.
+        eprintln!("duckle-runner: schedule fires plan '{plan_id}', which does not exist");
+        return;
+    };
+    let params = HashMap::new();
+    let outcome = duckle_duckdb_engine::plans::execute(&plan, |pipeline| {
+        execute_one(state, pipeline, "schedule", &params).map(|_| ())
+    });
+    let ran = outcome
+        .steps
+        .iter()
+        .flat_map(|s| s.pipelines.iter())
+        .filter(|p| p.status != "skipped")
+        .count();
+    eprintln!(
+        "duckle-runner: plan '{}' {} ({} of {} pipelines ran)",
+        plan.id,
+        outcome.status,
+        ran,
+        outcome.steps.iter().map(|s| s.pipelines.len()).sum::<usize>()
+    );
+}
+
 fn spawn_scheduler(state: Arc<State>) {
     std::thread::spawn(move || {
         let mut last_fired: HashMap<String, Instant> = HashMap::new();
@@ -2547,13 +2625,7 @@ fn spawn_scheduler(state: Arc<State>) {
                                     chrono::Local::now(),
                                 );
                                 if fire {
-                                    match pipes.get(id) {
-                                        Some(path) => {
-                                            let file = rel(&state.workspace, path);
-                                            run_scheduled(&state, id, &file);
-                                        }
-                                        None => report_missing_pipeline(&state, id),
-                                    }
+                                    fire_schedule(&state, id, cfg, &pipes);
                                 }
                                 match rearm {
                                     Some(next) => {
@@ -2600,13 +2672,7 @@ fn spawn_scheduler(state: Arc<State>) {
                     // re-evaluated on every tick, silently, for as long as the
                     // process lived.
                     last_fired.insert(id.clone(), now);
-                    match pipes.get(id) {
-                        Some(path) => {
-                            let file = rel(&state.workspace, path);
-                            run_scheduled(&state, id, &file);
-                        }
-                        None => report_missing_pipeline(&state, id),
-                    }
+                    fire_schedule(&state, id, cfg, &pipes);
                 }
             }
         }
@@ -2755,7 +2821,7 @@ fn console_router(state: Arc<State>) -> axum::Router {
 mod tests {
     use super::{
         connection_secret_cmd, console_auth, cookie_attributes, cron_decision, deploy_into,
-        deploy_target, is_public_route, route_console, scheduler_notice, Request,
+        deploy_target, is_public_route, load_schedules, route_console, scheduler_notice, Request,
         migrate_legacy_schedules, normalize_cron, read_pipeline_file, read_request,
         save_schedule_at, RunGate, State, HEALTH_PATH, MAX_BODY,
     };
@@ -2859,6 +2925,35 @@ mod tests {
         .expect_err("must refuse");
         assert!(err.contains("not a pipeline"), "unhelpful refusal: {err}");
         assert!(!ws.join("console-users.json").exists(), "it was written anyway");
+    }
+
+    /// The scheduler reads a projection of the schedule store, not the store, so anything
+    /// it needs has to be in the projection. Leaving the plan out meant a schedule that
+    /// named a plan fired the pipeline it happened to be keyed by, and failed looking for a
+    /// file nobody had written.
+    #[test]
+    fn a_schedule_that_names_a_plan_tells_the_scheduler_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        save_schedule_at(
+            &ws,
+            &serde_json::json!({
+                "id": "nightly",
+                "planId": "nightly",
+                "enabled": true,
+                "intervalSeconds": 60
+            }),
+        )
+        .expect("saves");
+
+        let state = guarded_state(&ws);
+        let seen = load_schedules(&state).expect("projection reads");
+        let entry = seen.get("nightly").expect("the schedule is there");
+        assert_eq!(
+            entry.get("planId").and_then(|v| v.as_str()),
+            Some("nightly"),
+            "the scheduler cannot fire a plan it is never told about"
+        );
     }
 
     /// Removing the last administrator leaves a console nobody can administer. Removing

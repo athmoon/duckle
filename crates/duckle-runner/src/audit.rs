@@ -372,6 +372,17 @@ pub fn requirement(method: &str, path: &str) -> (Role, &'static str) {
         // deliberately two acts needing two different roles.
         ("POST", "/api/deploy") => (Role::Admin, "pipeline.deploy"),
 
+        // Managing who may use the console, and what machines may. These would reach
+        // admin through the fallback anyway; naming them means the audit log calls them
+        // what they are rather than "unknown", and a later reshuffle has to decide
+        // deliberately.
+        ("GET", "/api/admin/users") => (Role::Admin, "admin.users.read"),
+        ("POST", "/api/admin/users") => (Role::Admin, "admin.users.add"),
+        ("DELETE", "/api/admin/users") => (Role::Admin, "admin.users.remove"),
+        ("GET", "/api/admin/keys") => (Role::Admin, "admin.keys.read"),
+        ("POST", "/api/admin/keys") => (Role::Admin, "admin.keys.add"),
+        ("POST", "/api/admin/keys/revoke") => (Role::Admin, "admin.keys.revoke"),
+
         // Anything unrecognised needs the highest role. A route added later
         // without a line here is locked down rather than left open.
         _ => (Role::Admin, "unknown"),

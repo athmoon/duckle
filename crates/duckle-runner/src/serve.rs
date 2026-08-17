@@ -1457,6 +1457,86 @@ fn dispatch_console(req: &Request, state: &State, who: console_auth::Identity) -
                 Err(e) => respond_err("400 Bad Request", &e),
             }
         }
+        ("GET", "/api/admin/users") => match state.console.list_accounts() {
+            Ok(list) => respond_json(&json!({
+                "users": list.iter().map(|(label, role)| json!({
+                    "label": label, "role": role.as_str()
+                })).collect::<Vec<_>>()
+            })),
+            Err(e) => respond_err("500 Internal Server Error", &e),
+        },
+        ("POST", "/api/admin/users") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            let role = body.get("role").and_then(|v| v.as_str()).unwrap_or("viewer");
+            match console_auth::Console::role_from(role) {
+                None => respond_err("400 Bad Request", "role must be viewer, operator or admin"),
+                Some(role) => match state.console.create_account(label, role) {
+                    // Shown once. There is no route that gives it back, by design.
+                    Ok(token) => respond_json(&json!({ "label": label, "role": role.as_str(), "token": token })),
+                    Err(e) => respond_err("400 Bad Request", &e),
+                },
+            }
+        }
+        ("DELETE", "/api/admin/users") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            // Removing the last administrator would leave a console nobody can administer,
+            // and no amount of GUI polish recovers from that.
+            let admins_left = state
+                .console
+                .list_accounts()
+                .map(|l| l.iter().filter(|(n, r)| *r == console_auth::Role::Admin && n != label).count())
+                .unwrap_or(0);
+            if admins_left == 0 {
+                return respond_err("409 Conflict", "that is the last administrator; make someone else an admin first");
+            }
+            match state.console.remove_account(label) {
+                Ok(true) => respond_json(&json!({ "removed": label })),
+                Ok(false) => respond_err("404 Not Found", "no account with that name"),
+                Err(e) => respond_err("500 Internal Server Error", &e),
+            }
+        }
+        ("GET", "/api/admin/keys") => match state.console.list_keys() {
+            Ok(keys) => {
+                let now = crate::auth_store::now_secs();
+                respond_json(&json!({
+                    "keys": keys.iter().map(|k| json!({
+                        "label": k.label,
+                        "role": k.role.as_str(),
+                        "state": if k.revoked { "revoked" }
+                                 else if k.expires_at.is_some_and(|e| e <= now) { "expired" }
+                                 else { "live" },
+                        "createdAt": k.created_at,
+                        "expiresAt": k.expires_at,
+                        "lastUsedAt": k.last_used_at,
+                    })).collect::<Vec<_>>()
+                }))
+            }
+            Err(e) => respond_err("500 Internal Server Error", &e),
+        },
+        ("POST", "/api/admin/keys") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            let role = body.get("role").and_then(|v| v.as_str()).unwrap_or("viewer");
+            let days = body.get("expiresDays").and_then(|v| v.as_i64()).filter(|d| *d > 0);
+            match console_auth::Console::role_from(role) {
+                None => respond_err("400 Bad Request", "role must be viewer, operator or admin"),
+                Some(role) => match state.console.create_key(label, role, days) {
+                    Ok(key) => respond_json(&json!({ "label": label, "role": role.as_str(), "key": key })),
+                    Err(e) => respond_err("400 Bad Request", &e),
+                },
+            }
+        }
+        ("POST", "/api/admin/keys/revoke") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            match state.console.revoke_key(label) {
+                Ok(0) => respond_err("404 Not Found", "no live key with that name"),
+                Ok(n) => respond_json(&json!({ "revoked": label, "count": n })),
+                Err(e) => respond_err("500 Internal Server Error", &e),
+            }
+        }
         ("POST", "/api/deploy") => {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             match deploy_into(&state.workspace, &body) {

@@ -116,6 +116,10 @@ pub struct Console {
     /// unchanged local case: the caller is trusted because they are already on
     /// the machine.
     open: bool,
+    /// The account made from `--token`, which exists only for this process and is in no
+    /// store. Held separately so re-reading the stored accounts cannot drop it: doing so
+    /// would sign out whoever started the server, the moment they added a colleague.
+    ephemeral: Option<Account>,
     /// Which of the three states this console is in. Behind a lock for the same reason as
     /// the accounts: claiming moves it, and the running process has to notice.
     mode: Mutex<Mode>,
@@ -208,16 +212,22 @@ impl Console {
         // A key is a credential too, so a console with keys and no user accounts has been
         // configured and must not be treated as though it had not been.
         let has_machine_credential = store.has_live_api_key();
+        let mut ephemeral = None;
         if let Some(t) = token {
             if t.trim().is_empty() {
                 return Err("--token was given but is empty".into());
             }
-            accounts.push(Account {
+            ephemeral = Some(Account {
                 label: "token".into(),
                 role: Role::Admin,
                 token_hash: hash_token(t)?,
             });
         }
+        let unconfigured_before_token = accounts.is_empty() && !has_machine_credential;
+        if let Some(e) = &ephemeral {
+            accounts.push(e.clone());
+        }
+        let _ = unconfigured_before_token;
         let loopback = is_loopback(host);
         let unconfigured = accounts.is_empty() && !has_machine_credential;
         let mode = match (unconfigured, loopback) {
@@ -238,6 +248,7 @@ impl Console {
             );
         }
         Ok(Console {
+            ephemeral,
             mode: Mutex::new(mode),
             opened_at: now_secs(),
             open: unconfigured && loopback,
@@ -248,6 +259,91 @@ impl Console {
         })
     }
 
+
+
+    /// Who has an account, without anything that could be replayed.
+    pub fn list_accounts(&self) -> Result<Vec<(String, Role)>, String> {
+        let store = self.store.lock().map_err(|_| "credential store busy")?;
+        Ok(store.accounts()?.into_iter().map(|(l, r, _)| (l, r)).collect())
+    }
+
+    /// Add a person. Returns their token once; it is kept only as a hash.
+    pub fn create_account(&self, label: &str, role: Role) -> Result<String, String> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("an account needs a name".into());
+        }
+        let token = add_account(&self.workspace, label, role)?;
+        self.refresh_accounts();
+        Ok(token)
+    }
+
+    /// Remove a person. Their sessions die with the account at the next check.
+    pub fn remove_account(&self, label: &str) -> Result<bool, String> {
+        let removed = {
+            let store = self.store.lock().map_err(|_| "credential store busy")?;
+            store.remove_account(label)?
+        };
+        self.refresh_accounts();
+        Ok(removed)
+    }
+
+    /// Machine credentials, with enough to decide whether one is still in use.
+    pub fn list_keys(&self) -> Result<Vec<crate::auth_store::ApiKeyInfo>, String> {
+        let store = self.store.lock().map_err(|_| "credential store busy")?;
+        store.api_keys()
+    }
+
+    /// Mint a machine credential. Returned once, kept as a hash.
+    pub fn create_key(&self, label: &str, role: Role, expires_days: Option<i64>) -> Result<String, String> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("a key needs a name, so it can be recognised later".into());
+        }
+        let expires_at = expires_days.map(|d| crate::auth_store::now_secs() + d * 86_400);
+        let store = self.store.lock().map_err(|_| "credential store busy")?;
+        store.create_api_key(label, role, expires_at)
+    }
+
+    /// Revoke a machine credential. Takes effect on the next request, not the next restart.
+    pub fn revoke_key(&self, label: &str) -> Result<usize, String> {
+        let store = self.store.lock().map_err(|_| "credential store busy")?;
+        store.revoke_api_key(label)
+    }
+
+    /// Re-read the accounts this process authorises against.
+    ///
+    /// Adding or removing one happens while the server is running, so a snapshot taken at
+    /// startup would leave a new colleague unable to sign in, and a removed one still able
+    /// to, until somebody restarted it.
+    fn refresh_accounts(&self) {
+        let fresh = self.store.lock().ok().and_then(|s| s.accounts().ok());
+        if let (Some(fresh), Ok(mut held)) = (fresh, self.accounts.lock()) {
+            let mut rebuilt: Vec<Account> = fresh
+                .into_iter()
+                .map(|(label, role, token_hash)| Account { label, role, token_hash })
+                .collect();
+            // The --token account lives only here, so a re-read has to restore it.
+            if let Some(e) = &self.ephemeral {
+                rebuilt.push(e.clone());
+            }
+            *held = rebuilt;
+        }
+        // A removed account must stop being admitted by the verified-token cache too.
+        if let Ok(mut cache) = self.verified.lock() {
+            cache.clear();
+        }
+    }
+
+    /// Parse a role from what a form or an API client sent.
+    pub fn role_from(name: &str) -> Option<Role> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "viewer" => Some(Role::Viewer),
+            "operator" => Some(Role::Operator),
+            "admin" => Some(Role::Admin),
+            _ => None,
+        }
+    }
 
     /// Which state this console is in.
     pub fn mode(&self) -> Mode {
@@ -291,14 +387,7 @@ impl Console {
         // The process is already serving. Pick up the account that was just created and
         // leave the unclaimed state, or the person who set it up cannot use what they set
         // up until somebody restarts it.
-        if let Ok(fresh) = store.accounts() {
-            if let Ok(mut held) = self.accounts.lock() {
-                *held = fresh
-                    .into_iter()
-                    .map(|(label, role, token_hash)| Account { label, role, token_hash })
-                    .collect();
-            }
-        }
+        self.refresh_accounts();
         if let Ok(mut m) = self.mode.lock() {
             *m = Mode::Claimed;
         }
@@ -640,6 +729,49 @@ mod tests {
         assert_eq!(local.mode(), Mode::Local);
         assert!(local.is_open(), "requiring a token on localhost breaks the local workflow");
         assert!(!local.claimable(), "there is nothing to claim on a machine you are sitting at");
+    }
+
+    /// Adding a colleague must not sign out the person adding them.
+    ///
+    /// The --token account exists only in the running process and is in no store, so
+    /// re-reading the stored accounts after a change dropped it. The first thing an
+    /// administrator does through the new screens is add someone, and the reward was being
+    /// locked out of the console they had just been using.
+    #[test]
+    fn adding_an_account_does_not_sign_out_the_token_that_started_the_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let console = Console::configure(ws, "0.0.0.0", Some("starter-token")).expect("starts");
+        assert!(
+            console.identify(Some("Bearer starter-token"), None).is_some(),
+            "the starting token should work before anything else happens"
+        );
+
+        console.create_account("bob", Role::Operator).expect("adds a colleague");
+
+        assert!(
+            console.identify(Some("Bearer starter-token"), None).is_some(),
+            "adding an account signed out the token that started the server"
+        );
+        assert_eq!(console.list_accounts().unwrap().len(), 1, "bob is stored, the token is not");
+    }
+
+    /// The other half: a removed account stops being admitted straight away, rather than
+    /// lingering in the verified-token cache until a restart.
+    #[test]
+    fn a_removed_account_stops_being_admitted_immediately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let console = Console::configure(ws, "0.0.0.0", Some("starter-token")).expect("starts");
+        let token = console.create_account("carol", Role::Operator).expect("adds");
+        let bearer = format!("Bearer {token}");
+        assert!(console.identify(Some(&bearer), None).is_some(), "carol can sign in");
+
+        assert!(console.remove_account("carol").expect("removes"));
+        assert!(
+            console.identify(Some(&bearer), None).is_none(),
+            "a removed account was still admitted from cache"
+        );
     }
 
     /// Setting up in a browser means the first person to finish becomes the administrator.

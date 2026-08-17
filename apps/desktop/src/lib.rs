@@ -22,6 +22,7 @@ use tracing_subscriber::EnvFilter;
 mod app_settings;
 mod ci_status;
 mod dbt_engine;
+mod deploy;
 mod pixeltable_engine;
 mod engine_manager;
 mod llama_chat;
@@ -212,6 +213,11 @@ pub fn run() {
             workspace_git_push,
             workspace_git_pull,
             workspace_git_branches,
+            deploy_targets,
+            deploy_target_save,
+            deploy_target_remove,
+            deploy_target_check,
+            deploy_pipeline,
             workspace_git_branch_create,
             workspace_git_branch_checkout,
             workspace_git_remote_set,
@@ -1060,6 +1066,58 @@ fn workspace_git_commit(workspace_path: String, message: String) -> Result<Strin
 #[tauri::command]
 fn workspace_git_push(workspace_path: String) -> Result<String, String> {
     workspace_git::push(&ws_path(&workspace_path))
+}
+
+/// Where this workspace can be deployed. Names and URLs only: the API key that
+/// authenticates to each server never crosses into the front end, because a token that
+/// reaches the browser layer is a token in a log, a crash report and a screenshot.
+#[tauri::command]
+fn deploy_targets(workspace_path: String) -> Result<Vec<deploy::TargetInfo>, String> {
+    deploy::list_targets(&ws_path(&workspace_path))
+}
+
+/// Save a server and the API key minted for this machine by that server
+/// (`duckle-runner console key-add <label> --role admin`). The key is encrypted with the
+/// workspace key before it touches the disk, the same protection a saved connection gets.
+#[tauri::command]
+fn deploy_target_save(
+    workspace_path: String,
+    name: String,
+    url: String,
+    api_key: String,
+) -> Result<(), String> {
+    deploy::save_target(&ws_path(&workspace_path), &name, &url, &api_key)
+}
+
+#[tauri::command]
+fn deploy_target_remove(workspace_path: String, name: String) -> Result<bool, String> {
+    deploy::remove_target(&ws_path(&workspace_path), &name)
+}
+
+/// Ask a target who we are. The only way to find out that the URL is right, the server is
+/// up and the key still works, before trusting all three during a deploy.
+#[tauri::command]
+fn deploy_target_check(workspace_path: String, name: String) -> Result<serde_json::Value, String> {
+    deploy::check_target(&ws_path(&workspace_path), &name)
+}
+
+/// Send a pipeline to a target. Any schedule travels with it and arrives switched off, so
+/// a cadence set while testing here cannot start firing there the moment it lands.
+#[tauri::command]
+fn deploy_pipeline(
+    workspace_path: String,
+    target: String,
+    name: String,
+    pipeline: serde_json::Value,
+    schedule: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    deploy::deploy(
+        &ws_path(&workspace_path),
+        &target,
+        &name,
+        &pipeline,
+        schedule.as_ref(),
+    )
 }
 
 #[tauri::command]

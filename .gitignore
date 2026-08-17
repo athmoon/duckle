@@ -55,6 +55,8 @@ coverage/
 .duckle/cache/
 .duckle/engines/
 # Console runtime state: live sessions and account hashes. Never committed.
+# Deployment targets: server URLs plus an encrypted API key per workspace.
+.duckle/deploy-targets.json
 .duckle/console.db
 .duckle/console.db-wal
 .duckle/console.db-shm

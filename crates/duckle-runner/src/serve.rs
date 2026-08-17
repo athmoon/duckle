@@ -680,6 +680,49 @@ fn dispatch_cmd(state: &WebState, cmd: &str, body: &[u8]) -> Reply {
                 Err(e) => respond_err("500 Internal Server Error", &e.to_string()),
             }
         }
+        // Plans: several pipelines in ordered steps. Authoring only - these are the store
+        // operations, mirroring the desktop's plans_* commands so the same editor works in
+        // both. RUNNING a plan is not here: that needs the run lock, per-pipeline run
+        // history and alerting the console's `/api/plans/run` already does, and a second
+        // implementation of it is exactly how the two schedulers came to disagree about
+        // what a schedule meant. The editor says so rather than running it differently.
+        //
+        // The workspace the desktop sends is ignored: this process knows the only workspace
+        // it serves, and a browser must not be able to name a directory on the server.
+        "plans_list" => match duckle_duckdb_engine::plans::load(&state.workspace) {
+            Ok(list) => respond_json(&serde_json::to_value(&list).unwrap_or(json!([]))),
+            Err(e) => respond_err("500 Internal Server Error", &e),
+        },
+        "plans_save" => {
+            let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+            let plan: duckle_duckdb_engine::plans::Plan =
+                match serde_json::from_value(args.get("plan").cloned().unwrap_or(Value::Null)) {
+                    Ok(p) => p,
+                    Err(e) => return respond_err("400 Bad Request", &format!("that is not a plan: {e}")),
+                };
+            let problems = plan.problems();
+            if !problems.is_empty() {
+                return respond_err("400 Bad Request", &problems.join("; "));
+            }
+            match duckle_duckdb_engine::plans::update(&state.workspace, move |list| {
+                list.retain(|p| p.id != plan.id);
+                list.push(plan);
+                list.sort_by(|a, b| a.id.cmp(&b.id));
+            }) {
+                Ok(list) => respond_json(&serde_json::to_value(&list).unwrap_or(json!([]))),
+                Err(e) => respond_err("500 Internal Server Error", &e),
+            }
+        }
+        "plans_delete" => {
+            let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+            let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            match duckle_duckdb_engine::plans::update(&state.workspace, move |list| {
+                list.retain(|p| p.id != id)
+            }) {
+                Ok(list) => respond_json(&serde_json::to_value(&list).unwrap_or(json!([]))),
+                Err(e) => respond_err("500 Internal Server Error", &e),
+            }
+        }
         // Compile to per-stage SQL for the Plan tab.
         "compile_pipeline" => {
             let args: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
@@ -1507,7 +1550,15 @@ fn dispatch_console(req: &Request, state: &State, who: console_auth::Identity) -
             // in run history under its own name. A plan that produced a single opaque run
             // would answer "the nightly load failed" without answering which part.
             let outcome = duckle_duckdb_engine::plans::execute(&plan, |pipeline| {
-                plan_step_outcome(execute_one(state, pipeline, "plan", &params))
+                plan_step_outcome(execute_one(
+                    state,
+                    // A step may be spelled as a bare id by the desktop editor; execute_one
+                    // takes a workspace-relative file. Normalised so one plans.json means
+                    // the same thing in both products.
+                    &duckle_duckdb_engine::plans::step_pipeline_file(pipeline),
+                    "plan",
+                    &params,
+                ))
             });
             respond_json(&serde_json::to_value(&outcome).unwrap_or(json!({})))
         }
@@ -2591,7 +2642,12 @@ fn fire_plan(state: &State, plan_id: &str) {
     };
     let params = HashMap::new();
     let outcome = duckle_duckdb_engine::plans::execute(&plan, |pipeline| {
-        plan_step_outcome(execute_one(state, pipeline, "schedule", &params))
+        plan_step_outcome(execute_one(
+            state,
+            &duckle_duckdb_engine::plans::step_pipeline_file(pipeline),
+            "schedule",
+            &params,
+        ))
     });
     let ran = outcome
         .steps

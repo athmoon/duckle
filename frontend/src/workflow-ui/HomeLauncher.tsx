@@ -11,6 +11,7 @@ import {
     LayoutGrid,
     Library,
     ListChecks,
+    ListOrdered,
     Package,
     ScrollText,
     Settings as SettingsIcon,
@@ -98,6 +99,7 @@ export type LauncherActions = {
     openMcp: () => void;
     openRuns: () => void;
     openSchedules: () => void;
+    openPlans: () => void;
     openBuild: () => void;
     openWebConsole?: () => void;
     openLineage: () => void;
@@ -166,6 +168,17 @@ export function buildModules(a: LauncherActions): LauncherModule[] {
             status: 'ready',
             open: a.openSchedules,
             disabledReason: needsPipeline,
+        },
+        {
+            id: 'plans',
+            name: 'Plans',
+            blurb: 'Run several pipelines in the order they have to run',
+            group: 'operate',
+            icon: ListOrdered,
+            status: 'ready',
+            open: a.openPlans,
+            // No disabledReason: a plan belongs to the workspace and orders pipelines
+            // across it, so it is worth opening before any one of them is.
         },
         {
             id: 'build',

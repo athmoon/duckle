@@ -35,6 +35,7 @@ import {
     type RunResult,
 } from './tauri-bridge';
 import ScheduleEditorModal from './workflow-ui/ScheduleEditorModal';
+import PlansModal from './workflow-ui/PlansModal';
 import BackfillModal from './workflow-ui/BackfillModal';
 import RunParametersModal from './workflow-ui/RunParametersModal';
 import BuildPipelineModal from './workflow-ui/BuildPipelineModal';
@@ -2342,6 +2343,7 @@ export default function App() {
     const [showLineage, setShowLineage] = useState(false);
     const [showTrust, setShowTrust] = useState(false);
     const [showCatalog, setShowCatalog] = useState(false);
+    const [showPlans, setShowPlans] = useState(false);
 
     const openJobIds = useMemo(() => new Set(jobs.map(j => j.id)), [jobs]);
 
@@ -2596,6 +2598,7 @@ export default function App() {
                             new CustomEvent('duckle:open-tab', { detail: 'history' }),
                         ),
                     openSchedules: () => handleSchedulePipeline(activeJobId),
+                    openPlans: () => setShowPlans(true),
                     openBuild: () => handleBuildPipeline(activeJobId),
                     openLineage: () => setShowLineage(true),
                     openTrust: () => setShowTrust(true),
@@ -2878,6 +2881,15 @@ export default function App() {
             ) : null}
             {showCatalog ? (
                 <CatalogPanel workspace={workspacePathState} onClose={() => setShowCatalog(false)} />
+            ) : null}
+            {showPlans ? (
+                <PlansModal
+                    workspacePath={workspacePathState}
+                    pipelines={repo
+                        .filter(r => r.type === 'pipeline')
+                        .map(r => ({ id: r.id, name: r.name }))}
+                    onClose={() => setShowPlans(false)}
+                />
             ) : null}
             {showMcpModal ? <McpModal onClose={() => setShowMcpModal(false)} /> : null}
             {showSettings ? (

@@ -839,6 +839,14 @@ export type ScheduleKind =
 export type Schedule = {
     id: string;
     pipeline_id: string;
+    /**
+     * The plan this schedule runs, when it runs a plan instead of one pipeline.
+     *
+     * Omitted by every editor that predates plans, and the backend treats an absent
+     * value as "leave whatever is there alone" - so sending a Schedule without this
+     * field cannot silently unhook a scheduled plan.
+     */
+    plan_id?: string | null;
     name: string;
     enabled: boolean;
     kind: ScheduleKind;
@@ -880,6 +888,94 @@ export async function scheduleDelete(id: string): Promise<void> {
 export async function scheduleRunNow(id: string): Promise<RunResult | null> {
     if (!isTauri()) return null;
     return await invoke<RunResult>('schedule_run_now', { id });
+}
+
+// ---- Plans -------------------------------------------------------------
+//
+// A plan is several pipelines in ordered steps: everything in a step runs at once,
+// and the next step waits for it. Stored in `<workspace>/plans.json`.
+//
+// These reach both backends - the desktop app over Tauri and the server over HTTP -
+// because the editor is the same code in both, and a plan authored in one has to be
+// readable in the other.
+
+/** One group of pipelines that may run at the same time. */
+export type PlanStep = {
+    name: string;
+    /** Workspace-relative pipeline files. Order between them means nothing. */
+    pipelines: string[];
+};
+
+export type Plan = {
+    id: string;
+    name: string;
+    steps: PlanStep[];
+    /** Whether a failed pipeline stops the steps after it. Defaults to stopping. */
+    stopOnFailure: boolean;
+};
+
+/** What became of one pipeline: 'ok', 'failed', or 'skipped' after an earlier failure. */
+export type PipelineOutcome = {
+    pipeline: string;
+    status: string;
+    error?: string | null;
+};
+
+export type StepOutcome = {
+    name: string;
+    pipelines: PipelineOutcome[];
+};
+
+export type PlanRun = {
+    planId: string;
+    /** 'ok' when everything ran, 'failed' when anything did. */
+    status: string;
+    steps: StepOutcome[];
+};
+
+/** Whether this build talks to a backend at all. */
+function plansBackend(): boolean {
+    return isTauri() || isWebBackend();
+}
+
+export async function plansList(workspacePath: string): Promise<Plan[]> {
+    if (!plansBackend()) return [];
+    // Deliberately not caught, for the same reason scheduleList is not: a plans.json
+    // that will not parse must be reported as unreadable, never as "you have none"
+    // while the plans are still on disk. The caller shows the reason.
+    return (await invoke<Plan[]>('plans_list', { workspacePath })) ?? [];
+}
+
+/** Add a plan or replace the one with its id. Answers with the store as written. */
+export async function plansSave(workspacePath: string, plan: Plan): Promise<Plan[]> {
+    if (!plansBackend()) return [];
+    return (await invoke<Plan[]>('plans_save', { workspacePath, plan })) ?? [];
+}
+
+export async function plansDelete(workspacePath: string, id: string): Promise<Plan[]> {
+    if (!plansBackend()) return [];
+    return (await invoke<Plan[]>('plans_delete', { workspacePath, id })) ?? [];
+}
+
+/**
+ * Run a plan now.
+ *
+ * Only the desktop app runs a plan from the editor. On a server it is the console that
+ * runs plans, because running one means taking a run lock per pipeline, writing each to
+ * its own run history and raising its own alerts - and a second implementation of that,
+ * living in the editor's command dispatcher, is precisely how the desktop and the console
+ * came to disagree about what a schedule meant. Said out loud here rather than silently
+ * doing nothing, which is what a missing command would otherwise do.
+ */
+export async function plansRun(workspacePath: string, id: string): Promise<PlanRun | null> {
+    if (isWebBackend()) {
+        throw new Error(
+            'Running a plan lives in the management console, which is where a run is ' +
+                'locked, recorded and alerted on. Open the console and use Plans there.',
+        );
+    }
+    if (!isTauri()) return null;
+    return await invoke<PlanRun>('plans_run', { workspacePath, id });
 }
 
 // ---- App update check --------------------------------------------------

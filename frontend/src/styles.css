@@ -6057,6 +6057,215 @@ html[dir='rtl'] .topbar-lang {
     gap: 12px;
 }
 
+/* Plans editor: several pipelines in ordered steps ------------------------
+   Namespaced `.plans-` rather than `.plan-`, which is already the compiled-SQL
+   viewer (PlanView) further down this file and means something else entirely. */
+.modal-plans {
+    width: 100%;
+    max-width: 720px;
+}
+
+.modal-plans-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.plans-intro {
+    margin: 0;
+    color: var(--text-2);
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+
+.plans-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.plans-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    background: var(--bg-2);
+}
+
+.plans-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.plans-card-title {
+    min-width: 0;
+}
+
+.plans-card-name {
+    color: var(--text-1);
+    font-weight: 600;
+}
+
+.plans-card-meta {
+    color: var(--text-3);
+    font-size: 0.85rem;
+    margin-top: 2px;
+}
+
+.plans-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* The step chain: boxes of pipelines with arrows between them. Wraps rather
+   than scrolls, so a long plan grows downward instead of off the side. */
+.plans-chain {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.plans-chain-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.plans-arrow {
+    color: var(--text-3);
+    flex: none;
+}
+
+.plans-step-box {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    min-width: 130px;
+    background: var(--bg-1);
+}
+
+.plans-step-name {
+    color: var(--text-3);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+}
+
+.plans-step-pipe {
+    color: var(--text-1);
+    font-size: 0.82rem;
+}
+
+.plans-outcome {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.plans-outcome-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+.plans-outcome-head.is-ok {
+    color: var(--success);
+}
+
+.plans-outcome-head.is-failed {
+    color: var(--danger);
+}
+
+.plans-outcome-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--text-2);
+}
+
+.plans-outcome-status {
+    flex: none;
+    min-width: 56px;
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.plans-outcome-status.is-ok {
+    color: var(--success);
+}
+
+.plans-outcome-status.is-failed {
+    color: var(--danger);
+}
+
+.plans-outcome-status.is-skipped {
+    color: var(--text-3);
+}
+
+.plans-outcome-pipe {
+    color: var(--text-1);
+}
+
+.plans-outcome-error {
+    color: var(--text-3);
+}
+
+/* Editor ---------------------------------------------------------------- */
+.plans-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.plans-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.plans-step-edit {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-2);
+}
+
+.plans-step-edit-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.plans-step-hint {
+    color: var(--text-3);
+    font-size: 0.85rem;
+}
+
+.plans-step-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--text-1);
+    font-size: 0.88rem;
+}
+
 /* Backfill modal: inspect/reset xf.incremental + ducklake CDC saved state. */
 .modal-backfill {
     width: 100%;

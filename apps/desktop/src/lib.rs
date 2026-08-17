@@ -5,7 +5,7 @@
 
 use duckle_connectors::CsvConnector;
 use duckle_duckdb_engine::{
-    append_run_record, compile_pipeline_sql, load_run_history, DuckdbEngine, PipelineDoc,
+    append_run_record, compile_pipeline_sql, load_run_history, plans, DuckdbEngine, PipelineDoc,
     PipelineEvent, RunRecord, RunResult, StageSql,
 };
 use duckle_metadata::Schema;
@@ -191,6 +191,10 @@ pub fn run() {
             schedule_upsert,
             schedule_delete,
             schedule_run_now,
+            plans_list,
+            plans_save,
+            plans_delete,
+            plans_run,
             workspace_catalog,
             workspace_catalog_rebuild,
             workspace_catalog_annotate,
@@ -707,6 +711,58 @@ fn schedule_delete(id: String) -> Result<(), String> {
 #[tauri::command]
 async fn schedule_run_now(id: String) -> Result<RunResult, String> {
     scheduler()?.run_now(&id).await
+}
+
+// ---- Plans --------------------------------------------------------------
+//
+// A plan is several pipelines in ordered steps, stored in `<workspace>/plans.json`.
+// The workspace arrives as an argument rather than being read from the scheduler,
+// matching `run_history` and the catalog commands: the frontend already knows which
+// workspace it is showing, and a command that silently uses a different one is the
+// kind of bug nobody sees until two workspaces are open.
+
+#[tauri::command]
+fn plans_list(workspace_path: String) -> Result<Vec<plans::Plan>, String> {
+    // Propagated rather than flattened to an empty list, for the same reason
+    // `schedule_list` propagates: a plans.json that will not parse must never be
+    // shown as "you have no plans" while the plans are still sitting on disk.
+    plans::load(std::path::Path::new(&workspace_path))
+}
+
+/// Add a plan or replace the one with the same id, and answer with the whole store.
+///
+/// Validated here rather than only in the UI, because this is also what an agent or a
+/// second window reaches. Returning the full list means the caller redraws from what was
+/// actually written instead of from what it hoped was written.
+#[tauri::command]
+fn plans_save(workspace_path: String, plan: plans::Plan) -> Result<Vec<plans::Plan>, String> {
+    let problems = plan.problems();
+    if !problems.is_empty() {
+        return Err(problems.join("; "));
+    }
+    plans::update(std::path::Path::new(&workspace_path), move |list| {
+        match list.iter().position(|p| p.id == plan.id) {
+            Some(i) => list[i] = plan,
+            None => list.push(plan),
+        }
+    })
+}
+
+#[tauri::command]
+fn plans_delete(workspace_path: String, id: String) -> Result<Vec<plans::Plan>, String> {
+    plans::update(std::path::Path::new(&workspace_path), move |list| {
+        list.retain(|p| p.id != id)
+    })
+}
+
+/// Run a plan now and answer with what became of each pipeline in it.
+///
+/// The same path a scheduled plan takes: each pipeline takes its own run lock, lands in
+/// its own run history and raises its own alerts, so a plan run and a scheduled run of the
+/// same pipelines are indistinguishable afterwards except for the trigger recorded.
+#[tauri::command]
+async fn plans_run(workspace_path: String, id: String) -> Result<plans::PlanRun, String> {
+    scheduler()?.run_plan_now(std::path::Path::new(&workspace_path), &id).await
 }
 
 // ---- Workspace catalog --------------------------------------------------
@@ -2129,5 +2185,60 @@ mod tests {
         assert_eq!(pick_duckdb_bin(Some(OsString::new()), app_data), bundled);
         // No override -> bundled path (unchanged default behavior).
         assert_eq!(pick_duckdb_bin(None, app_data), bundled);
+    }
+
+    /// The Plans editor's whole backend, driven the way the modal drives it.
+    ///
+    /// These commands are thin, which is the point: what is worth pinning is that they
+    /// round-trip through the same `plans.json` the console and the scheduler read, in the
+    /// same spelling, and that a plan which cannot work is refused where it was written.
+    #[test]
+    fn the_plans_commands_round_trip_through_the_shared_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().to_string();
+
+        assert!(plans_list(ws.clone()).unwrap().is_empty(), "a fresh workspace has no plans");
+
+        let plan = plans::Plan {
+            id: "nightly".into(),
+            name: "Nightly load".into(),
+            stop_on_failure: true,
+            steps: vec![
+                plans::Step {
+                    name: "Extract".into(),
+                    // The console's spelling, because the editor writes it that way too.
+                    pipelines: vec!["pipelines/orders.json".into()],
+                },
+                plans::Step { name: "Publish".into(), pipelines: vec!["pipelines/export.json".into()] },
+            ],
+        };
+        let saved = plans_save(ws.clone(), plan.clone()).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].steps.len(), 2);
+
+        // Saving the same id again replaces it rather than adding a second.
+        let mut edited = plan.clone();
+        edited.name = "Nightly load v2".into();
+        let after = plans_save(ws.clone(), edited).unwrap();
+        assert_eq!(after.len(), 1, "the same id must not produce two plans");
+        assert_eq!(after[0].name, "Nightly load v2");
+
+        // Refused at the point somebody wrote it, not at three in the morning.
+        let broken = plans::Plan {
+            id: "broken".into(),
+            name: String::new(),
+            stop_on_failure: true,
+            steps: vec![plans::Step { name: "Empty".into(), pipelines: vec![] }],
+        };
+        let err = plans_save(ws.clone(), broken).expect_err("an empty step is not a plan");
+        assert!(err.contains("no pipelines"), "unhelpful refusal: {err}");
+        assert_eq!(plans_list(ws.clone()).unwrap().len(), 1, "the refused plan was written anyway");
+
+        // The store the scheduler and the console read is the one that changed.
+        let shared = plans::load(std::path::Path::new(&ws)).unwrap();
+        assert_eq!(shared[0].id, "nightly");
+
+        assert!(plans_delete(ws.clone(), "nightly".into()).unwrap().is_empty());
+        assert!(plans_list(ws).unwrap().is_empty());
     }
 }

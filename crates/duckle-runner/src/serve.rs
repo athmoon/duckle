@@ -1507,7 +1507,7 @@ fn dispatch_console(req: &Request, state: &State, who: console_auth::Identity) -
             // in run history under its own name. A plan that produced a single opaque run
             // would answer "the nightly load failed" without answering which part.
             let outcome = duckle_duckdb_engine::plans::execute(&plan, |pipeline| {
-                execute_one(state, pipeline, "plan", &params).map(|_| ())
+                plan_step_outcome(execute_one(state, pipeline, "plan", &params))
             });
             respond_json(&serde_json::to_value(&outcome).unwrap_or(json!({})))
         }
@@ -2204,12 +2204,14 @@ fn save_schedule_at(workspace: &Path, body: &Value) -> Result<Value, String> {
     let cron = body.get("cron").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     // A schedule fires a plan when it names one, and a single pipeline otherwise, which is
     // what every schedule saved before plans existed means.
-    let plan_id = body
-        .get("planId")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    //
+    // Three answers, not two. No `planId` key means the caller is not talking about plans -
+    // an older client, the desktop app, the Schedules tab toggling one on - and whatever the
+    // schedule already runs is left alone. An empty one means "a pipeline, not a plan", and
+    // is the only way to take a plan off a schedule.
+    let plan_id: Option<Option<String>> = body.get("planId").map(|v| {
+        v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    });
     // Validate a supplied cron expression up front so a bad one is rejected with
     // a clear message instead of silently never firing (#132).
     if !cron.is_empty()
@@ -2253,7 +2255,9 @@ fn save_schedule_at(workspace: &Path, body: &Value) -> Result<Value, String> {
             Some(s) => {
                 s.enabled = enabled;
                 s.kind = kind;
-                s.plan_id = plan_id.clone();
+                if let Some(wanted) = plan_id.clone() {
+                    s.plan_id = wanted;
+                }
                 // A changed trigger invalidates the time this process armed.
                 s.next_run_at = None;
             }
@@ -2262,7 +2266,7 @@ fn save_schedule_at(workspace: &Path, body: &Value) -> Result<Value, String> {
                 pipeline_id: pipeline_id.clone(),
                 name: pipeline_id.clone(),
                 enabled,
-                plan_id: plan_id.clone(),
+                plan_id: plan_id.clone().flatten(),
                 kind,
                 last_run_at: None,
                 last_run_status: None,
@@ -2485,6 +2489,26 @@ fn execute_one(
     }))
 }
 
+/// Turn what `execute_one` returns into what a plan needs to know.
+///
+/// The two disagree about what a `Result` means, and the disagreement is easy to miss.
+/// `execute_one` answers `Err` only when the run could not be started at all; a pipeline
+/// that ran and failed comes back as `Ok` carrying `"status": "error"`. A plan asks a
+/// simpler question - did this pipeline work - so the status has to be read, not just the
+/// `Result`. Reading only the `Result` reported a plan of three failed pipelines as `ok` and
+/// let every later step run against data that was never produced.
+fn plan_step_outcome(result: Result<Value, String>) -> Result<(), String> {
+    let value = result?;
+    if value.get("status").and_then(|v| v.as_str()) == Some("error") {
+        return Err(value
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("the pipeline failed")
+            .to_string());
+    }
+    Ok(())
+}
+
 // ── Scheduler ──
 
 /// Background loop: every 30s, run any enabled pipeline whose schedule is due.
@@ -2567,7 +2591,7 @@ fn fire_plan(state: &State, plan_id: &str) {
     };
     let params = HashMap::new();
     let outcome = duckle_duckdb_engine::plans::execute(&plan, |pipeline| {
-        execute_one(state, pipeline, "schedule", &params).map(|_| ())
+        plan_step_outcome(execute_one(state, pipeline, "schedule", &params))
     });
     let ran = outcome
         .steps
@@ -2821,7 +2845,8 @@ fn console_router(state: Arc<State>) -> axum::Router {
 mod tests {
     use super::{
         connection_secret_cmd, console_auth, cookie_attributes, cron_decision, deploy_into,
-        deploy_target, is_public_route, load_schedules, route_console, scheduler_notice, Request,
+        deploy_target, is_public_route, load_schedules, plan_step_outcome, route_console,
+        scheduler_notice, Request,
         migrate_legacy_schedules, normalize_cron, read_pipeline_file, read_request,
         save_schedule_at, RunGate, State, HEALTH_PATH, MAX_BODY,
     };
@@ -2954,6 +2979,89 @@ mod tests {
             Some("nightly"),
             "the scheduler cannot fire a plan it is never told about"
         );
+    }
+
+    /// A pipeline that fails must fail its step, and stop the steps after it.
+    ///
+    /// `execute_one` answers `Ok` for a run that happened and `Err` only for one that could
+    /// not be started, so a failed pipeline comes back as `Ok(status: "error")`. Reading
+    /// only the `Result` therefore reported a plan whose every pipeline failed as a plan
+    /// that worked, and - much worse - let every later step run against data the failed step
+    /// was supposed to produce, which is the one thing a plan exists to prevent.
+    ///
+    /// Seen for real: three pipelines failed with "DuckDB engine isn't installed yet" and
+    /// the plan said `ok (3 of 3 pipelines ran)`.
+    #[test]
+    fn a_pipeline_that_fails_fails_its_plan_and_stops_the_next_step() {
+        let plan = duckle_duckdb_engine::plans::Plan {
+            id: "nightly".into(),
+            name: String::new(),
+            stop_on_failure: true,
+            steps: vec![
+                duckle_duckdb_engine::plans::Step {
+                    name: "Extract".into(),
+                    pipelines: vec!["orders.json".into()],
+                },
+                duckle_duckdb_engine::plans::Step {
+                    name: "Publish".into(),
+                    pipelines: vec!["export.json".into()],
+                },
+            ],
+        };
+
+        // Exactly what execute_one hands back for a run that started and failed.
+        let failed_but_ok = Ok(serde_json::json!({
+            "id": "orders",
+            "status": "error",
+            "error": "DuckDB engine isn't installed yet. Open Setup to install it.",
+        }));
+
+        let mut attempted = Vec::new();
+        let outcome = duckle_duckdb_engine::plans::execute(&plan, |pipeline| {
+            attempted.push(pipeline.to_string());
+            plan_step_outcome(failed_but_ok.clone())
+        });
+
+        assert_eq!(outcome.status, "failed", "a plan of failed pipelines is not an ok plan");
+        assert_eq!(
+            attempted,
+            ["orders.json"],
+            "the second step ran against data the first step never produced"
+        );
+        let first = &outcome.steps[0].pipelines[0];
+        assert_eq!(first.status, "failed");
+        assert!(
+            first.error.as_deref().unwrap_or("").contains("DuckDB engine"),
+            "the reason the pipeline failed was thrown away: {:?}",
+            first.error
+        );
+    }
+
+    /// Every schedule save that predates plans - the Schedules tab toggling one on, an older
+    /// client, the desktop app - sends no `planId` at all. Reading that as "no plan" would
+    /// leave the schedule pointed at the label in its pipeline_id, which is not a file, so
+    /// switching a nightly plan off and on again would be enough to stop it running.
+    ///
+    /// Saying `"planId": ""` is different: that is somebody asking for a pipeline instead.
+    #[test]
+    fn a_save_that_says_nothing_about_a_plan_does_not_remove_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let save = |body: serde_json::Value| save_schedule_at(&ws, &body).expect("saves");
+        let plan_of = || {
+            duckle_duckdb_engine::schedules::load(&ws).unwrap()[0].plan_id.clone()
+        };
+
+        save(serde_json::json!({ "id": "nightly", "planId": "nightly", "enabled": true, "intervalSeconds": 60 }));
+        assert_eq!(plan_of().as_deref(), Some("nightly"));
+
+        // The Schedules tab turning it off and on again, which sends no planId.
+        save(serde_json::json!({ "id": "nightly", "enabled": false, "intervalSeconds": 60 }));
+        assert_eq!(plan_of().as_deref(), Some("nightly"), "toggling it off dropped the plan");
+
+        // Asked for explicitly, it goes.
+        save(serde_json::json!({ "id": "nightly", "planId": "", "enabled": true, "intervalSeconds": 60 }));
+        assert_eq!(plan_of(), None, "an explicit empty planId means 'a pipeline, not a plan'");
     }
 
     /// Removing the last administrator leaves a console nobody can administer. Removing
